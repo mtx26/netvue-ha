@@ -1,0 +1,13 @@
+# Applications, captures et analyses privées : ne jamais versionner.
+input/
+findings/
+captures/
+firmware/
+*.pcap
+*.pcapng
+*.apk
+*.aab
+*.bin
+*.img
+__pycache__/
+*.pyc
