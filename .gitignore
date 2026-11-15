@@ -3,6 +3,7 @@ input/
 findings/
 captures/
 firmware/
+tools/
 *.pcap
 *.pcapng
 *.apk

@@ -14,7 +14,24 @@ Le but final serait de récupérer un flux vidéo autorisé vers Home Assistant,
 4. Ne jamais supposer que `5555/tcp` correspond à Freeciv, ADB, RTSP, Telnet ou un protocole précis : ce sont des étiquettes possibles, pas des preuves.
 5. Ne pas supposer que GK7101 est confirmé sur ces exemplaires : c'est une piste issue des spécifications de certaines Vigil de première génération.
 6. Travailler avec des captures et binaires appartenant au propriétaire ; ne pas utiliser de secrets obtenus ailleurs.
-7. Ne pas accéder aux comptes Netvue, manipuler le firmware, contacter les caméras, modifier le réseau, lancer un APK ni installer un logiciel sans validation spécifique du propriétaire.
+7. MODE AUTONOME : l'agent est autorisé à télécharger des APK
+   publiques depuis les serveurs officiels Netvue, à les analyser,
+   à utiliser le terminal et à télécharger des outils portables
+   depuis leurs dépôts officiels (GitHub notamment).
+
+   Il doit effectuer automatiquement toutes les étapes de l'analyse
+   statique sans demander de confirmation à chaque étape.
+
+   Les outils supplémentaires doivent être installés exclusivement
+   dans le dossier tools/ du projet, sans droits administrateur.
+
+   Une autorisation reste obligatoire pour :
+   - Accéder aux comptes Netvue.
+   - Communiquer directement avec les caméras.
+   - Modifier le firmware.
+   - Modifier le réseau ou le serveur.
+   - Installer des logiciels au niveau du système.
+   - Exécuter l'APK ou du code extrait.du propriétaire.
 8. Toute nouvelle commande doit indiquer sa finalité, ses prérequis, les données qu'elle produit et ses risques. Les commandes de lecture locale sont prioritaires.
 9. Préserver les fichiers originaux ; écrire les résultats sous `findings/` et n'écraser aucun résultat existant sans justification.
 10. Ne jamais exposer dans Git, un rapport partagé ou le Chat : mots de passe, jetons, cookies, adresses MAC complètes, Device IDs, clés cryptographiques, adresses IP publiques, captures brutes contenant des secrets.
