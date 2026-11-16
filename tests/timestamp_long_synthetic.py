@@ -1,6 +1,7 @@
 """Accelerated synthetic 2,000-second H.264 mux and reader validation."""
 
 import json
+import os
 import resource
 import subprocess
 import tempfile
@@ -17,7 +18,10 @@ FRAMES = 20000
 
 
 def cgroup_cpu_usec():
-    return int(dict(line.split() for line in Path("/sys/fs/cgroup/cpu.stat").read_text().splitlines())["usage_usec"])
+    path = Path("/sys/fs/cgroup/cpu.stat")
+    if not path.exists():
+        return None
+    return int(dict(line.split() for line in path.read_text().splitlines())["usage_usec"])
 
 
 def encoder(width: int, cabac: int):
@@ -77,7 +81,7 @@ def main():
                 or metrics["unresolved_timestamp_frames"] != 0):
             raise RuntimeError(f"Unexpected publisher metrics: {metrics}")
         probe = subprocess.run(
-            ["/ffmpeg/ffprobe", "-v", "error", "-select_streams", "v:0",
+            [os.environ.get("NETVUE_FFPROBE", "/ffmpeg/ffprobe"), "-v", "error", "-select_streams", "v:0",
              "-show_entries", "packet=pts_time", "-show_packets", "-of", "json", path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=120)
         if probe.stderr:
@@ -88,7 +92,7 @@ def main():
         if abs(times[-1] - times[0] - (FRAMES - 1) / 10) > 0.2:
             raise RuntimeError("Unexpected timestamp drift")
         frames = subprocess.run(
-            ["/ffmpeg/ffprobe", "-v", "error", "-select_streams", "v:0",
+            [os.environ.get("NETVUE_FFPROBE", "/ffmpeg/ffprobe"), "-v", "error", "-select_streams", "v:0",
              "-show_entries", "frame=width,height", "-show_frames", "-of", "json", path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=120)
         if frames.stderr:
@@ -98,7 +102,8 @@ def main():
         if dimensions != [(64, 64), (128, 64)]:
             raise RuntimeError(f"Unexpected decoded dimensions: {dimensions}")
         result = subprocess.run(
-            ["/ffmpeg/ffmpeg", "-v", "error", "-i", path, "-progress", "pipe:1", "-f", "null", "-"],
+            [os.environ.get("NETVUE_FFMPEG", "/ffmpeg/ffmpeg"), "-v", "error",
+             "-i", path, "-progress", "pipe:1", "-f", "null", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=120)
         if result.stderr:
             raise RuntimeError("FFmpeg reported decoding errors")
@@ -107,13 +112,17 @@ def main():
         if decoded != FRAMES:
             raise RuntimeError(f"Unexpected FFmpeg decoded frame count: {decoded}")
         elapsed = time.perf_counter() - started
+        cgroup_cpu_end = cgroup_cpu_usec()
+        peak_path = Path("/sys/fs/cgroup/memory.peak")
         print(json.dumps({"frames": FRAMES, "pts_span_seconds": round(times[-1] - times[0], 3),
                           "max_gap_seconds": round(max(b - a for a, b in zip(times, times[1:])), 3),
                           "decoded_frames": decoded, "dimensions": dimensions, "metrics": metrics,
                           "elapsed_seconds": round(elapsed, 2),
                           "cpu_seconds": round(time.process_time() - cpu_start, 2),
-                          "cgroup_cpu_percent": round((cgroup_cpu_usec() - cgroup_cpu_start) / elapsed / 10000, 2),
-                          "cgroup_peak_bytes": int(Path("/sys/fs/cgroup/memory.peak").read_text()),
+                          "cgroup_cpu_percent": (
+                              round((cgroup_cpu_end - cgroup_cpu_start) / elapsed / 10000, 2)
+                              if cgroup_cpu_start is not None and cgroup_cpu_end is not None else None),
+                          "cgroup_peak_bytes": int(peak_path.read_text()) if peak_path.exists() else None,
                           "python_peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}),
               flush=True)
 

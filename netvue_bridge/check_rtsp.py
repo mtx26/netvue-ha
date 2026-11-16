@@ -147,6 +147,42 @@ def partial_diagnostics(outputs: dict[str, tuple[bytes, bytes]]) -> dict[str, di
     return result
 
 
+def validate_local_readers(probe_out: bytes, probe_error: bytes, player_out: bytes,
+                           player_error: bytes, probe_duration: float,
+                           startup_seconds: float, reader_delay_seconds: float) -> dict[str, object]:
+    info = json.loads(probe_out)
+    streams, packets = info.get("streams", []), info.get("packets", [])
+    if not streams or streams[0].get("codec_name") != "h264":
+        raise RuntimeError("FFprobe did not identify an H.264 stream")
+    times = [float(p["pts_time"]) for p in packets if "pts_time" in p]
+    if len(times) < 2 or not all(b > a for a, b in zip(times, times[1:])):
+        raise RuntimeError("RTSP packet timestamps are insufficient or non-monotonic")
+    span = times[-1] - times[0]
+    max_gap = max(b - a for a, b in zip(times, times[1:]))
+    if span < probe_duration * 0.8 or max_gap > 1:
+        raise RuntimeError("RTSP packet continuity did not meet the test threshold")
+    keys = sum("K" in p.get("flags", "") for p in packets)
+    frame_counts = [int(line.split("=", 1)[1]) for line in player_out.decode().splitlines()
+                    if line.startswith("frame=")]
+    if not keys or not frame_counts or max(frame_counts) < 2:
+        raise RuntimeError("RTSP image keyframe or decoded image not observed")
+    return {
+        "codec": streams[0]["codec_name"], "width": streams[0].get("width"),
+        "height": streams[0].get("height"), "packets": len(packets),
+        "keyframes": keys, "timestamped_packets": len(times),
+        "decoded_frames": max(frame_counts),
+        "first_pts_seconds": times[0],
+        "last_pts_seconds": times[-1],
+        "timestamp_span_seconds": round(span, 3),
+        "max_timestamp_gap_seconds": round(max_gap, 3),
+        "fps_from_timestamps": round((len(times) - 1) / span, 2),
+        "startup_seconds": round(startup_seconds, 3),
+        "reader_delay_seconds": reader_delay_seconds,
+        "ffprobe_error_lines": len(probe_error.splitlines()),
+        "ffmpeg_error_lines": len(player_error.splitlines()),
+    }
+
+
 def sample(pid: int) -> tuple[float, int] | None:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
@@ -363,37 +399,10 @@ def main() -> int:
         if probe.returncode != 0 or player.returncode != 0:
             raise RuntimeError(f"An RTSP reader failed; ffprobe error lines={len(probe_error.splitlines())}, "
                                f"ffmpeg error lines={len(player_error.splitlines())}")
-        info = json.loads(probe_out)
-        streams, packets = info.get("streams", []), info.get("packets", [])
-        if not streams or streams[0].get("codec_name") != "h264":
-            raise RuntimeError("FFprobe did not identify an H.264 stream")
-        times = [float(p["pts_time"]) for p in packets if "pts_time" in p]
-        if len(times) < 2 or not all(b > a for a, b in zip(times, times[1:])):
-            raise RuntimeError("RTSP packet timestamps are insufficient or non-monotonic")
-        span = times[-1] - times[0]
-        max_gap = max(b - a for a, b in zip(times, times[1:]))
-        if span < args.probe_duration * 0.8 or max_gap > 1:
-            raise RuntimeError("RTSP packet continuity did not meet the test threshold")
-        keys = sum("K" in p.get("flags", "") for p in packets)
-        frame_counts = [int(line.split("=", 1)[1]) for line in player_out.decode().splitlines()
-                        if line.startswith("frame=")]
-        if not keys or not frame_counts or max(frame_counts) < 2:
-            raise RuntimeError("RTSP image keyframe or decoded image not observed")
-        summary = {
-            "codec": streams[0]["codec_name"], "width": streams[0].get("width"),
-            "height": streams[0].get("height"), "packets": len(packets),
-            "keyframes": keys, "timestamped_packets": len(times),
-            "decoded_frames": max(frame_counts),
-            "first_pts_seconds": times[0],
-            "last_pts_seconds": times[-1],
-            "timestamp_span_seconds": round(span, 3),
-            "max_timestamp_gap_seconds": round(max_gap, 3),
-            "fps_from_timestamps": round((len(times) - 1) / span, 2),
-            "startup_seconds": round(ready_at - bridge_started, 3),
-            "reader_delay_seconds": args.reader_delay,
-            "ffprobe_error_lines": len(probe_error.splitlines()),
-            "ffmpeg_error_lines": len(player_error.splitlines()),
-        }
+        summary = validate_local_readers(
+            probe_out, probe_error, player_out, player_error, args.probe_duration,
+            ready_at - bridge_started, args.reader_delay,
+        )
         print("rtsp:", json.dumps(summary))
         if args.frame_probe:
             frame_probe = processes["frame_probe"]

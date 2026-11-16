@@ -24,14 +24,19 @@ def command_packet(units: list[dict[str, Any]]) -> bytes:
     return HEADER.pack(len(body), 0, 0, 0, 200) + body
 
 
-def parse_datagram(data: bytes) -> tuple[int, bytes]:
-    if len(data) < HEADER.size:
-        raise ProtocolError("Truncated header")
+def _validate_header(data: bytes, body_size: int | None = None) -> tuple[int, int]:
     length, _, _, flag, kind = HEADER.unpack_from(data)
-    if length <= 0 or length >= MAX_BODY or length != len(data) - HEADER.size:
+    if length <= 0 or length >= MAX_BODY or (body_size is not None and length != body_size):
         raise ProtocolError("Invalid packet size")
     if flag != 0:
         raise ProtocolError("Encrypted or flagged packet unsupported")
+    return length, kind
+
+
+def parse_datagram(data: bytes) -> tuple[int, bytes]:
+    if len(data) < HEADER.size:
+        raise ProtocolError("Truncated header")
+    _, kind = _validate_header(data, len(data) - HEADER.size)
     return kind, data[HEADER.size:]
 
 
@@ -61,9 +66,5 @@ def read_exact(sock: socket.socket, size: int, deadline: float) -> bytes:
 
 def read_packet(sock: socket.socket, deadline: float) -> tuple[int, bytes]:
     header = read_exact(sock, HEADER.size, deadline)
-    length, _, _, flag, kind = HEADER.unpack(header)
-    if length <= 0 or length >= MAX_BODY:
-        raise ProtocolError("Invalid packet size")
-    if flag != 0:
-        raise ProtocolError("Encrypted or flagged packet unsupported")
+    length, kind = _validate_header(header)
     return kind, read_exact(sock, length, deadline)

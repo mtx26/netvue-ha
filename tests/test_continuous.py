@@ -12,7 +12,8 @@ from unittest.mock import MagicMock, patch
 
 if os.name == "posix":
     from netvue_bridge.continuous import (
-        DAY, WEEK, RollingBudget, clock_sample, reconnect_delay, run_worker, supervise_continuous,
+        DAY, WEEK, RollingBudget, clock_sample, reconnect_delay, resource_snapshot, run_worker,
+        supervise_continuous,
     )
     from netvue_bridge.protocol import command_packet
     from netvue_bridge.stream import StreamInterrupted, receive_stream
@@ -168,6 +169,18 @@ class ContinuousTests(unittest.TestCase):
                 self.assertGreaterEqual(reconnect_delay(count), minimum)
                 self.assertLessEqual(reconnect_delay(count), min(1800, minimum * 1.2))
 
+    def test_resource_snapshot_requires_finite_cgroup_memory(self):
+        (self.path / "memory.current").write_text("123\n", encoding="ascii")
+        (self.path / "memory.max").write_text("1000\n", encoding="ascii")
+        (self.path / "cpu.stat").write_text("usage_usec 456\n", encoding="ascii")
+        with patch("netvue_bridge.continuous.Path", return_value=self.path):
+            self.assertEqual(resource_snapshot(), {
+                "memory_bytes": 123, "memory_limit_bytes": 1000, "cpu_usec": 456,
+            })
+            (self.path / "memory.max").write_text("max\n", encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "finite cgroup memory limit"):
+                resource_snapshot()
+
     def test_unavailable_rtsp_and_bad_budget_never_connect(self):
         with RollingBudget(self.path, self.source, self.target) as budget:
             budget.initialize()
@@ -276,15 +289,25 @@ class ContinuousTests(unittest.TestCase):
             rtsp.listen(1)
             with RollingBudget(self.path, "127.0.0.1", target) as budget:
                 budget.initialize()
+            script = ("from netvue_bridge import continuous; "
+                      "continuous.resource_snapshot=lambda: "
+                      "{'memory_bytes':1,'memory_limit_bytes':100,'cpu_usec':1}; "
+                      "raise SystemExit(continuous.main())")
             process = subprocess.Popen(
-                [sys.executable, "-B", "-m", "netvue_bridge.continuous", "run",
+                [sys.executable, "-B", "-c", script, "run",
                  "--source", "127.0.0.1", "--target", target,
                  "--state-dir", str(self.path),
                  "--rtsp", f"rtsp://127.0.0.1:{rtsp.getsockname()[1]}/netvue2"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             try:
-                camera.recvfrom(65535)
+                try:
+                    camera.recvfrom(65535)
+                except socket.timeout:
+                    if process.poll() is not None:
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.fail(f"Supervisor exited before discovery: {stdout}\n{stderr}")
+                    raise
                 children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
                 self.assertEqual(len(children), 1)
                 process.send_signal(signal.SIGTERM)
@@ -298,7 +321,7 @@ class ContinuousTests(unittest.TestCase):
             finally:
                 if process.poll() is None:
                     process.kill()
-                    process.communicate(timeout=8)
+                process.communicate(timeout=8)
 
 
 if __name__ == "__main__":

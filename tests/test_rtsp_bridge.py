@@ -13,7 +13,10 @@ from fractions import Fraction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from netvue_bridge.check_rtsp import enforce_bridge_deadline, finish_readers, partial_diagnostics
+from netvue_bridge import h264, rtsp
+from netvue_bridge.check_rtsp import (
+    enforce_bridge_deadline, finish_readers, partial_diagnostics, validate_local_readers,
+)
 from netvue_bridge.discovery import DiscoveredCamera
 from netvue_bridge.protocol import ConnectionClosed, ProtocolError, command_packet, read_packet
 from netvue_bridge.rtsp import H264Publisher, TimestampClock, annexb_nals, validate_local_rtsp_url
@@ -21,6 +24,49 @@ from netvue_bridge.stream import StreamInterrupted, receive_stream, run_sessions
 
 
 class RtspTests(unittest.TestCase):
+    def test_local_reader_validation_preserves_summary_and_thresholds(self):
+        probe = json.dumps({
+            "streams": [{"codec_name": "h264", "width": 64, "height": 32}],
+            "packets": [{"pts_time": "0.0", "flags": "K"},
+                        {"pts_time": "1.0", "flags": ""}],
+        }).encode()
+        summary = validate_local_readers(probe, b"warning\n", b"frame=2\n", b"",
+                                         1.0, 0.125, 0.5)
+        self.assertEqual(summary, {
+            "codec": "h264", "width": 64, "height": 32, "packets": 2,
+            "keyframes": 1, "timestamped_packets": 2, "decoded_frames": 2,
+            "first_pts_seconds": 0.0, "last_pts_seconds": 1.0,
+            "timestamp_span_seconds": 1.0, "max_timestamp_gap_seconds": 1.0,
+            "fps_from_timestamps": 1.0, "startup_seconds": 0.125,
+            "reader_delay_seconds": 0.5, "ffprobe_error_lines": 1,
+            "ffmpeg_error_lines": 0,
+        })
+
+    def test_local_reader_validation_rejects_invalid_video(self):
+        def probe(codec, timestamps, key=True):
+            return json.dumps({
+                "streams": [{"codec_name": codec}],
+                "packets": [{"pts_time": str(value), "flags": "K" if key and index == 0 else ""}
+                            for index, value in enumerate(timestamps)],
+            }).encode()
+
+        for data, frames, duration, error in (
+            (probe("hevc", [0, 1]), b"frame=2\n", 1, "H.264"),
+            (probe("h264", [0, 0]), b"frame=2\n", 1, "non-monotonic"),
+            (probe("h264", [0, 1.01]), b"frame=2\n", 1, "continuity"),
+            (probe("h264", [0, 0.7]), b"frame=2\n", 1, "continuity"),
+            (probe("h264", [0, 1], key=False), b"frame=2\n", 1, "keyframe"),
+            (probe("h264", [0, 1]), b"frame=1\n", 1, "keyframe"),
+        ):
+            with self.subTest(error=error, data=data, frames=frames):
+                with self.assertRaisesRegex(RuntimeError, error):
+                    validate_local_readers(data, b"", frames, b"", duration, 1, 0)
+
+    def test_h264_symbols_remain_available_from_rtsp(self):
+        for name in ("START_CODE", "TimestampClock", "annexb_nals", "first_slice_macroblock"):
+            with self.subTest(name=name):
+                self.assertIs(getattr(rtsp, name), getattr(h264, name))
+
     def test_bridge_watchdog_stops_overdue_process(self):
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
@@ -151,6 +197,33 @@ class RtspTests(unittest.TestCase):
                 publisher.push(b"\x00\x00\x01\x41next", 228)
             publisher.close()
             self.assertEqual(publisher.pending_bytes, 0)
+
+    def test_close_releases_buffers_even_if_output_close_fails(self):
+        fake_av = types.SimpleNamespace(
+            CodecContext=types.SimpleNamespace(create=MagicMock()),
+            Packet=lambda data: data, error=types.SimpleNamespace(FFmpegError=ValueError),
+        )
+        with patch.dict(sys.modules, {"av": fake_av}):
+            publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+            publisher.output = MagicMock()
+            publisher.output.close.side_effect = ValueError("synthetic close error")
+            publisher.pending.append((b"frame", 0, True))
+            publisher.pending_bytes = 5
+            publisher.change_pending.append((b"frame", 0, True))
+            publisher.change_pending_bytes = 5
+            publisher._collision_frames.append((b"frame", 0.0))
+            publisher._collision_bytes = 5
+            publisher._collision_started = 0.0
+            publisher._last_access_unit = b"frame"
+            with self.assertRaisesRegex(ValueError, "synthetic close error"):
+                publisher.close()
+            self.assertIsNone(publisher.output)
+            self.assertEqual((publisher.pending, publisher.change_pending, publisher._collision_frames),
+                             ([], [], []))
+            self.assertEqual((publisher.pending_bytes, publisher.change_pending_bytes,
+                              publisher._collision_bytes), (0, 0, 0))
+            self.assertIsNone(publisher._last_access_unit)
+            self.assertIsNone(publisher._collision_started)
 
     def test_parameter_change_waits_for_idr_and_handles_dimensions(self):
         frame = types.SimpleNamespace(width=64, height=64)
@@ -412,7 +485,7 @@ class RtspTests(unittest.TestCase):
                                  "x264-params": "keyint=10:min-keyint=10:scenecut=0:bframes=0"}
                 codec.open()
                 collision = bool(os.environ.get("NETVUE_TEST_COLLISION"))
-                for index in range(55):
+                for index in range(80 if collision else 55):
                     frame = av.VideoFrame(64, 64, "yuv420p")
                     frame.pts = index
                     for plane in frame.planes:
@@ -433,7 +506,7 @@ class RtspTests(unittest.TestCase):
 
         def consume():
             try:
-                receive_stream(left, publisher, 6)
+                receive_stream(left, publisher, 9 if os.environ.get("NETVUE_TEST_COLLISION") else 6)
             except (OSError, ProtocolError, TimeoutError, av.error.FFmpegError) as exc:
                 failures.append(type(exc).__name__ + ": " + str(exc))
 
@@ -488,7 +561,7 @@ class RtspTests(unittest.TestCase):
             self.assertTrue(any("K" in p["flags"] for p in packets))
             _, player_error = player.communicate(timeout=6)
             self.assertEqual(player.returncode, 0, player_error.decode())
-            reader.join(7)
+            reader.join(10)
             self.assertFalse(reader.is_alive())
             self.assertFalse(failures, str(failures))
             self.assertGreaterEqual(publisher.published_frames, 50)
@@ -503,9 +576,9 @@ class RtspTests(unittest.TestCase):
             left.close()
             right.close()
             if writer.ident is not None:
-                writer.join(7)
+                writer.join(10)
             if reader.ident is not None:
-                reader.join(7)
+                reader.join(10)
             publisher.close()
             server.terminate()
             server.wait(timeout=5)

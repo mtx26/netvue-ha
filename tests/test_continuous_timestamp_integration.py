@@ -27,7 +27,8 @@ class ContinuousTimestampIntegrationTests(unittest.TestCase):
     def check_collisions_and_reconnection(self, interrupt):
         import av
 
-        fake_host = "127.254.9.9"
+        host_suffix = (os.getpid() * 2 + int(interrupt)) % 65536
+        fake_host = f"127.254.{host_suffix >> 8}.{host_suffix % 256}"
         ready = threading.Event()
         stop = threading.Event()
         errors = []
@@ -92,16 +93,21 @@ class ContinuousTimestampIntegrationTests(unittest.TestCase):
                 subprocess.run(command[:4] + ["init"] + command[4:], check=True,
                                capture_output=True, timeout=5)
                 thread.start()
+                # This test exercises video and budgets, not the host's cgroup configuration.
+                script = ("from netvue_bridge import continuous; "
+                          "continuous.resource_snapshot=lambda: "
+                          "{'memory_bytes':1,'memory_limit_bytes':100,'cpu_usec':1}; ")
                 if interrupt:
-                    script = ("from netvue_bridge import continuous; "
-                              "continuous.reconnect_delay=lambda _:0.1; "
-                              "raise SystemExit(continuous.main())")
-                    run_command = [sys.executable, "-B", "-c", script, "run"] + command[4:]
-                else:
-                    run_command = command[:4] + ["run"] + command[4:]
+                    script += "continuous.reconnect_delay=lambda _:0.1; "
+                script += "raise SystemExit(continuous.main())"
+                run_command = [sys.executable, "-B", "-c", script, "run"] + command[4:]
                 process = subprocess.Popen(run_command,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                self.assertTrue(ready.wait(18), f"Synthetic camera failed: {errors}")
+                if not ready.wait(18):
+                    if process.poll() is not None:
+                        stdout, stderr = process.communicate(timeout=10)
+                        self.fail(f"Synthetic supervisor exited: {stdout}\n{stderr}")
+                    self.fail(f"Synthetic camera failed: {errors}")
                 state = json.loads((Path(directory) / "budget.json").read_text())
                 self.assertEqual((state["total"], state["status"], state["stage"]),
                                  (2 if interrupt else 1, "in_progress", "STREAMING"))
@@ -119,8 +125,9 @@ class ContinuousTimestampIntegrationTests(unittest.TestCase):
                                  (2 if interrupt else 1, "in_progress"))
             finally:
                 stop.set()
-                if process is not None and process.poll() is None:
-                    process.terminate()
+                if process is not None:
+                    if process.poll() is None:
+                        process.terminate()
                     process.communicate(timeout=10)
                 if thread.ident is not None:
                     thread.join(12)

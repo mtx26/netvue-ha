@@ -10,7 +10,7 @@ from unittest.mock import patch
 from netvue_bridge import client
 from netvue_bridge.authentication import authenticate, login_packet
 from netvue_bridge.discovery import DiscoveredCamera, parse_discovery
-from netvue_bridge.protocol import ProtocolError, command_packet, parse_datagram, read_packet
+from netvue_bridge.protocol import MAX_BODY, ProtocolError, command_packet, parse_datagram, read_packet
 from netvue_bridge.video import VideoSummary, live_packet, receive_live
 
 
@@ -74,6 +74,19 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(json.loads(body)[0]["C"], 0)
         with self.assertRaises(ProtocolError):
             parse_datagram(struct.pack("<IIIHH", 1, 0, 0, 1, 200) + b"x")
+
+    def test_datagram_and_stream_reject_invalid_headers(self):
+        for length, flag, expected in ((0, 0, "Invalid packet size"),
+                                       (MAX_BODY, 0, "Invalid packet size"),
+                                       (1, 1, "Encrypted or flagged packet unsupported")):
+            packet = struct.pack("<IIIHH", length, 0, 0, flag, 200) + b"x"
+            with self.subTest(length=length, flag=flag):
+                with self.assertRaisesRegex(ProtocolError, expected):
+                    parse_datagram(packet)
+                with self.assertRaisesRegex(ProtocolError, expected):
+                    read_packet(ScriptedSocket(packet), time.monotonic() + 1)
+        with self.assertRaisesRegex(ProtocolError, "Invalid packet size"):
+            parse_datagram(struct.pack("<IIIHH", 2, 0, 0, 1, 200) + b"x")
 
     def test_live_request_and_frame_metadata_only(self):
         _, body = parse_datagram(live_packet(100))

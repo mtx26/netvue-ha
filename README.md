@@ -1,5 +1,7 @@
 # Netvue Vigil → Home Assistant — Phase 1
 
+> Le projet comprend désormais une passerelle LAN → RTSP et une intégration Home Assistant en cours de stabilisation. Voir [l'architecture](docs/architecture.md), [le développement](docs/development.md), [la passerelle](netvue_bridge/README.md) et [le déploiement](deployment/README.md). Le guide ci-dessous conserve le contexte historique de la phase 1 ; il ne décrit pas l'état actuel du pont ni n'autorise une connexion caméra.
+
 Espace de travail prêt à ouvrir dans **VS Code avec GitHub Copilot (harness « Copilot »)**. La première phase est exclusivement consacrée à l'analyse statique de l'application Android Netvue et aux recherches documentaires. Aucun accès à un compte Netvue n'est nécessaire.
 
 ## Ce qui est inclus
