@@ -19,8 +19,8 @@ if os.name == "posix":
 
 @unittest.skipUnless(os.name == "posix", "supervisor requires Linux file locks")
 class SupervisorTests(unittest.TestCase):
-    source = "192.0.2.10"
-    target = "192.0.2.20"
+    source = "192.168.10.1"
+    target = "192.168.10.2"
     rtsp = "rtsp://127.0.0.1:8554/netvue2"
 
     def setUp(self):
@@ -61,6 +61,36 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "BUDGET_BLOCKED"):
                 budget.reserve()
 
+    def test_budget_file_rejects_duplicate_keys_and_unbounded_numbers(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            raw = budget.path.read_text()
+            budget.path.write_text(raw.replace('"version": 4', '"version": 4, "version": 4'))
+            with self.assertRaisesRegex(ValueError, "Budget file is invalid"):
+                budget.read()
+            budget.path.write_text(raw)
+            state = json.loads(raw)
+            state["wait_until"] = 10 ** 400
+            budget.path.write_text(json.dumps(state))
+            with self.assertRaisesRegex(ValueError, "Budget state or endpoint is invalid"):
+                budget.read()
+
+    def test_file_lock_excludes_a_separate_process(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            script = (
+                "from pathlib import Path; import sys; "
+                "from netvue_bridge.budget import Budget; "
+                "b=Budget(Path(sys.argv[1]), sys.argv[2], sys.argv[3]); "
+                "b.__enter__()"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(self.path), self.source, self.target],
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("BlockingIOError", result.stderr)
+
     def test_transient_errors_use_persisted_exponential_backoff_without_quotas(self):
         with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
@@ -95,6 +125,21 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "CLOCK_AMBIGUOUS"):
                 supervise(budget, self.rtsp)
             network.assert_not_called()
+
+    def test_rtsp_unavailable_uses_backoff_and_retries_without_name_error(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            with patch("netvue_bridge.continuous.wait_for_rtsp",
+                       side_effect=[False, True]) as wait, \
+                    patch("netvue_bridge.continuous.run_worker",
+                          return_value="discovery") as worker, \
+                    patch("netvue_bridge.continuous.time.sleep") as sleep:
+                self.assertEqual(supervise(budget, self.rtsp, max_attempts=1), 0)
+            self.assertEqual(wait.call_count, 2)
+            worker.assert_called_once()
+            sleep.assert_called_once_with(5)
+            state = budget.read()
+            self.assertEqual((state["total"], state["last_error"]), (1, "discovery"))
 
     def test_reboot_recovers_in_progress_with_backoff(self):
         with Budget(self.path, self.source, self.target) as budget:

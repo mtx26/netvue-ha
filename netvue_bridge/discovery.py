@@ -5,12 +5,22 @@ from dataclasses import dataclass, field
 
 from .protocol import ProtocolError, command_packet, parse_datagram, parse_units
 
+_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in
+                          ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+
 
 @dataclass(frozen=True)
 class DiscoveredCamera:
     host: str = field(repr=False)
     port: int
     key: str = field(repr=False)
+
+
+def validate_lan_ipv4(value: str) -> str:
+    address = ipaddress.IPv4Address(value)
+    if not address.is_loopback and not any(address in network for network in _PRIVATE_NETWORKS):
+        raise ValueError("Bridge endpoints must use RFC1918 IPv4 or loopback addresses")
+    return str(address)
 
 
 def parse_discovery(data: bytes, source: str, expected: str) -> DiscoveredCamera:
@@ -37,8 +47,10 @@ def parse_discovery(data: bytes, source: str, expected: str) -> DiscoveredCamera
 
 
 def discover(source: str, target: str, timeout: float = 2.0) -> DiscoveredCamera:
-    ipaddress.IPv4Address(source)
-    ipaddress.IPv4Address(target)
+    source = validate_lan_ipv4(source)
+    target = validate_lan_ipv4(target)
+    if source == target:
+        raise ValueError("Source and target must differ")
     request = command_packet([{"Q": 8, "V": 2, "P": []}])
     deadline = time.monotonic() + timeout
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:

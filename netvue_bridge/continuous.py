@@ -54,8 +54,6 @@ def active_session_pids(target: str, proc_root: Path = Path("/proc")) -> list[in
     modules = {
         b"netvue_bridge.continuous": {b"run", b"_run", b"_session"},
         b"netvue_bridge.supervisor": {b"run", b"_worker"},
-        b"netvue_bridge.stream": None,
-        b"netvue_bridge.client": None,
     }
     target_arg = str(target).encode("ascii")
     active = []
@@ -360,8 +358,8 @@ def supervise(budget: Budget, rtsp: str, video_timeout: float = 30,
             time.sleep(remaining)
             continue
         if not wait_for_rtsp(port):
-            delay = reconnect_delay(max(1, state["streak"] + 1),
-                                    budget.retry_delays, budget.retry_jitter)
+            delay = retry_delay(max(1, state["streak"] + 1),
+                                budget.retry_delays, budget.retry_jitter)
             print(f"continuous: RTSP_UNAVAILABLE; retry in {delay:.1f}s", flush=True)
             time.sleep(delay)
             continue

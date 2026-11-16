@@ -30,7 +30,8 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Netvue"
         )
-        self._url = entry.options.get(CONF_STREAM_URL, entry.data[CONF_STREAM_URL])
+        url = entry.options.get(CONF_STREAM_URL, entry.data[CONF_STREAM_URL])
+        self._url = url
         self.stream_options[CONF_RTSP_TRANSPORT] = "tcp"
 
     @property

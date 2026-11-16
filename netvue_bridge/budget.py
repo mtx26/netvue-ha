@@ -2,15 +2,17 @@
 
 import fcntl
 import hashlib
-import ipaddress
 import json
 import math
 import os
 import random
+import stat
 import tempfile
 import time
 import uuid
 from pathlib import Path
+
+from .discovery import validate_lan_ipv4
 
 DEFAULT_RETRY_DELAYS = (5, 15, 60, 300, 900)
 _STAGES = {"READY", "CONNECTING", "AUTHENTICATING", "WAITING_VIDEO",
@@ -50,6 +52,15 @@ def clock_sample() -> tuple[float, float, str]:
             Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip())
 
 
+def _is_finite_nonnegative_number(value: object) -> bool:
+    if type(value) not in (int, float) or value < 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 class Budget:
     """One locked, crash-safe state file; retry history never imposes a lifetime quota."""
 
@@ -57,8 +68,8 @@ class Budget:
                  retry_delays: tuple[int, ...] = DEFAULT_RETRY_DELAYS,
                  retry_jitter: float = 0.0) -> None:
         self.directory = directory
-        self.source = str(ipaddress.IPv4Address(source))
-        self.target = str(ipaddress.IPv4Address(target))
+        self.source = validate_lan_ipv4(source)
+        self.target = validate_lan_ipv4(target)
         if self.source == self.target:
             raise ValueError("Source and target must differ")
         validate_retry_delays(retry_delays)
@@ -119,14 +130,25 @@ class Budget:
 
     def _read_raw(self) -> tuple[bytes, dict]:
         self._require_lock()
-        fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as file:
+            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                raise ValueError("Budget state must be a regular file")
             raw = file.read(4097)
         if len(raw) > 4096:
             raise ValueError("Budget file is too large")
+
+        def object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            state = {}
+            for key, value in pairs:
+                if key in state:
+                    raise ValueError("Duplicate key in budget state")
+                state[key] = value
+            return state
+
         try:
-            state = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            state = json.loads(raw, object_pairs_hook=object_without_duplicate_keys)
+        except (ValueError, UnicodeDecodeError, RecursionError) as exc:
             raise ValueError("Budget file is invalid") from exc
         if not isinstance(state, dict):
             raise ValueError("Budget state is invalid")
@@ -152,7 +174,7 @@ class Budget:
             raise ValueError("Unsupported budget version; explicit migration required")
         keys = {"version", "source", "target", "status", "stage", "streak", "total",
                 "last_reconnect", "last_error", "wait_until", "wall", "boot", "boot_id"}
-        number = lambda value: type(value) in (int, float) and math.isfinite(value) and value >= 0
+        number = _is_finite_nonnegative_number
         if (set(state) != keys or type(state["version"]) is not int or state["version"] != 4
                 or state["source"] != self.source or state["target"] != self.target
                 or state["status"] not in ("ready", "in_progress", "blocked")
@@ -286,7 +308,7 @@ class Budget:
             expected = {"version", "source", "target", "status", "stage", "attempts",
                         "streak", "total", "last_reconnect", "last_error",
                         "wait_until", "wall", "boot", "boot_id"}
-            number = lambda value: type(value) in (int, float) and math.isfinite(value) and value >= 0
+            number = _is_finite_nonnegative_number
             if (set(state) != expected or state["status"] not in ("ready", "in_progress", "blocked")
                     or not isinstance(state["stage"], str) or state["stage"] not in _STAGES
                     or not isinstance(state["attempts"], list) or len(state["attempts"]) > 8

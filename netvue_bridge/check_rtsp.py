@@ -9,7 +9,6 @@ import threading
 import time
 from pathlib import Path
 
-
 URL = "rtsp://127.0.0.1:8554/netvue2"
 
 
@@ -183,19 +182,21 @@ def validate_local_readers(probe_out: bytes, probe_error: bytes, player_out: byt
     }
 
 
-def build_reader_commands(args: argparse.Namespace, container: str | None) -> list[tuple[str, list[str]]]:
+def build_reader_commands(args: argparse.Namespace,
+                          container: str | None) -> list[tuple[str, list[str]]]:
+    url = URL
     probe_args = [
         "-v", "error", "-rtsp_transport", "tcp",
         "-select_streams", "v:0", "-show_entries",
         "stream=codec_name,width,height:packet=pts_time,flags",
         "-show_streams", "-show_packets", "-read_intervals",
-        f"%+{args.probe_duration}", "-of", "json", URL,
+        f"%+{args.probe_duration}", "-of", "json", url,
     ]
     readers = [
         ("ffprobe", [args.ffprobe, *probe_args]),
         ("ffmpeg", [
             args.ffmpeg, "-v", "error", "-rtsp_transport", "tcp",
-            "-i", URL, "-t", str(args.probe_duration), "-f", "null", "-",
+            "-i", url, "-t", str(args.probe_duration), "-f", "null", "-",
             "-progress", "pipe:1", "-nostats",
         ]),
     ]
@@ -204,7 +205,7 @@ def build_reader_commands(args: argparse.Namespace, container: str | None) -> li
             args.ffprobe, "-v", "error", "-rtsp_transport", "tcp",
             "-select_streams", "v:0", "-show_entries", "frame=width,height",
             "-show_frames", "-read_intervals", f"%+{args.probe_duration}",
-            "-of", "json", URL,
+            "-of", "json", url,
         ]))
     if container is not None:
         reader_timeout = str(int(args.duration + 8))
@@ -215,7 +216,7 @@ def build_reader_commands(args: argparse.Namespace, container: str | None) -> li
         readers.append(("home_assistant_ffmpeg", [
             "docker", "exec", container, "timeout", "-k", "2", reader_timeout,
             "ffmpeg", "-v", "error",
-            "-rtsp_transport", "tcp", "-i", URL, "-t", str(args.probe_duration),
+            "-rtsp_transport", "tcp", "-i", url, "-t", str(args.probe_duration),
             "-f", "null", "-", "-progress", "pipe:1", "-nostats",
         ]))
     return readers
@@ -266,6 +267,7 @@ def parse_arguments() -> tuple[argparse.Namespace, str | None]:
     parser = argparse.ArgumentParser(description="One bounded local RTSP camera check")
     parser.add_argument("--source", required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--mediamtx", required=True)
     parser.add_argument("--ffprobe", required=True)
     parser.add_argument("--ffmpeg", required=True)
@@ -365,9 +367,10 @@ def main() -> int:
         if time.monotonic() - start > 35:
             raise RuntimeError("Preflight took too long to start a bounded session")
         bridge = launch(
-            "bridge", [sys.executable, "-B", "-m", "netvue_bridge.stream",
+            "bridge", [sys.executable, "-B", "-m", "netvue_bridge.continuous", "test",
                        "--source", args.source, "--target", args.target,
-                       "--duration", str(args.duration), "--max-attempts", "1"],
+                       "--state-dir", str(args.state_dir),
+                       "--max-duration", str(args.duration), "--max-attempts", "1"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
         )
         bridge_started = time.monotonic()
@@ -423,7 +426,7 @@ def main() -> int:
         reader_summary = partial_diagnostics(outputs)
         for name in drains:
             reader_summary.setdefault(name, {})["returncode"] = processes[name].poll()
-        if bridge.poll() is None or bridge.returncode != 0 or not ready:
+        if bridge.poll() is None or bridge.returncode not in (0, 124) or not ready:
             raise RuntimeError("Bridge did not complete successfully")
         if not readers_started:
             raise RuntimeError("RTSP readers did not start")

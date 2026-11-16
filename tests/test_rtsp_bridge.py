@@ -22,19 +22,39 @@ from netvue_bridge.discovery import DiscoveredCamera
 from netvue_bridge.protocol import (
     ConnectionClosed, ProtocolError, RecoverableVideoError, command_packet, read_packet,
 )
-from netvue_bridge.rtsp import H264Publisher, TimestampClock, annexb_nals, validate_local_rtsp_url
+from netvue_bridge.rtsp import (
+    H264Publisher, TimestampClock, annexb_nals, validate_local_rtsp_url,
+)
 from netvue_bridge.stream import StreamInterrupted, receive_stream, run_sessions
 
 
 class RtspTests(unittest.TestCase):
+    def test_media_server_is_anonymous_but_loopback_only(self):
+        root = Path(__file__).resolve().parents[1]
+        for config in ("netvue_bridge/mediamtx.local.yml", "deployment/mediamtx.yml"):
+            text = (root / config).read_text(encoding="utf-8")
+            with self.subTest(config=config):
+                self.assertIn("rtspAddress: 127.0.0.1:8554", text)
+                self.assertNotIn("authInternalUsers", text)
+        stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
+        self.assertNotRegex(stack, r"(?m)^\s+ports:")
+
     def test_check_rtsp_help_keeps_cli_options(self):
         result = subprocess.run([sys.executable, "-B", "-m", "netvue_bridge.check_rtsp", "--help"],
                                 capture_output=True, text=True, timeout=5, check=True)
-        for option in ("--source", "--target", "--mediamtx", "--ffprobe", "--ffmpeg",
+        for option in ("--source", "--target", "--state-dir", "--mediamtx", "--ffprobe", "--ffmpeg",
                        "--duration", "--probe-duration", "--reader-delay", "--bridge-timeout",
                        "--home-assistant-check", "--frame-probe"):
             with self.subTest(option=option):
                 self.assertIn(option, result.stdout)
+
+    def test_stream_module_cannot_start_an_unsupervised_session(self):
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "netvue_bridge.stream", "--help"],
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("internal", result.stderr)
 
     def test_reader_commands_keep_optional_checks_and_local_url(self):
         args = types.SimpleNamespace(ffprobe="probe", ffmpeg="decoder", duration=10,
@@ -43,6 +63,7 @@ class RtspTests(unittest.TestCase):
         self.assertEqual(list(basic), ["ffprobe", "ffmpeg"])
         self.assertEqual(basic["ffprobe"][-1], "rtsp://127.0.0.1:8554/netvue2")
         self.assertIn("%+3", basic["ffprobe"])
+        self.assertFalse(any("@" in arg for command in basic.values() for arg in command))
         args.frame_probe = True
         extended = dict(build_reader_commands(args, "fake-ha"))
         self.assertEqual(list(extended), ["ffprobe", "ffmpeg", "frame_probe",
@@ -246,6 +267,18 @@ class RtspTests(unittest.TestCase):
                 publisher.push(b"\x00\x00\x01\x41next", 228)
             publisher.close()
             self.assertEqual(publisher.pending_bytes, 0)
+
+    def test_decoder_applies_pixel_limit_before_any_h264_decode(self):
+        decoder = MagicMock()
+        fake_av = types.SimpleNamespace(
+            CodecContext=types.SimpleNamespace(create=MagicMock(return_value=decoder)),
+            error=types.SimpleNamespace(FFmpegError=ValueError),
+        )
+        with patch.dict(sys.modules, {"av": fake_av}):
+            publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+            self.assertEqual(decoder.options, {"max_pixels": str(rtsp.MAX_H264_PIXELS)})
+            self.assertEqual(decoder.decode.call_count, 0)
+            publisher.close()
 
     def test_close_releases_buffers_even_if_output_close_fails(self):
         fake_av = types.SimpleNamespace(
@@ -611,19 +644,20 @@ class RtspTests(unittest.TestCase):
                  "-t", reader_duration, "-f", "null", "-"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
+            packet_count = 40 if os.environ.get("NETVUE_TEST_COLLISION") else 20
             probe = subprocess.run(
                 [os.environ["NETVUE_FFPROBE"], "-v", "error", "-rtsp_transport", "tcp",
                  "-select_streams", "v:0", "-show_entries",
                  "stream=codec_name,width,height:packet=pts_time,flags",
-                 "-show_streams", "-show_packets", "-read_intervals", "%+" + reader_duration,
-                 "-of", "json", url],
+                 "-show_streams", "-show_packets", "-read_intervals",
+                 "%+#" + str(packet_count), "-of", "json", url],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, check=True,
             )
             result = json.loads(probe.stdout)
             stream = result["streams"][0]
+            packets = result["packets"]
             self.assertEqual((stream["codec_name"], stream["width"], stream["height"]),
                              ("h264", 64, 64))
-            packets = result["packets"]
             self.assertTrue(all("pts_time" in p for p in packets[1:]), str(packets[:3]))
             times = [float(p["pts_time"]) for p in packets if "pts_time" in p]
             self.assertGreaterEqual(len(times), 10)
@@ -644,9 +678,14 @@ class RtspTests(unittest.TestCase):
             print(f"synthetic RTSP: {len(times)} packets; {publisher.published_frames} "
                   f"published; {publisher.key_frames} keyframes")
         finally:
-            if player is not None and player.poll() is None:
-                player.terminate()
-                player.communicate(timeout=5)
+            if player is not None:
+                if player.poll() is None:
+                    player.terminate()
+                try:
+                    player.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    player.kill()
+                    player.communicate(timeout=3)
             left.close()
             right.close()
             if writer.ident is not None:
@@ -654,13 +693,21 @@ class RtspTests(unittest.TestCase):
             if reader.ident is not None:
                 reader.join(10)
             publisher.close()
-            server.terminate()
-            server.wait(timeout=5)
+            if server.poll() is None:
+                server.terminate()
+            try:
+                server.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=3)
             server.stderr.close()
             temp.cleanup()
 
-    @unittest.skipUnless(os.environ.get("NETVUE_MEDIAMTX") and os.environ.get("NETVUE_FFPROBE"),
-                         "requires portable MediaMTX, FFmpeg and PyAV")
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("NETVUE_MEDIAMTX")
+                         and os.environ.get("NETVUE_FFPROBE")
+                         and all(Path("/sys/fs/cgroup", item).exists()
+                                 for item in ("memory.current", "memory.max", "cpu.stat")),
+                         "requires portable RTSP tools and cgroup v2 resource files")
     def test_bounded_check_with_synthetic_camera(self):
         import av
 
@@ -742,19 +789,25 @@ class RtspTests(unittest.TestCase):
         thread = threading.Thread(target=camera)
         thread.start()
         try:
-            result = subprocess.run(
-                [sys.executable, "-B", "-m", "netvue_bridge.check_rtsp",
-                 "--source", "127.0.0.1", "--target", fake_host,
-                 "--mediamtx", os.environ["NETVUE_MEDIAMTX"],
-                 "--ffprobe", os.environ["NETVUE_FFPROBE"],
-                 "--ffmpeg", str(Path(os.environ["NETVUE_FFPROBE"]).with_name("ffmpeg")),
-                 "--duration", str(duration), "--reader-delay", str(reader_delay),
-                 "--probe-duration", str(probe_duration)]
-                + (["--home-assistant-check"] if os.environ.get("NETVUE_TEST_HA") else [])
-                + (["--bridge-timeout", bridge_timeout] if bridge_timeout else [])
-                + (["--frame-probe"] if resize else []),
-                capture_output=True, text=True, timeout=duration + 12,
-            )
+            with tempfile.TemporaryDirectory() as state_dir:
+                from netvue_bridge.budget import Budget
+
+                with Budget(Path(state_dir), "127.0.0.1", fake_host) as budget:
+                    budget.initialize()
+                result = subprocess.run(
+                    [sys.executable, "-B", "-m", "netvue_bridge.check_rtsp",
+                     "--source", "127.0.0.1", "--target", fake_host,
+                     "--state-dir", state_dir,
+                     "--mediamtx", os.environ["NETVUE_MEDIAMTX"],
+                     "--ffprobe", os.environ["NETVUE_FFPROBE"],
+                     "--ffmpeg", str(Path(os.environ["NETVUE_FFPROBE"]).with_name("ffmpeg")),
+                     "--duration", str(duration), "--reader-delay", str(reader_delay),
+                     "--probe-duration", str(probe_duration)]
+                    + (["--home-assistant-check"] if os.environ.get("NETVUE_TEST_HA") else [])
+                    + (["--bridge-timeout", bridge_timeout] if bridge_timeout else [])
+                    + (["--frame-probe"] if resize else []),
+                    capture_output=True, text=True, timeout=duration + 12,
+                )
             if interrupt:
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 line = next(line for line in result.stdout.splitlines() if line.startswith("readers: "))

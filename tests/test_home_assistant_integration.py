@@ -16,8 +16,8 @@ from custom_components.netvue_local.discovery import (
     Candidate, _DiscoveryProtocol, async_discover, local_network, parse_response,
 )
 from custom_components.netvue_local.rtsp import (
-    async_probe_stream, stream_name_from_url, stream_url_from_name, validate_host,
-    validate_stream_url,
+    async_probe_stream, stream_name_from_url, stream_url_from_name,
+    validate_host, validate_stream_url,
 )
 from netvue_bridge.protocol import command_packet
 
@@ -113,8 +113,10 @@ class ConfigurationTests(unittest.TestCase):
 
 class RTSPTests(unittest.IsolatedAsyncioTestCase):
     async def test_h264_and_absent_stream(self):
+        requests = []
+
         async def handler(reader, writer):
-            await reader.readuntil(b"\r\n\r\n")
+            requests.append(await reader.readuntil(b"\r\n\r\n"))
             body = b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
             writer.write(b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\nContent-Length: "
                          + str(len(body)).encode() + b"\r\n\r\n" + body)
@@ -126,6 +128,7 @@ class RTSPTests(unittest.IsolatedAsyncioTestCase):
         async with server:
             self.assertTrue(await async_probe_stream(f"rtsp://127.0.0.1:{port}/fake"))
         self.assertFalse(await async_probe_stream(f"rtsp://127.0.0.1:{port}/fake"))
+        self.assertNotIn(b"Authorization:", requests[0])
 
 
 class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
@@ -250,6 +253,23 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sensor.is_on)
         self.assertTrue(await async_unload_entry(hass, entry))
         entries.async_unload_platforms.assert_awaited_once()
+
+    async def test_existing_entries_with_removed_fields_keep_plain_stream_url(self):
+        url = "rtsp://127.0.0.1:8554/netvue2"
+        coordinator = SimpleNamespace(data=True, last_update_success=True)
+        for location in ("data", "options"):
+            entry = SimpleNamespace(
+                entry_id=location,
+                title="Existing",
+                data={"stream_url": url},
+                options={},
+            )
+            getattr(entry, location).update({
+                "rtsp_username": "legacy-user",
+                "rtsp_password": "legacy-value",
+            })
+            camera = NetvueCamera(entry, coordinator)
+            self.assertEqual(await camera.stream_source(), url)
 
 
 if __name__ == "__main__":

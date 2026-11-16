@@ -102,3 +102,52 @@ le chipset de ces exemplaires n'est pas confirmé.
 Écrire en français clair. Pour les conclusions techniques importantes,
 distinguer **observé**, **déduit** et **non vérifié** ; citer les chemins du
 code source quand cela éclaire la décision.
+
+## Documentation obligatoire des phases
+
+À la fin de chaque phase de développement, créer ou mettre
+à jour un fichier Markdown dans le dossier findings/.
+
+Nom du fichier :
+findings/phaseXX-description-courte.md
+
+Chaque document doit expliquer :
+
+1. OBJECTIF
+   - Pourquoi cette phase était nécessaire.
+   - Quel résultat était attendu.
+
+2. MODIFICATIONS
+   - Ce qui a été ajouté, modifié ou supprimé.
+   - Les principales décisions techniques.
+   - Pourquoi ces solutions ont été choisies.
+
+3. FONCTIONNEMENT
+   - Comment fonctionnent les mécanismes développés.
+   - Les fichiers et fonctions principaux concernés.
+
+4. TESTS
+   - Tests exécutés et résultats.
+   - Problèmes détectés et corrigés.
+   - Éléments non vérifiés.
+
+5. ÉTAT FINAL
+   - Fonctionnalités terminées.
+   - Limites éventuelles.
+   - Prochaine étape.
+
+RÈGLES :
+- Un seul document principal par phase.
+- Mettre à jour le document existant si la phase continue.
+- Ne pas multiplier les rapports intermédiaires.
+- Rédiger en français clair et compréhensible.
+- Rester technique, précis et relativement concis.
+- Ne jamais inventer de tests ou de résultats.
+- Ne pas inclure de secrets ou d'informations sensibles.
+- La documentation doit refléter le code réellement présent.
+
+Cette documentation est obligatoire, même lorsque
+la phase est entièrement terminée et sans problème.
+
+La rédaction du document fait partie des critères
+de réussite de chaque phase.

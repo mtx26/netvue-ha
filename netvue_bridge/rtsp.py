@@ -17,6 +17,7 @@ MAX_DECODE_ERRORS = 3
 MAX_COLLISION_FRAMES = 8
 MAX_COLLISION_BYTES = 4 * 1024 * 1024
 MAX_COLLISION_WAIT = 2.0
+MAX_H264_PIXELS = 3840 * 2160
 
 
 def validate_local_rtsp_url(url: str) -> None:
@@ -40,7 +41,7 @@ class H264Publisher:
 
         self.av = av
         self.url = url
-        self.decoder = av.CodecContext.create("h264", "r")
+        self.decoder = self._new_decoder()
         self.sps: bytes | None = None
         self.pps: bytes | None = None
         self.started = False
@@ -81,6 +82,11 @@ class H264Publisher:
         self._collision_frames: list[tuple[bytes, float]] = []
         self._collision_bytes = 0
         self._collision_started: float | None = None
+
+    def _new_decoder(self):
+        decoder = self.av.CodecContext.create("h264", "r")
+        decoder.options = {"max_pixels": str(MAX_H264_PIXELS)}
+        return decoder
 
     def push(self, data: bytes, timestamp: int) -> None:
         now = time.monotonic()
@@ -198,7 +204,7 @@ class H264Publisher:
                         self.pps_changes += 1
                     if self.output is None:
                         self.started = False
-                        self.decoder = self.av.CodecContext.create("h264", "r")
+                        self.decoder = self._new_decoder()
                         self.ignored_frames += len(self.pending)
                         self.pending.clear()
                         self.pending_bytes = 0
@@ -235,7 +241,7 @@ class H264Publisher:
             if not key:
                 self.ignored_frames += 1
                 return
-            self.change_decoder = self.av.CodecContext.create("h264", "r")
+            self.change_decoder = self._new_decoder()
             data = b"\x00\x00\x00\x01" + self.sps + b"\x00\x00\x00\x01" + self.pps + data
         pts = self._timestamp(timestamp, now, key)
         self.change_pending_bytes += len(data)

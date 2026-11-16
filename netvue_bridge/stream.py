@@ -1,4 +1,3 @@
-import argparse
 import json
 import math
 import socket
@@ -9,7 +8,7 @@ from .authentication import authenticate
 from .connection import connect
 from .discovery import discover
 from .protocol import ConnectionClosed, ProtocolError, RecoverableVideoError, parse_units, read_packet
-from .rtsp import H264Publisher, validate_local_rtsp_url
+from .rtsp import H264Publisher
 from .video import live_packet
 
 
@@ -169,27 +168,5 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
     return 1
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="One bounded authorized local RTSP test")
-    parser.add_argument("--source", required=True)
-    parser.add_argument("--target", required=True)
-    parser.add_argument("--rtsp", default="rtsp://127.0.0.1:8554/netvue2")
-    modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--duration", type=float, default=10)
-    modes.add_argument("--continuous", action="store_true")
-    parser.add_argument("--max-attempts", type=int, choices=range(1, 4), default=1)
-    args = parser.parse_args()
-    if not 0 < args.duration <= 3600:
-        parser.error("duration must be between 0 and 3600 seconds")
-    validate_local_rtsp_url(args.rtsp)
-    duration = float("inf") if args.continuous else args.duration
-    try:
-        return run_sessions(args.source, args.target, args.rtsp, duration,
-                            max_attempts=args.max_attempts)
-    except KeyboardInterrupt:
-        print("session: interrupted by user", flush=True)
-        return 130
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("netvue_bridge.stream is internal; use netvue_bridge.continuous")

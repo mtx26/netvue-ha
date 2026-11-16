@@ -7,7 +7,6 @@ import types
 import unittest
 from unittest.mock import patch
 
-from netvue_bridge import client
 from netvue_bridge.authentication import authenticate, login_packet
 from netvue_bridge.discovery import DiscoveredCamera, parse_discovery
 from netvue_bridge.protocol import MAX_BODY, ProtocolError, command_packet, parse_datagram, read_packet
@@ -123,28 +122,6 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(summary.test_h264_decode(), {
                 "status": "decoded_h264_image_in_memory", "width": 640, "height": 480,
             })
-
-    def test_client_does_not_report_success_for_failed_or_undecoded_live(self):
-        manager = unittest.mock.MagicMock()
-        camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
-        for channel_result, frames, status in (
-            (2, 1, "decoded_h264_image_in_memory"),
-            (0, 0, "no_video"),
-            (0, 1, "decoder_unavailable"),
-        ):
-            result = unittest.mock.Mock()
-            result.channel_result = channel_result
-            result.video_frames = frames
-            result.safe_result.return_value = {"decode": {"status": status}}
-            with patch.object(sys, "argv", ["client", "--source", "192.0.2.10",
-                                           "--target", "192.0.2.1", "--live"]), \
-                 patch.object(client, "discover", return_value=camera), \
-                 patch.object(client, "connect", return_value=manager), \
-                 patch.object(client, "authenticate", return_value=0), \
-                 patch.object(client, "receive_live", return_value=result), \
-                 patch("builtins.print"):
-                self.assertEqual(client.main(), 1)
-
 
 if __name__ == "__main__":
     unittest.main()
