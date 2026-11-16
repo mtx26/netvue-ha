@@ -13,7 +13,7 @@ from fractions import Fraction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from netvue_bridge import h264, rtsp
+from netvue_bridge import rtsp
 from netvue_bridge.check_rtsp import (
     build_reader_commands, enforce_bridge_deadline, finish_readers, partial_diagnostics,
     validate_frame_probe, validate_home_assistant_probe, validate_local_readers,
@@ -23,9 +23,10 @@ from netvue_bridge.protocol import (
     ConnectionClosed, ProtocolError, RecoverableVideoError, command_packet, read_packet,
 )
 from netvue_bridge.rtsp import (
-    H264Publisher, TimestampClock, annexb_nals, validate_local_rtsp_url,
+    H264Publisher, validate_local_rtsp_url,
 )
-from netvue_bridge.stream import StreamInterrupted, receive_stream, run_sessions
+from netvue_bridge.h264 import TimestampClock, annexb_nals
+from netvue_bridge.stream import StreamInterrupted, receive_stream, run_session
 
 
 class RtspTests(unittest.TestCase):
@@ -170,11 +171,6 @@ class RtspTests(unittest.TestCase):
             with self.subTest(error=error, data=data, frames=frames):
                 with self.assertRaisesRegex(RuntimeError, error):
                     validate_local_readers(data, b"", frames, b"", duration, 1, 0)
-
-    def test_h264_symbols_remain_available_from_rtsp(self):
-        for name in ("START_CODE", "TimestampClock", "annexb_nals", "first_slice_macroblock"):
-            with self.subTest(name=name):
-                self.assertIs(getattr(rtsp, name), getattr(h264, name))
 
     def test_bridge_watchdog_stops_overdue_process(self):
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
@@ -495,7 +491,7 @@ class RtspTests(unittest.TestCase):
         finally:
             publisher.close()
 
-    def test_controlled_reconnection_and_no_retry_on_auth_failure(self):
+    def test_session_reports_transient_failure_without_retrying(self):
         camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
         publisher = MagicMock()
         publisher.safe_metrics.return_value = {}
@@ -504,56 +500,44 @@ class RtspTests(unittest.TestCase):
              patch("netvue_bridge.stream.authenticate", return_value=0) as auth, \
              patch("netvue_bridge.stream.H264Publisher", return_value=publisher), \
              patch("netvue_bridge.stream.receive_stream",
-                   side_effect=[StreamInterrupted("stalled"), None]), \
+                   side_effect=StreamInterrupted("stalled")), \
              patch("builtins.print"):
-            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
-                                          10, max_attempts=2, retry_delay=0), 0)
-            self.assertEqual(auth.call_count, 2)
-            self.assertEqual(publisher.close.call_count, 2)
+            self.assertEqual(run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                         10), "live")
+            auth.assert_called_once()
+            publisher.close.assert_called_once()
         with patch("netvue_bridge.stream.discover", return_value=camera), \
              patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
              patch("netvue_bridge.stream.authenticate", return_value=5) as auth, \
              patch("builtins.print"):
-            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
-                                          10, max_attempts=2, retry_delay=0), 1)
-            self.assertEqual(auth.call_count, 1)
+            self.assertEqual(run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                         10), "blocked")
+            auth.assert_called_once()
         with patch("netvue_bridge.stream.discover", return_value=camera), \
              patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
              patch("netvue_bridge.stream.authenticate",
                    side_effect=ConnectionClosed("closed")) as auth, \
              patch("builtins.print"):
-            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
-                                          10, max_attempts=2, retry_delay=0), 1)
-            self.assertEqual(auth.call_count, 1)
+            self.assertEqual(run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                         10), "blocked")
+            auth.assert_called_once()
 
-    def test_retry_callback_only_for_transient_non_authentication_failure(self):
+    def test_session_reports_discovery_and_connection_failures(self):
         camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
-        publisher = MagicMock()
-        publisher.safe_metrics.return_value = {}
-        callback = MagicMock()
+        with patch("netvue_bridge.stream.discover", side_effect=TimeoutError), \
+             patch("builtins.print"):
+            self.assertEqual(run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                         10), "discovery")
         with patch("netvue_bridge.stream.discover", return_value=camera), \
-             patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
-             patch("netvue_bridge.stream.authenticate",
-                   side_effect=ConnectionClosed("closed")), patch("builtins.print"):
-            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
-                                          10, on_retryable=callback), 1)
-            callback.assert_not_called()
-        with patch("netvue_bridge.stream.discover", return_value=camera), \
-             patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
-             patch("netvue_bridge.stream.authenticate", return_value=0), \
-             patch("netvue_bridge.stream.H264Publisher", return_value=publisher), \
-             patch("netvue_bridge.stream.receive_stream",
-                   side_effect=StreamInterrupted("stalled")), patch("builtins.print"):
-            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
-                                          10, on_retryable=callback), 1)
-            callback.assert_called_once_with("live")
+             patch("netvue_bridge.stream.connect", side_effect=OSError("offline")), \
+             patch("builtins.print"):
+            self.assertEqual(run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                         10), "connect")
 
     def test_recoverable_video_is_distinct_from_critical_protocol_error(self):
         camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
         publisher = MagicMock()
         publisher.safe_metrics.return_value = {}
-        video = MagicMock()
-        network = MagicMock()
         with patch("netvue_bridge.stream.discover", return_value=camera), \
              patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
              patch("netvue_bridge.stream.authenticate", return_value=0), \
@@ -561,17 +545,10 @@ class RtspTests(unittest.TestCase):
              patch("netvue_bridge.stream.receive_stream",
                    side_effect=[RecoverableVideoError("duplicate"), ProtocolError("invalid")]), \
              patch("builtins.print"):
-            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
-                                          10, on_retryable=network,
-                                          on_recoverable_video=video), 1)
-            video.assert_called_once_with()
-            network.assert_not_called()
-            video.reset_mock()
-            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
-                                          10, on_retryable=network,
-                                          on_recoverable_video=video), 1)
-            video.assert_not_called()
-            network.assert_not_called()
+            self.assertEqual(run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                         10), "video")
+            self.assertEqual(run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                         10), "blocked")
 
     def test_interruption_closes_socket_and_publisher(self):
         camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
@@ -586,7 +563,7 @@ class RtspTests(unittest.TestCase):
                  patch("netvue_bridge.stream.receive_stream", side_effect=KeyboardInterrupt), \
                  patch("builtins.print"):
                 with self.assertRaises(KeyboardInterrupt):
-                    run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2", 10)
+                        run_session("source", "target", "rtsp://127.0.0.1:8554/netvue2", 10)
             self.assertEqual(left.fileno(), -1)
             publisher.close.assert_called_once()
         finally:

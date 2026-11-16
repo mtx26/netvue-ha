@@ -1,16 +1,13 @@
 import json
 import socket
 import struct
-import sys
 import time
-import types
 import unittest
-from unittest.mock import patch
 
 from netvue_bridge.authentication import authenticate, login_packet
 from netvue_bridge.discovery import DiscoveredCamera, parse_discovery
 from netvue_bridge.protocol import MAX_BODY, ProtocolError, command_packet, parse_datagram, read_packet
-from netvue_bridge.video import VideoSummary, live_packet, receive_live
+from netvue_bridge.stream import StreamInterrupted, receive_stream
 
 
 class ScriptedSocket:
@@ -87,41 +84,16 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "Invalid packet size"):
             parse_datagram(struct.pack("<IIIHH", 2, 0, 0, 1, 200) + b"x")
 
-    def test_live_request_and_frame_metadata_only(self):
-        _, body = parse_datagram(live_packet(100))
-        self.assertEqual(json.loads(body), [{"Q": 3, "V": 2, "P": [1, [[1, 0]], [100, 31536100]]}])
-        payload = b"\x11" + (1234).to_bytes(4, "little") + b"\x00\x00\x00\x01\x65fake"
-        packet = struct.pack("<IIIHH", len(payload), 0, 0, 0, 201) + payload
-        sock = ScriptedSocket(command_packet([{"A": 3, "V": 2, "C": 0}]) + packet)
-        summary = receive_live(sock, duration=0.1)
-        self.assertEqual((summary.channel_result, summary.video_frames, summary.key_frames), (0, 1, 1))
-        self.assertEqual(summary.first_pts, 1234)
+    def test_stream_sends_one_live_request(self):
+        sock = ScriptedSocket()
+        with self.assertRaises(StreamInterrupted):
+            receive_stream(sock, object(), duration=0.1)
         self.assertEqual(len(sock.sent), 1)
-        self.assertNotIn("fake", repr(summary))
-        with self.assertRaises(ValueError):
-            receive_live(sock, duration=11)
-
-    def test_bad_media_fails_explicitly(self):
-        summary = VideoSummary()
-        with self.assertRaises(ProtocolError):
-            summary.add_frame(b"\x10")
-        with self.assertRaises(ProtocolError):
-            summary.add_frame(b"\xf0\x00\x00\x00\x00")
-
-    def test_in_memory_decode_reports_only_dimensions(self):
-        frame = types.SimpleNamespace(width=640, height=480)
-        container = unittest.mock.MagicMock()
-        container.__enter__.return_value.decode.return_value = iter([frame])
-        fake_av = types.SimpleNamespace(
-            open=unittest.mock.Mock(return_value=container),
-            error=types.SimpleNamespace(FFmpegError=ValueError),
-        )
-        summary = VideoSummary()
-        summary.add_frame(b"\x11\x00\x00\x00\x00synthetic")
-        with patch.dict(sys.modules, {"av": fake_av}):
-            self.assertEqual(summary.test_h264_decode(), {
-                "status": "decoded_h264_image_in_memory", "width": 640, "height": 480,
-            })
+        kind, body = parse_datagram(sock.sent[0])
+        request = json.loads(body)[0]
+        self.assertEqual((kind, request["Q"], request["V"], request["P"][:2]),
+                         (200, 3, 2, [1, [[1, 0]]]))
+        self.assertEqual(request["P"][2][1] - request["P"][2][0], 31536000)
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,6 +75,23 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Budget state or endpoint is invalid"):
                 budget.read()
 
+    def test_budget_read_rejects_invalid_status_and_stage_combinations(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            valid = budget.read()
+            invalid_updates = (
+                {"status": []},
+                {"status": "in_progress", "stage": "READY"},
+                {"status": "ready", "stage": "WAITING_VIDEO"},
+                {"stage": "RECONNECT_WAIT"},
+            )
+            for updates in invalid_updates:
+                state = valid | updates
+                with self.subTest(updates=updates):
+                    budget._write(state)
+                    with self.assertRaisesRegex(ValueError, "state or endpoint"):
+                        budget.read()
+
     def test_file_lock_excludes_a_separate_process(self):
         with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
@@ -257,88 +274,30 @@ class SupervisorTests(unittest.TestCase):
             network.assert_not_called()
         self.assertEqual((self.path / "budget.json").read_bytes(), corrupt)
 
-    def test_active_session_scan_matches_camera_and_known_workers(self):
+    def test_active_session_scan_matches_only_current_workers(self):
         proc = self.path / "proc"
         for pid, command in (
                 (101, [b"python", b"-m", b"netvue_bridge.continuous", b"_session",
-                       b"--target", self.target.encode()]),
-                (102, [b"python", b"-m", b"netvue_bridge.supervisor", b"_worker",
                        b"--target", self.target.encode()]),
                 (103, [b"python", b"-m", b"netvue_bridge.continuous", b"run",
                        b"--target", b"192.0.2.99"])):
             directory = proc / str(pid)
             directory.mkdir(parents=True)
             (directory / "cmdline").write_bytes(b"\0".join(command) + b"\0")
-        self.assertEqual(active_session_pids(self.target, proc), [101, 102])
+        self.assertEqual(active_session_pids(self.target, proc), [101])
 
-    def test_v2_migration_audits_and_preserves_ambiguous_state_as_blocked(self):
-        legacy = {"version": 2, "source": self.source, "target": self.target,
-                  "limit": 4, "used": 2, "status": "ready"}
-        (self.path / "budget.json").write_text(json.dumps(legacy), encoding="utf-8")
-        with Budget(self.path, self.source, self.target) as budget:
-            with self.assertRaisesRegex(ValueError, "version"):
-                budget.read()
-            audit = budget.migrate_legacy()
-            state = budget.read()
-            self.assertEqual((state["version"], state["status"], state["total"]), (4, "blocked", 2))
-        record = json.loads(audit.read_text(encoding="utf-8"))
-        self.assertEqual(json.loads(record["original_json"]), legacy)
-        self.assertEqual(record["after"]["status"], "blocked")
-
-    def test_v3_migration_is_explicit_and_drops_quotas_but_keeps_backoff(self):
-        legacy = {"version": 3, "source": self.source, "target": self.target,
-                  "status": "ready", "stage": "RECONNECT_WAIT",
-                  "attempts": [self.boot - 60] * 8, "streak": 2, "total": 8,
-                  "last_reconnect": self.wall - 60, "last_error": "live",
-                  "wait_until": self.boot + 5, "wall": self.wall - 60,
-                  "boot": self.boot - 60, "boot_id": self.boot_id}
-        (self.path / "budget.json").write_text(json.dumps(legacy), encoding="utf-8")
-        with Budget(self.path, self.source, self.target) as budget:
-            with self.assertRaisesRegex(ValueError, "version"):
-                budget.read()
-            budget.migrate_legacy()
-            self.assertEqual(budget.read()["status"], "ready")
-            self.advance(5)
-            self.assertEqual(budget.reserve(), 9)
-
-    def test_migration_write_failure_keeps_original_state(self):
-        legacy = {"version": 2, "source": self.source, "target": self.target,
-                  "limit": 4, "used": 1, "status": "ready"}
-        original = json.dumps(legacy).encode()
-        (self.path / "budget.json").write_bytes(original)
-        with Budget(self.path, self.source, self.target) as budget, \
-             patch.object(budget, "_write", side_effect=OSError("interrupted")):
-            with self.assertRaisesRegex(OSError, "interrupted"):
-                budget.migrate_legacy()
-            self.assertEqual(budget.path.read_bytes(), original)
-            self.assertEqual(len(list(self.path.glob("migration-*.json"))), 1)
-
-    def test_v3_in_progress_migration_remains_blocked(self):
-        legacy = {"version": 3, "source": self.source, "target": self.target,
-                  "status": "in_progress", "stage": "STREAMING",
-                  "attempts": [self.boot], "streak": 0, "total": 1,
-                  "last_reconnect": None, "last_error": None,
-                  "wait_until": self.boot, "wall": self.wall,
-                  "boot": self.boot, "boot_id": self.boot_id}
-        (self.path / "budget.json").write_text(json.dumps(legacy), encoding="utf-8")
-        with Budget(self.path, self.source, self.target) as budget:
-            budget.migrate_legacy()
-            self.assertEqual((budget.read()["status"], budget.read()["stage"]),
-                             ("blocked", "BLOCKED"))
-
-    def test_migration_rejects_malformed_v3_without_touching_source(self):
-        legacy = {"version": 3, "source": self.source, "target": self.target,
-                  "status": "ready", "stage": [], "attempts": [], "streak": 0,
-                  "total": 0, "last_reconnect": None, "last_error": None,
-                  "wait_until": self.boot, "wall": self.wall, "boot": self.boot,
-                  "boot_id": self.boot_id}
-        original = json.dumps(legacy).encode()
-        (self.path / "budget.json").write_bytes(original)
-        with Budget(self.path, self.source, self.target) as budget:
-            with self.assertRaisesRegex(ValueError, "invalid"):
-                budget.migrate_legacy()
-            self.assertEqual(budget.path.read_bytes(), original)
-            self.assertEqual(list(self.path.glob("migration-*.json")), [])
+    def test_legacy_budget_versions_are_rejected_without_modification(self):
+        for version in (2, 3):
+            with self.subTest(version=version):
+                original = json.dumps({
+                    "version": version, "source": self.source, "target": self.target,
+                }).encode()
+                (self.path / "budget.json").write_bytes(original)
+                with Budget(self.path, self.source, self.target) as budget:
+                    with self.assertRaisesRegex(ValueError, "only v4 is supported"):
+                        budget.read()
+                    self.assertEqual(budget.path.read_bytes(), original)
+                    self.assertEqual(list(self.path.glob("migration-*.json")), [])
 
     def test_supervisor_retries_video_failures_and_bounded_attempts_stop(self):
         with Budget(self.path, self.source, self.target) as budget:

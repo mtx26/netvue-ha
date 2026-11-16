@@ -79,7 +79,7 @@ def partial_diagnostics(outputs: dict[str, tuple[bytes, bytes]]) -> dict[str, di
         info: dict[str, object] = {"error_lines": len(stderr.splitlines())}
         try:
             data = json.loads(stdout)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except ValueError:
             info["incomplete_json"] = True
             try:
                 text = stdout.decode("utf-8")
@@ -462,7 +462,7 @@ def main() -> int:
             if ha_player.returncode != 0 or not isinstance(ha_frames, int) or ha_frames < 2:
                 raise RuntimeError("Home Assistant FFmpeg did not decode multiple frames")
         return 0
-    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"check: failed ({type(exc).__name__}): {exc}", flush=True)
         return 1
     finally:

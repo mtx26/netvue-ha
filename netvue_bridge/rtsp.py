@@ -1,12 +1,8 @@
 import time
 from fractions import Fraction
-from statistics import median as median
 from urllib.parse import urlsplit
 
-from .h264 import (
-    START_CODE, TimestampClock, annexb_nals, first_slice_macroblock,
-    interpolate_duplicate_timestamps, picture_boundary_prefix,
-)
+from . import h264
 from .protocol import ProtocolError
 
 
@@ -45,7 +41,7 @@ class H264Publisher:
         self.sps: bytes | None = None
         self.pps: bytes | None = None
         self.started = False
-        self.clock = TimestampClock()
+        self.clock = h264.TimestampClock()
         self.last_clock_time: float | None = None
         self.live_reconfirmed = False
         self.timestamp_resets = 0
@@ -96,7 +92,7 @@ class H264Publisher:
             self.first_video_pts = timestamp
         self.last_video_time = now
         self.last_video_pts = timestamp
-        units = annexb_nals(data)
+        units = h264.annexb_nals(data)
         types = {nal[0] & 31 for nal in units}
         self.input_key_frames += int(5 in types)
         has_picture = bool(types.intersection({1, 5}))
@@ -144,7 +140,7 @@ class H264Publisher:
             self._last_access_unit = data if len(data) <= MAX_COLLISION_BYTES else None
 
     def _verify_picture_boundary(self, previous: bytes, current: bytes) -> None:
-        prefix = picture_boundary_prefix(previous, current, self.sps, self.pps)
+        prefix = h264.picture_boundary_prefix(previous, current, self.sps, self.pps)
         parser = self.av.CodecContext.create("h264", "r")
         try:
             packets = parser.parse(prefix + previous)
@@ -156,7 +152,7 @@ class H264Publisher:
             raise ProtocolError("Ambiguous H.264 picture boundary for duplicate timestamp")
 
     def _resolve_collisions(self, next_data: bytes, next_timestamp: int, now: float) -> None:
-        timestamps = interpolate_duplicate_timestamps(
+        timestamps = h264.interpolate_duplicate_timestamps(
             self.clock.previous, next_timestamp, len(self._collision_frames), self.clock.intervals,
         )
         for (frame, arrival), interpolated in zip(self._collision_frames, timestamps):
@@ -169,7 +165,7 @@ class H264Publisher:
         self._last_access_unit = next_data if len(next_data) <= MAX_COLLISION_BYTES else None
 
     def _push_frame(self, data: bytes, timestamp: int, now: float) -> None:
-        units = annexb_nals(data)
+        units = h264.annexb_nals(data)
         types = {nal[0] & 31 for nal in units}
         self._update_parameters(units, now)
         self._check_startup_deadline(now)
@@ -208,7 +204,7 @@ class H264Publisher:
                         self.ignored_frames += len(self.pending)
                         self.pending.clear()
                         self.pending_bytes = 0
-                        self.clock = TimestampClock()
+                        self.clock = h264.TimestampClock()
                         self.last_clock_time = None
                         self.waiting_since = now
                     elif not self.config_changed or self.change_decoder is not None:

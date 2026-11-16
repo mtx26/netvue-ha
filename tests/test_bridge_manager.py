@@ -54,7 +54,8 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         writer.close()
         await writer.wait_closed()
         head, content = response.split(b"\r\n\r\n", 1)
-        status = int(head.split(b"\r\n", 1)[0].split()[1])
+        self.response_line = head.split(b"\r\n", 1)[0]
+        status = int(self.response_line.split()[1])
         return status, json.loads(content)
 
     async def fake_spawn(self, *args, **kwargs):
@@ -168,8 +169,13 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ambiguous_existing_root_state_fails_closed(self):
         (self.state_dir / "budget.json").write_text("{invalid", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "requires explicit migration"):
+        with self.assertRaisesRegex(ValueError, "not version 4"):
             CameraManager("192.168.10.1", self.state_dir, control_port=0)
+
+    async def test_http_status_uses_standard_reason_phrase(self):
+        status, _ = await self.request("GET", "/missing")
+        self.assertEqual(status, 404)
+        self.assertEqual(self.response_line, b"HTTP/1.1 404 Not Found")
 
 
 if __name__ == "__main__":

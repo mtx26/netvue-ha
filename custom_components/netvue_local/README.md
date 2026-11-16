@@ -50,10 +50,9 @@ L'option de l'intégration permet de changer l'adresse IPv4 ; le flux précéden
 est arrêté puis le pont démarre celui de la nouvelle adresse. Supprimer
 l'intégration arrête sa session et conserve son budget sur le volume d'état.
 
-Les anciennes entrées compatibles avec le flux loopback continuent à être
-gérées par le pont. Une ancienne URL personnalisée (autre port ou chemin
-imbriqué) est préservée et lue comme auparavant ; elle n'est pas réaffectée
-automatiquement au gestionnaire.
+Les entrées doivent utiliser le nom et l'URL générés par l'intégration. Une
+ancienne entrée sans nom géré ou avec une URL personnalisée est refusée ; elle
+n'est ni convertie ni réécrite automatiquement.
 
 ## Dépannage et limites
 
@@ -61,8 +60,8 @@ automatiquement au gestionnaire.
   sur le même hôte/réseau que Home Assistant, et écoute sur
   `127.0.0.1:8765`. L'entrée est réessayée par Home Assistant.
 - **Flux indisponible** : vérifiez MediaMTX sur `127.0.0.1:8554` et les
-  journaux du pont. Ne supprimez pas un budget `blocked`, corrompu ou ambigu ;
-  appliquez uniquement la migration explicite documentée.
+  journaux du pont. Ne supprimez pas un budget `blocked`, corrompu ou d'une
+  version non prise en charge ; il reste inchangé pour examen.
 - **Découverte vide** : la diffusion UDP est déclenchée par l'utilisateur,
   limitée à un sous-réseau privé de `/23` à `/30` ; utilisez l'ajout manuel.
 - L'API du pont n'a pas d'authentification distincte et n'écoute que sur

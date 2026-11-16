@@ -1,4 +1,4 @@
-"""Offline tests; run in an isolated Home Assistant container."""
+"""Offline tests for the pinned Home Assistant integration environment."""
 
 import asyncio
 import ipaddress
@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from custom_components.netvue_local import async_setup_entry, async_unload_entry
+from custom_components.netvue_local.bridge_api import BridgeError
 from custom_components.netvue_local.binary_sensor import NetvueStreamSensor
 from custom_components.netvue_local.camera import NetvueCamera
 from custom_components.netvue_local.config_flow import NetvueConfigFlow, NetvueOptionsFlow, _duplicate
@@ -16,9 +17,9 @@ from custom_components.netvue_local.discovery import (
     Candidate, _DiscoveryProtocol, async_discover, local_network, parse_response,
 )
 from custom_components.netvue_local.rtsp import (
-    async_probe_stream, stream_name_from_url, stream_url_from_name,
-    validate_host, validate_stream_url,
+    async_probe_stream, stream_url_from_name, validate_host, validate_stream_url,
 )
+from homeassistant.exceptions import ConfigEntryNotReady
 from netvue_bridge.protocol import command_packet
 
 
@@ -75,7 +76,8 @@ class ConfigurationTests(unittest.TestCase):
                          "rtsp://127.0.0.1:8554/netvue2")
         for url in ["rtsp://192.168.10.2:8554/x", "rtsp://user:pw@127.0.0.1:8554/x",
                     "rtsp://127.0.0.1:8554/x?secret=x", "http://127.0.0.1:8554/x",
-                    "rtsp://127.0.0.1/x", "rtsp://127.0.0.1:8554/x%0d"]:
+                    "rtsp://127.0.0.1/x", "rtsp://127.0.0.1:8555/x",
+                    "rtsp://127.0.0.1:8554/a/b", "rtsp://127.0.0.1:8554/x%0d"]:
             with self.assertRaises(ValueError):
                 validate_stream_url(url)
         with self.assertRaises(ValueError):
@@ -91,15 +93,12 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(_duplicate(hass, "192.168.10.2", "rtsp://127.0.0.1:8554/b"))
         self.assertFalse(_duplicate(hass, "192.168.10.3", "rtsp://127.0.0.1:8554/a", "1"))
 
-    def test_stream_names_and_legacy_urls(self):
+    def test_stream_names(self):
         self.assertEqual(stream_url_from_name("netvue2"), "rtsp://127.0.0.1:8554/netvue2")
         self.assertEqual(stream_url_from_name("camera_2-test"), "rtsp://127.0.0.1:8554/camera_2-test")
         for name in ("", "a/b", "../a", "foo?x", "foo#bar", "foo bar", "foo%20", "é", "x\n"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 stream_url_from_name(name)
-        self.assertEqual(stream_name_from_url("rtsp://127.0.0.1:8554/netvue2"), "netvue2")
-        self.assertIsNone(stream_name_from_url("rtsp://127.0.0.1:8555/netvue2"))
-        self.assertIsNone(stream_name_from_url("rtsp://127.0.0.1:8554/a/b"))
 
     def test_translations_have_matching_keys(self):
         base = Path(__file__).parents[1] / "custom_components" / "netvue_local"
@@ -113,22 +112,32 @@ class ConfigurationTests(unittest.TestCase):
 
 class RTSPTests(unittest.IsolatedAsyncioTestCase):
     async def test_h264_and_absent_stream(self):
-        requests = []
+        body = b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
 
-        async def handler(reader, writer):
-            requests.append(await reader.readuntil(b"\r\n\r\n"))
-            body = b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
-            writer.write(b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\nContent-Length: "
-                         + str(len(body)).encode() + b"\r\n\r\n" + body)
-            await writer.drain()
-            writer.close()
-            await writer.wait_closed()
-        server = await asyncio.start_server(handler, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        async with server:
-            self.assertTrue(await async_probe_stream(f"rtsp://127.0.0.1:{port}/fake"))
-        self.assertFalse(await async_probe_stream(f"rtsp://127.0.0.1:{port}/fake"))
-        self.assertNotIn(b"Authorization:", requests[0])
+        def fake_connection(response):
+            reader = asyncio.StreamReader()
+            reader.feed_data(response)
+            reader.feed_eof()
+            writer = SimpleNamespace(write=unittest.mock.Mock(),
+                                     drain=unittest.mock.AsyncMock(),
+                                     close=unittest.mock.Mock(),
+                                     wait_closed=unittest.mock.AsyncMock())
+            return reader, writer
+
+        available = (b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\nContent-Length: "
+                     + str(len(body)).encode() + b"\r\n\r\n" + body)
+        absent = b"RTSP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+        successful_connection = fake_connection(available)
+        missing_connection = fake_connection(absent)
+        with patch("custom_components.netvue_local.rtsp.asyncio.open_connection",
+                   new=unittest.mock.AsyncMock(side_effect=[
+                       successful_connection, missing_connection,
+                   ])) as connect:
+            url = "rtsp://127.0.0.1:8554/netvue2"
+            self.assertTrue(await async_probe_stream(url))
+            self.assertFalse(await async_probe_stream(url))
+        self.assertEqual(connect.await_args_list[0].args, ("127.0.0.1", 8554))
+        self.assertNotIn(b"Authorization:", successful_connection[1].write.call_args.args[0])
 
 
 class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
@@ -171,8 +180,10 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_options_change_ip_and_duplicates(self):
         entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
+                                "stream_name": "a",
                                 "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
         other = SimpleNamespace(entry_id="2", data={"host": "192.168.10.4",
+                                "stream_name": "b",
                                 "stream_url": "rtsp://127.0.0.1:8554/b"}, options={})
         hass = SimpleNamespace(config_entries=SimpleNamespace(
             async_entries=lambda _: [entry, other], async_get_known_entry=lambda _: entry))
@@ -186,26 +197,26 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             result = await flow.async_step_init({"host": "192.168.10.3"})
         stop.assert_awaited_once_with(hass, "192.168.10.2")
         self.assertEqual(result["type"], "create_entry")
+        name = "netvue_192_168_10_3"
         self.assertEqual(result["data"], {
-            "host": "192.168.10.3", "stream_url": "rtsp://127.0.0.1:8554/a",
-            "stream_name": "a",
+            "host": "192.168.10.3", "stream_url": f"rtsp://127.0.0.1:8554/{name}",
+            "stream_name": name,
         })
 
-    async def test_legacy_options_preserve_or_explicitly_replace_url(self):
-        for old_url in ("rtsp://127.0.0.1:8555/legacy", "rtsp://127.0.0.1:8554/a/b"):
-            entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
-                                    "stream_url": old_url}, options={})
-            hass = SimpleNamespace(config_entries=SimpleNamespace(
-                async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
-            flow = NetvueOptionsFlow()
-            flow.hass = hass
-            flow.handler = "1"
-            form = await flow.async_step_init()
-            self.assertEqual(form["data_schema"]({"host": "192.168.10.3"}),
-                             {"host": "192.168.10.3"})
+    async def test_options_preserve_requested_host_when_bridge_is_unavailable(self):
+        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
+                                "stream_name": "a",
+                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
+        hass = SimpleNamespace(config_entries=SimpleNamespace(
+            async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
+        flow = NetvueOptionsFlow()
+        flow.hass = hass
+        flow.handler = "1"
+        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
+                   new=unittest.mock.AsyncMock(side_effect=BridgeError("unavailable"))):
             result = await flow.async_step_init({"host": "192.168.10.3"})
-            self.assertEqual(result["type"], "create_entry")
-            self.assertEqual(result["data"], {"host": "192.168.10.3", "stream_url": old_url})
+        self.assertEqual(result["errors"]["base"], "bridge_unavailable")
+        self.assertEqual(result["data_schema"]({}), {"host": "192.168.10.3"})
 
     async def test_setup_unload_and_camera(self):
         entry = SimpleNamespace(entry_id="1", title="Fake",
@@ -237,23 +248,12 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         stop.assert_awaited_once_with(hass, "192.168.10.2")
         entries.async_unload_platforms.assert_awaited_once()
 
-    async def test_existing_entries_with_removed_fields_keep_plain_stream_url(self):
-        url = "rtsp://127.0.0.1:8554/netvue2"
-        coordinator = SimpleNamespace(data=True, last_update_success=True)
-        for location in ("data", "options"):
-            entry = SimpleNamespace(
-                entry_id=location,
-                title="Existing",
-                data={"stream_url": url},
-                options={},
-            )
-            getattr(entry, location).update({
-                "rtsp_username": "legacy-user",
-                "rtsp_password": "legacy-value",
-            })
-            camera = NetvueCamera(entry, coordinator)
-            self.assertEqual(await camera.stream_source(), url)
-
+    async def test_setup_rejects_entry_without_managed_stream_name(self):
+        entry = SimpleNamespace(data={"host": "192.168.10.2",
+                                      "stream_url": "rtsp://127.0.0.1:8554/legacy"},
+                                options={})
+        with self.assertRaisesRegex(ConfigEntryNotReady, "unsupported configuration"):
+            await async_setup_entry(SimpleNamespace(), entry)
 
 if __name__ == "__main__":
     unittest.main()

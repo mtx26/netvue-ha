@@ -11,6 +11,7 @@ import signal
 import stat
 import sys
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -70,9 +71,9 @@ class CameraManager:
             target = validate_lan_ipv4(state["target"])
             with Budget(self.state_dir, self.source, target) as budget:
                 budget.read()
-        except (KeyError, TypeError, json.JSONDecodeError, ValueError, OSError) as exc:
+        except (KeyError, TypeError, ValueError, OSError) as exc:
             raise ValueError(
-                "Existing root budget is invalid or requires explicit migration"
+                "Existing root budget is invalid or not version 4"
             ) from exc
         return target
 
@@ -221,15 +222,14 @@ class CameraManager:
                 status, body = 404, {"error": "Not found"}
         except RequestError as exc:
             status, body = exc.status, {"error": exc.message}
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError,
-                UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError, ValueError):
             status, body = 400, {"error": "Invalid request"}
         except (OSError, RuntimeError):
             status, body = 503, {"error": "Bridge manager unavailable"}
         try:
             encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
             header = (
-                f"HTTP/1.1 {status} {_reason(status)}\r\n"
+                f"HTTP/1.1 {status} {HTTPStatus(status).phrase}\r\n"
                 "Content-Type: application/json\r\n"
                 f"Content-Length: {len(encoded)}\r\n"
                 "Connection: close\r\n\r\n"
@@ -282,18 +282,6 @@ class CameraManager:
         raw = await asyncio.wait_for(reader.readexactly(length), timeout=3) if length else b""
         payload = json.loads(raw) if raw else None
         return method, path, payload
-
-
-def _reason(status: int) -> str:
-    return {
-        200: "OK",
-        202: "Accepted",
-        400: "Bad Request",
-        403: "Forbidden",
-        404: "Not Found",
-        409: "Conflict",
-        503: "Service Unavailable",
-    }.get(status, "Error")
 
 
 async def serve(source: str, state_dir: Path) -> None:

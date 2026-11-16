@@ -25,14 +25,14 @@ plus trois fois ; un état v4 bloqué, corrompu ou ambigu n'est pas réinitialis
 et reste en échec pour intervention. Le superviseur gère lui-même les coupures
 transitoires et attend MediaMTX sans dépendre d'un ordre de démarrage Swarm.
 
-Le budget v4, son verrou et les audits de migration résident dans le volume
-bind monté sur `/state`. Le budget historique à la racine est conservé pour la
-caméra dont l'adresse y est inscrite ; les budgets suivants sont créés dans
-des sous-répertoires propres à chaque caméra lors de son ajout depuis Home
-Assistant. Un état v2/v3, bloqué, corrompu ou ambigu n'est ni migré ni
-contourné automatiquement. MediaMTX lit son fichier via un volume bind en
-lecture seule. Aucun mot de passe RTSP n'est utilisé ; l'authentification LAN
-Netvue reste dans le protocole du pont.
+Les budgets v4 et leurs verrous résident dans le volume bind monté sur
+`/state`. Le budget à la racine est conservé pour la caméra dont l'adresse y
+est inscrite ; les budgets suivants sont créés dans des sous-répertoires
+propres à chaque caméra lors de son ajout depuis Home Assistant. Seul le
+format v4 est accepté : un état d'une autre version, bloqué, corrompu ou
+ambigu arrête le service et reste inchangé. MediaMTX lit son fichier via un
+volume bind en lecture seule. Aucun mot de passe RTSP n'est utilisé ;
+l'authentification LAN Netvue reste dans le protocole du pont.
 
 L'API du pont n'a pas d'authentification supplémentaire et est accessible aux
 processus qui partagent le réseau de l'hôte. Elle n'écoute que sur loopback ;
@@ -94,10 +94,10 @@ d'état doit être inscriptible par UID/GID 10001. La configuration des caméras
 et leurs flux sont ensuite gérés depuis Home Assistant.
 
 Le gestionnaire valide le budget racine existant avant d'accepter des sessions.
-S'il est v2/v3, corrompu ou ambigu, le conteneur échoue explicitement ;
-appliquez seulement la migration v2/v3 auditée sur une copie sauvegardée. Un
-budget neuf est créé uniquement dans le sous-répertoire de la caméra ajoutée
-par Home Assistant, jamais en remplacement d'un état existant.
+S'il n'est pas au format v4, s'il est corrompu ou ambigu, le conteneur échoue
+explicitement sans le réécrire. Ne lancez pas `init` et ne remplacez pas ce
+fichier par un budget neuf. Un budget neuf est créé uniquement dans le
+sous-répertoire d'une nouvelle caméra ajoutée depuis Home Assistant.
 
 1. Dans **Stacks → Add stack → Upload**, chargez [stack.yaml](./stack.yaml).
 2. Saisissez les variables obligatoires, notamment `NETVUE_BRIDGE_IMAGE` avec
@@ -129,28 +129,6 @@ est explicitement autorisé.
   une récupération vérifiée d'une tentative interrompue. Le backoff est
   préservé. Les états `blocked`, corrompus ou ambigus ne sont jamais effacés
   ni contournés.
-
-## Migration v2/v3
-
-Pour une copie sauvegardée d'un budget v2/v3, ne faites pas `init`. Après
-avoir contrôlé son origine et créé une autre sauvegarde, lancez uniquement la
-migration explicite avec le même couple source/caméra :
-
-```sh
-NETVUE_BRIDGE_IMAGE=ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204
-NETVUE_SOURCE=192.168.10.1
-NETVUE_TARGET=192.168.10.2
-NETVUE_STATE_DIR=/srv/netvue-bridge/state
-docker run --rm --network none --read-only --cap-drop ALL \
-  --user 10001:10001 \
-  --mount "type=bind,src=$NETVUE_STATE_DIR,dst=/state" \
-  --entrypoint python "$NETVUE_BRIDGE_IMAGE" -B -m netvue_bridge.continuous migrate \
-  --source "$NETVUE_SOURCE" --target "$NETVUE_TARGET" --state-dir /state
-```
-
-Cette opération écrit un audit et peut conserver l'état en `blocked`. Ne
-l'appliquez pas aux données de production pendant cette phase et ne contournez
-jamais un blocage.
 
 ## Test de configuration sans déployer
 
@@ -207,13 +185,12 @@ MediaMTX. Elle contient des adresses LAN ; protégez-la et copiez-la sur un
 stockage distinct. Sauvegardez également le fichier de stack et les variables
 de Portainer dans un emplacement protégé.
 
-Pour revenir en arrière côté code, remettez dans Portainer le précédent tag
-d'image qui prend en charge le budget v4 et redéployez, sans restaurer un
-ancien budget. Ne restaurez jamais une sauvegarde de budget pour effacer un
-blocage ou annuler une tentative. Un état v2/v3 doit être sauvegardé puis
-migré avec la commande explicite `migrate` de l'image, sur une copie d'abord ;
-la migration peut produire un état v4 bloqué. N'utilisez pas `init` sur un
-répertoire contenant déjà un état.
+Pour revenir en arrière côté code, remettez dans Portainer un tag d'image
+compatible avec le format v4 présent et redéployez, sans restaurer un ancien
+budget. Ne restaurez jamais une sauvegarde de budget pour effacer un blocage
+ou annuler une tentative. Ne lancez pas `init` sur un répertoire contenant
+déjà un état. Les versions antérieures du format ne sont pas migrées par le
+logiciel actuel ; conservez-les intactes pour une procédure ultérieure validée.
 
 ## Erreurs courantes
 
@@ -229,8 +206,8 @@ répertoire contenant déjà un état.
   fichier de configuration écoute sur loopback et que 8554 n'est pas déjà
   utilisé.
 - **Budget `blocked`, invalide ou version non prise en charge** : ne pas
-  supprimer `budget.json` et ne pas lancer `init`. Examiner l'état et utiliser
-  uniquement la migration explicite v2/v3 documentée.
+  supprimer `budget.json` et ne pas lancer `init`. L'état reste inchangé ; son
+  traitement nécessite une procédure de migration validée ultérieurement.
 - **Pas de flux dans Home Assistant** : vérifier que HA partage le réseau host
   de ce même nœud et utilise l'URL de flux affichée par l'intégration.
 

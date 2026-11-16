@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from . import budget as budget_module
 from .budget import Budget, DEFAULT_RETRY_DELAYS, parse_retry_delays, retry_delay
 from .rtsp import validate_local_rtsp_url
-from .stream import run_sessions
+from .stream import run_session
 
 HEARTBEAT_TIMEOUT = 30
 
@@ -53,7 +53,6 @@ def wait_for_rtsp(port: int, timeout: float = 15) -> bool:
 def active_session_pids(target: str, proc_root: Path = Path("/proc")) -> list[int]:
     modules = {
         b"netvue_bridge.continuous": {b"run", b"_run", b"_session"},
-        b"netvue_bridge.supervisor": {b"run", b"_worker"},
     }
     target_arg = str(target).encode("ascii")
     active = []
@@ -76,10 +75,9 @@ def active_session_pids(target: str, proc_root: Path = Path("/proc")) -> list[in
             module = args[module_index + 1]
         except (ValueError, IndexError):
             continue
-        actions = modules.get(module, set())
-        if module not in modules or (actions is not None and
-                                     (module_index + 2 >= len(args)
-                                      or args[module_index + 2] not in actions)):
+        actions = modules.get(module)
+        if (actions is None or module_index + 2 >= len(args)
+                or args[module_index + 2] not in actions):
             continue
         if any(arg == b"--target" and index + 1 < len(args)
                and args[index + 1] == target_arg
@@ -153,7 +151,7 @@ def worker(source: str, target: str, rtsp: str, fd: int, parent: int,
         raise OSError(ctypes.get_errno(), "Cannot configure parent death signal")
     if os.getppid() != parent:
         raise RuntimeError("Supervisor disappeared before worker startup")
-    signal.signal(signal.SIGTERM, lambda signum, frame: (_ for _ in ()).throw(KeyboardInterrupt()))
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     last_sent = 0.0
     started = time.monotonic()
 
@@ -176,19 +174,18 @@ def worker(source: str, target: str, rtsp: str, fd: int, parent: int,
         send({"event": "video", "metrics": metrics})
 
     try:
-        retryable = []
-        video_failure = []
-        result = run_sessions(source, target, rtsp, float("inf"), max_attempts=1,
-                              on_stage=stage, on_video=video, on_retryable=retryable.append,
-                              on_recoverable_video=lambda: video_failure.append(True),
+        outcome = run_session(source, target, rtsp, float("inf"),
+                              on_stage=stage, on_video=video,
                               video_timeout=video_timeout)
-        if result == 1 and video_failure:
-            send({"event": "retryable", "stage": "video"})
-        elif result == 1 and retryable:
-            send({"event": "retryable", "stage": retryable[-1]})
-        elif result == 1:
+        if outcome is None:
+            return 0
+        if outcome == "blocked":
             send({"event": "blocked"})
-        return result
+        elif outcome in ("discovery", "connect", "live", "video"):
+            send({"event": "retryable", "stage": outcome})
+        else:
+            raise RuntimeError("Unknown session outcome")
+        return 1
     finally:
         os.close(fd)
 
@@ -381,7 +378,7 @@ def supervise(budget: Budget, rtsp: str, video_timeout: float = 30,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Unified Netvue session supervisor")
-    parser.add_argument("action", choices=("init", "run", "test", "migrate", "_run", "_session"))
+    parser.add_argument("action", choices=("init", "run", "test", "_run", "_session"))
     parser.add_argument("--source", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--state-dir", type=Path, default=Path("/state"))
@@ -416,7 +413,7 @@ def main() -> int:
             parser.error("internal bounded run requires --max-attempts")
     elif args.max_duration is not None or args.max_attempts is not None:
         parser.error("--max-duration and --max-attempts are only accepted for test")
-    signal.signal(signal.SIGTERM, lambda signum, frame: (_ for _ in ()).throw(KeyboardInterrupt()))
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         if args.action == "_session":
             return worker(args.source, args.target, args.rtsp, args.event_fd, args.parent_pid,
@@ -435,10 +432,6 @@ def main() -> int:
             if args.action == "init":
                 budget.initialize()
                 print("supervisor: state initialized", flush=True)
-                return 0
-            if args.action == "migrate":
-                audit = budget.migrate_legacy()
-                print(f"supervisor: migration audited in {audit.name}", flush=True)
                 return 0
             return supervise(budget, args.rtsp, args.video_timeout,
                              args.max_attempts if args.action == "_run" else None)

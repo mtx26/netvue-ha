@@ -1,6 +1,7 @@
-# Applications, captures et analyses privées : ne jamais versionner.
+# Les analyses restent privées ; le rapport de phase révisé est explicitement suivi.
 input/
-findings/
+findings/*
+!findings/phase20-simplification-profonde.md
 captures/
 firmware/
 tools/

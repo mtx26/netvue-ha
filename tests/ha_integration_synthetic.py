@@ -1,7 +1,6 @@
 """Exercise a real isolated Home Assistant config flow and synthetic camera."""
 
 import asyncio
-import importlib
 import logging
 import os
 import shutil
@@ -28,12 +27,11 @@ async def main():
     custom_components = root / "custom_components"
     custom_components.mkdir()
     shutil.copytree(component, custom_components / "netvue_local")
-    port = _free_port()
+    port = 8554
     api_port = _free_port()
     config = root / "mediamtx.yml"
     config_text = template.read_text(encoding="utf-8")
     stream_name = "netvue_192_168_10_2"
-    config_text = config_text.replace("127.0.0.1:8554", f"127.0.0.1:{port}")
     config_text = config_text.replace("netvue2:", f"{stream_name}:")
     config.write_text(config_text, encoding="utf-8")
     url = f"rtsp://127.0.0.1:{port}/{stream_name}"
@@ -82,16 +80,7 @@ async def main():
         if await bootstrap.async_from_config_dict({"homeassistant": {}}, hass) is None:
             raise RuntimeError("Isolated Home Assistant bootstrap failed")
         await hass.async_start()
-        from custom_components.netvue_local import bridge_api, config_flow, rtsp
-        integration = importlib.import_module("custom_components.netvue_local")
-
-        def test_stream_url(name):
-            return f"rtsp://127.0.0.1:{port}/{name}"
-
-        # Production uses 8554; the synthetic server binds an available port.
-        rtsp.stream_url_from_name = test_stream_url
-        config_flow.stream_url_from_name = test_stream_url
-        integration.stream_url_from_name = test_stream_url
+        from custom_components.netvue_local import bridge_api, rtsp
 
         async_probe_stream = rtsp.async_probe_stream
         bridge_api.API_URL = f"http://127.0.0.1:{api_port}/api/v1"

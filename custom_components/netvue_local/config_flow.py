@@ -16,7 +16,7 @@ from .const import (
 )
 from .discovery import async_discover, local_network
 from .rtsp import (
-    stream_name_for_host, stream_name_from_url, stream_url_from_name, validate_host,
+    stream_name_for_host, stream_url_from_name, validate_host,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,16 +127,9 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
-    def __init__(self) -> None:
-        self._data = {}
-
     async def async_step_init(self, user_input=None):
         entry = self.config_entry
-        old_url = entry.options.get(CONF_STREAM_URL, entry.data[CONF_STREAM_URL])
-        try:
-            old_name = stream_name_from_url(old_url)
-        except ValueError:
-            old_name = None
+        default_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
         errors = {}
         if user_input is not None:
             try:
@@ -144,31 +137,26 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
             except (ValueError, KeyError):
                 errors["base"] = "invalid_input"
             else:
-                stream_name = old_name
-                url = old_url if old_name is None else stream_url_from_name(stream_name)
+                stream_name = stream_name_for_host(host)
+                url = stream_url_from_name(stream_name)
                 if _duplicate(self.hass, host, url, entry.entry_id):
                     errors["base"] = "already_configured"
                 else:
                     old_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
-                    if old_name is not None:
-                        try:
-                            await async_stop_camera(self.hass, old_host)
-                        except BridgeError:
-                            errors["base"] = "bridge_unavailable"
-                            return self.async_show_form(
-                                step_id="init",
-                                data_schema=vol.Schema({
-                                    vol.Required(CONF_HOST, default=host): str,
-                                }), errors=errors,
-                            )
-                    self._data = {CONF_HOST: host, CONF_STREAM_URL: url}
-                    if stream_name is not None:
-                        self._data[CONF_STREAM_NAME] = stream_name
-                    return self.async_create_entry(title="", data=self._data)
+                    try:
+                        await async_stop_camera(self.hass, old_host)
+                    except BridgeError:
+                        errors["base"] = "bridge_unavailable"
+                        default_host = host
+                    else:
+                        return self.async_create_entry(
+                            title="",
+                            data={CONF_HOST: host, CONF_STREAM_NAME: stream_name,
+                                  CONF_STREAM_URL: url},
+                        )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                vol.Required(CONF_HOST, default=entry.options.get(
-                    CONF_HOST, entry.data[CONF_HOST])): str,
+                vol.Required(CONF_HOST, default=default_host): str,
             }), errors=errors,
         )

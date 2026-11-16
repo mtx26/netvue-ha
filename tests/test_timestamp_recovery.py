@@ -12,7 +12,8 @@ except ModuleNotFoundError:
 
 from netvue_bridge.protocol import ProtocolError, RecoverableVideoError
 from netvue_bridge.h264 import TimestampClock, interpolate_duplicate_timestamps
-from netvue_bridge.rtsp import H264Publisher, annexb_nals
+from netvue_bridge.rtsp import H264Publisher
+from netvue_bridge.h264 import annexb_nals
 
 
 class TimestampInterpolationTests(unittest.TestCase):

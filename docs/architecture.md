@@ -21,11 +21,10 @@ Le transport Netvue local n'est pas chiffré. RTSP est limité à la boucle loca
 | [protocol.py](../netvue_bridge/protocol.py) | Trames, JSON, validation des en-têtes et lectures bornées. |
 | [discovery.py](../netvue_bridge/discovery.py) | Découverte UDP unicast, validation de l'émetteur et extraction des paramètres de connexion. |
 | [connection.py](../netvue_bridge/connection.py), [authentication.py](../netvue_bridge/authentication.py) | Socket TCP et authentification LAN ; la clé ne figure pas dans la représentation de l'objet découvert. |
-| [video.py](../netvue_bridge/video.py) | Analyse du flux LIVE et décodage borné en mémoire. |
-| [h264.py](../netvue_bridge/h264.py) | Découpage Annex B, en-tête de slice, contrôle des frontières, interpolation bornée et horloge PTS. Les anciens symboles restent importables depuis `netvue_bridge.rtsp`. |
+| [h264.py](../netvue_bridge/h264.py) | Découpage Annex B, en-tête de slice, contrôle des frontières, interpolation bornée et horloge PTS. |
 | [rtsp.py](../netvue_bridge/rtsp.py) | Validation de l'URL de publication, état H.264, décodeur PyAV et remux RTSP. |
-| [stream.py](../netvue_bridge/stream.py) | Travailleur interne de découverte, connexion, authentification, LIVE et fermeture de la publication ; pas de point d'entrée de session autonome. |
-| [budget.py](../netvue_bridge/budget.py) | État persistant v4 unique, verrou, migration auditée et backoff. |
+| [stream.py](../netvue_bridge/stream.py) | Exécute une tentative de découverte, connexion, authentification et réception LIVE, puis ferme la publication ; ne gère pas les reconnexions. |
+| [budget.py](../netvue_bridge/budget.py) | État persistant v4 unique, verrou et backoff ; toute autre version est refusée sans modification. |
 | [continuous.py](../netvue_bridge/continuous.py) | Supervision unique, travailleur vidéo, veille et mode de test borné. |
 | [check_rtsp.py](../netvue_bridge/check_rtsp.py) | Diagnostic borné avec MediaMTX et lecteurs externes ; le flux caméra passe par le mode test du superviseur et son budget v4. |
 
@@ -33,7 +32,7 @@ Les dépendances internes vont de l'orchestration vers le protocole et la vidéo
 
 ## Cycle d'une session
 
-Le superviseur détient le verrou du budget, vérifie son état, puis réserve une tentative durablement **avant** la découverte. La passerelle émet une requête UDP, ouvre une connexion TCP, envoie une authentification puis une seule demande LIVE. La réception classe les commandes et paquets média ; le publieur attend SPS, PPS et IDR, vérifie le décodage puis remuxe les images en RTSP/TCP. La socket et le publieur sont fermés en fin de session ou sur erreur.
+Le superviseur détient le verrou du budget, vérifie son état, puis réserve une tentative durablement **avant** la découverte. `stream.run_session` exécute une tentative : la passerelle émet une requête UDP, ouvre une connexion TCP, envoie une authentification puis une seule demande LIVE. La réception classe les commandes et paquets média ; le publieur attend SPS, PPS et IDR, vérifie le décodage puis remuxe les images en RTSP/TCP. La socket et le publieur sont fermés en fin de session ou sur erreur. Le worker retourne l'étape réessayable ou un résultat bloquant ; seul `continuous.py` décide de la reconnexion et applique le backoff v4.
 
 `H264Publisher` conserve l'état du décodeur, les tampons et la publication ; les calculs de frontières de trames et d'interpolation PTS sont isolés dans `h264.py`. Il conserve les limites de mémoire, le rejet des images B, l'attente de l'IDR lors d'un changement de paramètres et les règles de réinitialisation PTS. La correction expérimentale des horodatages identiques ne résout que certains cas contrôlés ; les cas ambigus échouent explicitement. Ses hypothèses et limites sont détaillées dans [phase12b-timestamp-recovery.md](../findings/phase12b-timestamp-recovery.md). Aucun test synthétique ne constitue une validation sur la caméra.
 
@@ -41,8 +40,8 @@ Le verrou coordonne les processus partageant le même répertoire ; au démarrag
 
 ## Contrat du superviseur unique
 
-`netvue_bridge.continuous` fournit `init`, `run`, `test`, `migrate` et une
-commande interne `_session`. `run` est l'exploitation continue ; `test`
+`netvue_bridge.continuous` fournit `init`, `run`, `test` et une commande
+interne `_session`. `run` est l'exploitation continue ; `test`
 exige simultanément `--max-duration` et `--max-attempts`. Les deux modes
 utilisent le même état v4, la même réservation et le même verrou. Le mode
 borné n'efface ni ne remplace un état opérationnel.
@@ -52,9 +51,8 @@ requis, sans historique de quotas permanents. Les erreurs réseau et vidéo
 réessayables suivent 5, 15, 60, 300 puis 900 s avec jitter optionnel ; une
 session vidéo stable réinitialise le streak. Le refus d'authentification,
 une erreur critique ou un résultat ambigu arrêtent le traitement. Les états
-v2/v3 ne sont migrés que par `migrate`, avec audit écrit avant remplacement ;
-un v2 devient bloqué par prudence et un état v3 ambigu reste bloqué. Cette
-commande n'a pas été exécutée sur les données réelles.
+autres que v4 sont refusés explicitement et laissés inchangés. Aucun chemin
+de migration ou de réinitialisation automatique n'est fourni.
 
 Chaque exécution vérifie le RTSP loopback avant réservation. Le travailleur
 signale étapes et progrès vidéo ; watchdog et seuil mémoire arrêtent le
@@ -67,6 +65,6 @@ contacter une caméra.
 
 ## Home Assistant et déploiement
 
-[config_flow.py](../custom_components/netvue_local/config_flow.py) propose une découverte UDP déclenchée par l'utilisateur ou un ajout manuel. La sélection démarre le gestionnaire via [bridge_api.py](../custom_components/netvue_local/bridge_api.py) ; une URL et un nom de flux déterministes sont associés à chaque IPv4. Le gestionnaire démarre un superviseur et un budget distincts par caméra, sans plafond logiciel fixe ; la capacité pratique dépend des ressources allouées au service. L'API est sans authentification mais écoute uniquement sur 127.0.0.1:8765 ; elle est accessible aux processus partageant l'espace réseau de l'hôte. [coordinator.py](../custom_components/netvue_local/coordinator.py) sonde périodiquement le RTSP ; [camera.py](../custom_components/netvue_local/camera.py) et [binary_sensor.py](../custom_components/netvue_local/binary_sensor.py) exposent l'entité caméra et l'état de disponibilité. Les anciennes URL non standard restent lues sans être reconfigurées par le gestionnaire.
+[config_flow.py](../custom_components/netvue_local/config_flow.py) propose une découverte UDP déclenchée par l'utilisateur ou un ajout manuel. La sélection démarre le gestionnaire via [bridge_api.py](../custom_components/netvue_local/bridge_api.py) ; une URL et un nom de flux déterministes sont associés à chaque IPv4. Le gestionnaire démarre un superviseur et un budget distincts par caméra, sans plafond logiciel fixe ; la capacité pratique dépend des ressources allouées au service. L'API est sans authentification mais écoute uniquement sur 127.0.0.1:8765 ; elle est accessible aux processus partageant l'espace réseau de l'hôte. [coordinator.py](../custom_components/netvue_local/coordinator.py) sonde périodiquement le RTSP ; [camera.py](../custom_components/netvue_local/camera.py) et [binary_sensor.py](../custom_components/netvue_local/binary_sensor.py) exposent l'entité caméra et l'état de disponibilité. Les entrées Home Assistant doivent contenir le nom et l'URL gérés par l'intégration ; les anciens formats sont refusés et ne sont pas réécrits.
 
 [stack.yaml](../deployment/stack.yaml) épingle les deux services au nœud Home Assistant, utilise le réseau host, ne publie aucun port et conserve les budgets v4 dans le volume d'état. MediaMTX reste lié à `127.0.0.1:8554` ; l'API du pont écoute sur `127.0.0.1:8765`. Lire le guide [Home Assistant](../custom_components/netvue_local/README.md) et [deployment/README.md](../deployment/README.md) avant toute opération autorisée.

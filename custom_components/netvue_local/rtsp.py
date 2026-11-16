@@ -5,8 +5,9 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
-_PATH = re.compile(r"/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\Z")
 _STREAM_NAME = re.compile(r"[A-Za-z0-9_-]+\Z")
+_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(item) for item in
+                          ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
 
 def stream_url_from_name(name: str) -> str:
@@ -20,34 +21,25 @@ def stream_name_for_host(host: str) -> str:
     return "netvue_" + address.replace(".", "_")
 
 
-def stream_name_from_url(url: str) -> str | None:
-    validate_stream_url(url)
-    parts = urlsplit(url)
-    name = parts.path[1:]
-    if _STREAM_NAME.fullmatch(name) and stream_url_from_name(name) == url:
-        return name
-    return None
-
-
 def validate_host(value: str) -> str:
     address = ipaddress.IPv4Address(value)
-    networks = tuple(ipaddress.ip_network(item) for item in
-                     ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
-    if not any(address in network for network in networks):
+    if not any(address in network for network in _PRIVATE_NETWORKS):
         raise ValueError("Camera address must be RFC1918 IPv4")
     return str(address)
 
 
 def validate_stream_url(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Invalid RTSP URL")
     try:
         parts = urlsplit(value)
-        port = parts.port
     except ValueError as exc:
         raise ValueError("Invalid RTSP URL") from exc
-    if (parts.scheme != "rtsp" or parts.netloc != f"127.0.0.1:{port}"
-            or port is None or not 1 <= port <= 65535
-            or not _PATH.fullmatch(parts.path) or parts.query or parts.fragment):
-        raise ValueError("RTSP must be loopback with an explicit port and a simple path")
+    if (parts.scheme != "rtsp" or parts.netloc != "127.0.0.1:8554"
+            or not parts.path.startswith("/")
+            or not _STREAM_NAME.fullmatch(parts.path[1:])
+            or parts.query or parts.fragment):
+        raise ValueError("RTSP must use the managed loopback endpoint and stream name")
     return value
 
 

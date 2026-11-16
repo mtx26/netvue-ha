@@ -7,9 +7,11 @@ from collections.abc import Callable
 from .authentication import authenticate
 from .connection import connect
 from .discovery import discover
-from .protocol import ConnectionClosed, ProtocolError, RecoverableVideoError, parse_units, read_packet
+from .protocol import (
+    ConnectionClosed, ProtocolError, RecoverableVideoError, command_packet, parse_units,
+    read_packet,
+)
 from .rtsp import H264Publisher
-from .video import live_packet
 
 
 class StreamInterrupted(ProtocolError):
@@ -23,7 +25,10 @@ def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: floa
         raise ValueError("Duration and video timeout must be positive")
     sock.settimeout(2)
     print("live: sending one request", flush=True)
-    sock.sendall(live_packet(int(time.time())))
+    now = int(time.time())
+    sock.sendall(command_packet([{"Q": 3, "V": 2, "P": [
+        1, [[1, 0]], [now, now + 31536000]
+    ]}]))
     deadline = time.monotonic() + duration
     last_video = time.monotonic()
     channel_ok = False
@@ -79,93 +84,81 @@ def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: floa
         raise ProtocolError("No H.264 image decoded at end of LIVE")
 
 
-def run_sessions(source: str, target: str, rtsp: str, duration: float,
-                 max_attempts: int = 1, retry_delay: float = 1.0,
-                 on_retryable: Callable[[str], None] | None = None,
-                 on_stage: Callable[[str], None] | None = None,
-                 on_video: Callable[[H264Publisher], None] | None = None,
-                 on_recoverable_video: Callable[[], None] | None = None,
-                 video_timeout: float = 3) -> int:
-    if (max_attempts < 1 or duration <= 0 or retry_delay < 0
-            or not math.isfinite(video_timeout) or video_timeout <= 0):
+def run_session(source: str, target: str, rtsp: str, duration: float,
+                on_stage: Callable[[str], None] | None = None,
+                on_video: Callable[[H264Publisher], None] | None = None,
+                video_timeout: float = 3) -> str | None:
+    if duration <= 0 or not math.isfinite(video_timeout) or video_timeout <= 0:
         raise ValueError("Invalid session limits")
     session_started = time.monotonic()
     deadline = session_started + duration
-    for attempt in range(1, max_attempts + 1):
-        publisher = None
-        stage = "discovery"
+    publisher = None
+    stage = "discovery"
+    stage_started = session_started
+    timings: dict[str, float] = {}
+    try:
+        if on_stage is not None:
+            on_stage(stage)
+        print("discovery: sending one request", flush=True)
+        camera = discover(source, target)
+        timings["discovery_seconds"] = round(time.monotonic() - stage_started, 3)
+        if camera.port != 5555:
+            raise ProtocolError("Discovered port differs from the authorized port")
+
+        stage = "connect"
+        if on_stage is not None:
+            on_stage(stage)
         stage_started = time.monotonic()
-        timings: dict[str, float] = {}
-        try:
-            if on_stage is not None:
-                on_stage(stage)
-            print("discovery: sending one request", flush=True)
-            camera = discover(source, target)
-            timings["discovery_seconds"] = round(time.monotonic() - stage_started, 3)
-            if camera.port != 5555:
-                raise ProtocolError("Discovered port differs from the authorized port")
-            stage = "connect"
+        print("tcp: connecting once", flush=True)
+        with connect(camera) as sock:
+            timings["tcp_seconds"] = round(time.monotonic() - stage_started, 3)
+            stage = "authentication"
             if on_stage is not None:
                 on_stage(stage)
             stage_started = time.monotonic()
-            print("tcp: connecting once", flush=True)
-            with connect(camera) as sock:
-                timings["tcp_seconds"] = round(time.monotonic() - stage_started, 3)
-                stage = "authentication"
-                if on_stage is not None:
-                    on_stage(stage)
-                stage_started = time.monotonic()
-                print("authentication: sending one request", flush=True)
-                result = authenticate(sock, camera)
-                timings["authentication_seconds"] = round(time.monotonic() - stage_started, 3)
-                print(f"authentication: result_code={result}", flush=True)
-                if result != 0:
-                    return 1
-                stage = "live"
-                if on_stage is not None:
-                    on_stage(stage)
-                stage_started = time.monotonic()
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("Session deadline expired before LIVE")
-                publisher = H264Publisher(rtsp)
-                receive_stream(sock, publisher, remaining, on_video, video_timeout)
-                print(f"live: published_frames={publisher.published_frames} "
-                      f"key_frames={publisher.key_frames} "
-                      f"parameter_updates={publisher.parameter_updates}", flush=True)
-            return 0
-        except (StreamInterrupted, ConnectionClosed, TimeoutError, OSError) as exc:
-            print(f"{stage}: interrupted={type(exc).__name__}", flush=True)
-            if on_retryable is not None and stage != "authentication":
-                on_retryable(stage)
-            if (stage == "authentication" or attempt == max_attempts
-                    or time.monotonic() + retry_delay >= deadline):
-                return 1
-        except RecoverableVideoError as exc:
-            print(f"{stage}: video_error={exc}", flush=True)
-            if stage == "live" and on_recoverable_video is not None:
-                on_recoverable_video()
-            return 1
-        except ProtocolError as exc:
-            print(f"{stage}: error={exc}", flush=True)
-            return 1
-        except ValueError:
-            print(f"{stage}: error=ValueError", flush=True)
-            return 1
-        finally:
-            timing_key = f"{stage}_seconds"
-            if timing_key not in timings:
-                timings[timing_key] = round(time.monotonic() - stage_started, 3)
-            if publisher is not None:
-                if isinstance(publisher.first_video_time, (int, float)):
-                    timings["first_video_delay_seconds"] = round(
-                        publisher.first_video_time - session_started, 3)
-                print("live_metrics: " + json.dumps(publisher.safe_metrics()), flush=True)
-                publisher.close()
-            print("session_timings: " + json.dumps(timings), flush=True)
-        print("session: retrying after interruption", flush=True)
-        time.sleep(retry_delay)
-    return 1
+            print("authentication: sending one request", flush=True)
+            result = authenticate(sock, camera)
+            timings["authentication_seconds"] = round(time.monotonic() - stage_started, 3)
+            print(f"authentication: result_code={result}", flush=True)
+            if result != 0:
+                return "blocked"
+
+            stage = "live"
+            if on_stage is not None:
+                on_stage(stage)
+            stage_started = time.monotonic()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Session deadline expired before LIVE")
+            publisher = H264Publisher(rtsp)
+            receive_stream(sock, publisher, remaining, on_video, video_timeout)
+            print(f"live: published_frames={publisher.published_frames} "
+                  f"key_frames={publisher.key_frames} "
+                  f"parameter_updates={publisher.parameter_updates}", flush=True)
+        return None
+    except (StreamInterrupted, ConnectionClosed, TimeoutError, OSError) as exc:
+        print(f"{stage}: interrupted={type(exc).__name__}", flush=True)
+        return stage if stage != "authentication" else "blocked"
+    except RecoverableVideoError as exc:
+        print(f"{stage}: video_error={exc}", flush=True)
+        return "video" if stage == "live" else "blocked"
+    except ProtocolError as exc:
+        print(f"{stage}: error={exc}", flush=True)
+        return "blocked"
+    except ValueError:
+        print(f"{stage}: error=ValueError", flush=True)
+        return "blocked"
+    finally:
+        timing_key = f"{stage}_seconds"
+        if timing_key not in timings:
+            timings[timing_key] = round(time.monotonic() - stage_started, 3)
+        if publisher is not None:
+            if isinstance(publisher.first_video_time, (int, float)):
+                timings["first_video_delay_seconds"] = round(
+                    publisher.first_video_time - session_started, 3)
+            print("live_metrics: " + json.dumps(publisher.safe_metrics()), flush=True)
+            publisher.close()
+        print("session_timings: " + json.dumps(timings), flush=True)
 
 
 if __name__ == "__main__":

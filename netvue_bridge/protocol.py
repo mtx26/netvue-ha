@@ -47,7 +47,7 @@ def parse_datagram(data: bytes) -> tuple[int, bytes]:
 def parse_units(body: bytes) -> list[dict[str, Any]]:
     try:
         decoded = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except ValueError as exc:
         raise ProtocolError("Invalid command JSON") from exc
     if not isinstance(decoded, list) or not all(isinstance(item, dict) for item in decoded):
         raise ProtocolError("Invalid command list")
