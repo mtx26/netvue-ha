@@ -13,6 +13,10 @@ class ProtocolError(Exception):
     pass
 
 
+class ConnectionClosed(ProtocolError):
+    pass
+
+
 def command_packet(units: list[dict[str, Any]]) -> bytes:
     body = json.dumps(units, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     if not body or len(body) >= MAX_BODY:
@@ -50,7 +54,7 @@ def read_exact(sock: socket.socket, size: int, deadline: float) -> bytes:
         sock.settimeout(remaining)
         piece = sock.recv(size - len(chunks))
         if not piece:
-            raise ProtocolError("Connection closed while reading")
+            raise ConnectionClosed("Connection closed while reading")
         chunks.extend(piece)
     return bytes(chunks)
 
