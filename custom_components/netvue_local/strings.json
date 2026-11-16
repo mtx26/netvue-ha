@@ -18,8 +18,8 @@
       },
       "manual": {
         "title": "Configure an existing stream",
-        "description": "Provide the camera address and its separately provisioned RTSP URL. IP alone does not establish Netvue identity.",
-        "data": {"name": "Name", "host": "Camera IPv4 address", "stream_url": "Loopback RTSP URL"}
+        "description": "Enter the camera address and an existing stream name. A name does not create a stream or prove the camera association. Only letters, digits, underscores and hyphens are allowed.",
+        "data": {"name": "Display name", "host": "Camera IPv4 address", "stream_name": "RTSP stream name"}
       },
       "confirm": {
         "title": "Confirm the association",
@@ -28,11 +28,11 @@
       },
       "status": {
         "title": "Stream verification",
-        "description": "RTSP probe result: {status}. An H.264 SDP announcement does not prove decoding or the camera association. You can add an unavailable stream."
+        "description": "RTSP probe result: {status}. An H.264 SDP announcement does not prove decoding or the camera association. A name alone does not create a stream. You can add an unavailable stream."
       }
     },
     "error": {
-      "invalid_input": "Invalid IP address, name or loopback RTSP URL.",
+      "invalid_input": "Invalid IP address, display name or RTSP stream name.",
       "already_configured": "This IP address or RTSP URL is already configured.",
       "confirmation_required": "Confirm the camera-to-stream association.",
       "invalid_interface": "The selected interface is no longer available.",
@@ -48,15 +48,25 @@
     "step": {
       "init": {
         "title": "Update camera association",
-        "description": "Only update a separately provisioned stream. This does not reconfigure the bridge. The integration will probe the RTSP URL.",
-        "data": {"host": "Camera IPv4 address", "stream_url": "Loopback RTSP URL", "confirm": "I confirm the association and authorize probing"}
+        "description": "Current URL: {url}. Enter an existing stream name using letters, digits, underscores or hyphens. This does not create a stream. For an older URL using another port or a nested path, leave the name blank to preserve that URL.",
+        "data": {"host": "Camera IPv4 address", "stream_name": "RTSP stream name"}
+      },
+      "confirm": {
+        "title": "Confirm the association",
+        "description": "Confirm that {host} corresponds to {url}. Continuing probes this RTSP URL; a source-on-demand may start. The bridge is not reconfigured.",
+        "data": {"confirm": "I confirm the association and authorize probing"}
+      },
+      "status": {
+        "title": "Stream verification",
+        "description": "RTSP probe result for {url}: {status}. H.264 SDP does not prove decoding or the camera association. An unavailable stream can be saved."
       }
     },
     "error": {
-      "invalid_input": "Invalid IP address or loopback RTSP URL.",
+      "invalid_input": "Invalid IP address or RTSP stream name.",
       "already_configured": "This IP address or RTSP URL is already configured.",
       "confirmation_required": "Confirm the camera-to-stream association."
-    }
+    },
+    "abort": {"invalid_input": "The configuration is incomplete.", "already_configured": "This IP address or RTSP URL is already configured."}
   },
   "entity": {"binary_sensor": {"rtsp_available": {"name": "RTSP H.264 stream available"}}}
 }

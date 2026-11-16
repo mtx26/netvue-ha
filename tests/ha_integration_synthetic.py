@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import os
-import socket
 import subprocess
 from pathlib import Path
 
@@ -17,9 +16,7 @@ async def main():
     root = Path("/tmp/ha-synthetic")
     (root / "custom_components").mkdir(parents=True)
     (root / "custom_components" / "netvue_local").symlink_to("/component")
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
+    port = 8554
     config = root / "mediamtx.yml"
     config.write_text(Path("/mediamtx-template.yml").read_text().replace(":8554", f":{port}"))
     url = f"rtsp://127.0.0.1:{port}/netvue2"
@@ -61,6 +58,8 @@ async def main():
             await asyncio.sleep(0.1)
         else:
             raise RuntimeError("Synthetic H.264 RTSP stream unavailable")
+        if await async_probe_stream(f"rtsp://127.0.0.1:{port}/missing"):
+            raise RuntimeError("Unpublished synthetic path was reported available")
         manager = hass.config_entries.flow
         result = await manager.async_init("netvue_local", context={"source": "user"})
         if result["type"] != "menu" or set(result["menu_options"]) != {"manual", "discover"}:
@@ -70,9 +69,9 @@ async def main():
         if result["step_id"] != "manual":
             raise RuntimeError("Manual setup missing")
         result = await manager.async_configure(flow_id, {
-            "name": "Synthetic Netvue", "host": "192.168.10.2", "stream_url": url,
+            "name": "Synthetic Netvue", "host": "192.168.10.2", "stream_name": "netvue2",
         })
-        if result["step_id"] != "confirm":
+        if result["step_id"] != "confirm" or result["description_placeholders"]["url"] != url:
             raise RuntimeError("Association confirmation missing")
         result = await manager.async_configure(flow_id, {"confirm": True})
         if result["step_id"] != "status" or result["description_placeholders"]["status"] != "H.264 SDP":
@@ -98,6 +97,23 @@ async def main():
         image = await camera.async_get_image(hass, cameras[0], timeout=20)
         if not image.content.startswith(b"\xff\xd8"):
             raise RuntimeError("Home Assistant Stream did not produce a JPEG")
+        options = hass.config_entries.options
+        result = await options.async_init(entry.entry_id)
+        if result["step_id"] != "init":
+            raise RuntimeError("Options form missing")
+        flow_id = result["flow_id"]
+        result = await options.async_configure(flow_id, {
+            "host": "192.168.10.2", "stream_name": "netvue2",
+        })
+        if result["step_id"] != "confirm" or result["description_placeholders"]["url"] != url:
+            raise RuntimeError("Options association confirmation missing")
+        result = await options.async_configure(flow_id, {"confirm": True})
+        if result["step_id"] != "status" or result["description_placeholders"]["status"] != "H.264 SDP":
+            raise RuntimeError("Options synthetic RTSP probe failed")
+        result = await options.async_configure(flow_id, {})
+        if result["type"] != "create_entry":
+            raise RuntimeError("Options not saved")
+        await hass.async_block_till_done()
         publisher.terminate()
         await asyncio.to_thread(publisher.wait, 5)
         await entry.runtime_data.async_refresh()
@@ -106,7 +122,7 @@ async def main():
             raise RuntimeError("Stopped synthetic stream did not become unavailable")
         if not await hass.config_entries.async_unload(entry.entry_id):
             raise RuntimeError("Synthetic entry failed to unload")
-        print("Isolated HA: config flow, entities, RTSP availability, Stream JPEG, "
+        print("Isolated HA: config and options flows, entities, RTSP availability, Stream JPEG, "
               "offline transition and unload verified", flush=True)
     finally:
         if hass is not None:
