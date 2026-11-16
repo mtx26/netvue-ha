@@ -18,4 +18,4 @@ pathDefaults:
   record: false
   overridePublisher: false
 paths:
-  netvue2:
+  all_others:

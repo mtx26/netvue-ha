@@ -1,6 +1,8 @@
-**
+*
 !netvue_bridge/
+netvue_bridge/*
 !netvue_bridge/*.py
 !netvue_bridge/requirements.txt
 !deployment/
+deployment/*
 !deployment/Dockerfile

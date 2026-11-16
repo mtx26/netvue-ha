@@ -34,6 +34,12 @@ ambigu arrête le service et reste inchangé. MediaMTX lit son fichier via un
 volume bind en lecture seule. Aucun mot de passe RTSP n'est utilisé ;
 l'authentification LAN Netvue reste dans le protocole du pont.
 
+Le fichier [mediamtx.yml](./mediamtx.yml) fourni accepte les chemins de flux
+générés par le gestionnaire, ainsi que l'ancien chemin `netvue2` du test borné.
+Le fichier effectivement monté sur l'hôte doit être vérifié ou remplacé lors
+du basculement autorisé : modifier le fichier du dépôt ne change pas le bind
+mount existant.
+
 L'API du pont n'a pas d'authentification supplémentaire et est accessible aux
 processus qui partagent le réseau de l'hôte. Elle n'écoute que sur loopback ;
 ne publiez pas le port 8765 et ne la liez pas à `0.0.0.0`.

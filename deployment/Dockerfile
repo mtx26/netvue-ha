@@ -6,7 +6,7 @@ WORKDIR /app
 COPY netvue_bridge/requirements.txt /app/requirements.txt
 RUN python -m pip install --no-cache-dir -r /app/requirements.txt av==16.1.0 \
     && python -m pip check
-COPY netvue_bridge/ /app/netvue_bridge/
+COPY netvue_bridge/*.py netvue_bridge/requirements.txt /app/netvue_bridge/
 
 USER 10001:10001
 ENTRYPOINT ["python", "-m", "netvue_bridge.manager"]

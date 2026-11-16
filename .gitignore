@@ -1,7 +1,6 @@
 # Les analyses restent privées ; le rapport de phase révisé est explicitement suivi.
 input/
 findings/*
-!findings/phase20-simplification-profonde.md
 captures/
 firmware/
 tools/

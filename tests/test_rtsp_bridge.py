@@ -578,9 +578,11 @@ class RtspTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("NETVUE_MEDIAMTX") and os.environ.get("NETVUE_FFPROBE"),
                          "requires portable MediaMTX, FFprobe, and PyAV")
     def test_deployment_config_with_synthetic_camera(self):
-        self.check_synthetic_camera_to_rtsp("deployment", "mediamtx.yml")
+        self.check_synthetic_camera_to_rtsp(
+            "deployment", "mediamtx.yml", "netvue_192_168_10_2"
+        )
 
-    def check_synthetic_camera_to_rtsp(self, directory, filename):
+    def check_synthetic_camera_to_rtsp(self, directory, filename, stream_name="netvue2"):
         import av
 
         config = Path(__file__).resolve().parents[1] / directory / filename
@@ -590,7 +592,7 @@ class RtspTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         test_config = Path(temp.name) / "mediamtx.yml"
         test_config.write_text(config.read_text().replace(":8554", f":{port}"))
-        url = f"rtsp://127.0.0.1:{port}/netvue2"
+        url = f"rtsp://127.0.0.1:{port}/{stream_name}"
         server = subprocess.Popen([os.environ["NETVUE_MEDIAMTX"], str(test_config)],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         left, right = socket.socketpair()
