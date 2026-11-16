@@ -411,14 +411,20 @@ class RtspTests(unittest.TestCase):
                 codec.options = {"preset": "ultrafast", "tune": "zerolatency",
                                  "x264-params": "keyint=10:min-keyint=10:scenecut=0:bframes=0"}
                 codec.open()
+                collision = bool(os.environ.get("NETVUE_TEST_COLLISION"))
                 for index in range(55):
                     frame = av.VideoFrame(64, 64, "yuv420p")
                     frame.pts = index
                     for plane in frame.planes:
-                        plane.update(bytes(plane.buffer_size))
+                        plane.update(bytes([index % 251 if collision else 0]) * plane.buffer_size)
                     for packet in codec.encode(frame):
+                        pts_index = index
+                        if collision and index in (25, 35):
+                            pts_index -= 1
+                        elif collision and index == 36:
+                            pts_index -= 2
                         body = bytes([0x10 | int(packet.is_keyframe)]) + \
-                            (index * 100).to_bytes(4, "little") + bytes(packet)
+                            (pts_index * 100).to_bytes(4, "little") + bytes(packet)
                         right.sendall(struct.pack("<IIIHH", len(body), 0, 0, 0, 201) + body)
                     time.sleep(0.1)
                 time.sleep(1)
@@ -452,16 +458,17 @@ class RtspTests(unittest.TestCase):
                 time.sleep(0.05)
             self.assertGreater(publisher.published_frames, 0, str(failures))
             ffmpeg = str(Path(os.environ["NETVUE_FFPROBE"]).with_name("ffmpeg"))
+            reader_duration = "4" if os.environ.get("NETVUE_TEST_COLLISION") else "2"
             player = subprocess.Popen(
                 [ffmpeg, "-v", "error", "-rtsp_transport", "tcp", "-i", url,
-                 "-t", "2", "-f", "null", "-"],
+                 "-t", reader_duration, "-f", "null", "-"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
             probe = subprocess.run(
                 [os.environ["NETVUE_FFPROBE"], "-v", "error", "-rtsp_transport", "tcp",
                  "-select_streams", "v:0", "-show_entries",
                  "stream=codec_name,width,height:packet=pts_time,flags",
-                 "-show_streams", "-show_packets", "-read_intervals", "%+2",
+                 "-show_streams", "-show_packets", "-read_intervals", "%+" + reader_duration,
                  "-of", "json", url],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, check=True,
             )
@@ -473,6 +480,8 @@ class RtspTests(unittest.TestCase):
             self.assertTrue(all("pts_time" in p for p in packets[1:]), str(packets[:3]))
             times = [float(p["pts_time"]) for p in packets if "pts_time" in p]
             self.assertGreaterEqual(len(times), 10)
+            if os.environ.get("NETVUE_TEST_COLLISION"):
+                self.assertGreaterEqual(len(times), 35)
             self.assertTrue(all(b > a for a, b in zip(times, times[1:])))
             self.assertTrue(all(abs((b - a) - 0.1) < 0.005
                                 for a, b in zip(times, times[1:])))
@@ -483,6 +492,8 @@ class RtspTests(unittest.TestCase):
             self.assertFalse(reader.is_alive())
             self.assertFalse(failures, str(failures))
             self.assertGreaterEqual(publisher.published_frames, 50)
+            if os.environ.get("NETVUE_TEST_COLLISION"):
+                self.assertEqual(publisher.safe_metrics()["timestamp_corrections"], 3)
             print(f"synthetic RTSP: {len(times)} packets; {publisher.published_frames} "
                   f"published; {publisher.key_frames} keyframes")
         finally:

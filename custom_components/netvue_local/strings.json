@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Netvue Local",
+        "description": "Use a separately provisioned bridge and RTSP stream. Compatibility is not verified for other models.",
+        "menu_options": {"discover": "Search the local network", "manual": "Add by IP"}
+      },
+      "discover": {
+        "title": "Discover cameras",
+        "description": "Select an authorized local interface. One UDP broadcast is sent; replies are not guaranteed. No camera authentication is attempted.",
+        "data": {"source": "Authorized network interface"}
+      },
+      "select": {
+        "title": "Select a detected candidate",
+        "description": "Discovery does not establish video compatibility.",
+        "data": {"host": "Detected address"}
+      },
+      "manual": {
+        "title": "Configure an existing stream",
+        "description": "Provide the camera address and its separately provisioned RTSP URL. IP alone does not establish Netvue identity.",
+        "data": {"name": "Name", "host": "Camera IPv4 address", "stream_url": "Loopback RTSP URL"}
+      },
+      "confirm": {
+        "title": "Confirm the association",
+        "description": "Confirm that {host} is the camera publishing {url}. Continuing probes this RTSP URL and enables periodic probes; a source-on-demand may start. No direct camera connection is made by this integration.",
+        "data": {"confirm": "I confirm this association and authorize probing the existing stream"}
+      },
+      "status": {
+        "title": "Stream verification",
+        "description": "RTSP probe result: {status}. An H.264 SDP announcement does not prove decoding or the camera association. You can add an unavailable stream."
+      }
+    },
+    "error": {
+      "invalid_input": "Invalid IP address, name or loopback RTSP URL.",
+      "already_configured": "This IP address or RTSP URL is already configured.",
+      "confirmation_required": "Confirm the camera-to-stream association.",
+      "invalid_interface": "The selected interface is no longer available.",
+      "discovery_failed": "UDP discovery failed; check the network or use manual configuration.",
+      "no_devices": "No response. Broadcast discovery is not verified; manual configuration is available."
+    },
+    "abort": {
+      "already_configured": "This IP address or RTSP URL is already configured.",
+      "invalid_input": "The configuration is incomplete."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update camera association",
+        "description": "Only update a separately provisioned stream. This does not reconfigure the bridge. The integration will probe the RTSP URL.",
+        "data": {"host": "Camera IPv4 address", "stream_url": "Loopback RTSP URL", "confirm": "I confirm the association and authorize probing"}
+      }
+    },
+    "error": {
+      "invalid_input": "Invalid IP address or loopback RTSP URL.",
+      "already_configured": "This IP address or RTSP URL is already configured.",
+      "confirmation_required": "Confirm the camera-to-stream association."
+    }
+  },
+  "entity": {"binary_sensor": {"rtsp_available": {"name": "RTSP H.264 stream available"}}}
+}

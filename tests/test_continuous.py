@@ -90,6 +90,43 @@ class ContinuousTests(unittest.TestCase):
             self.assertEqual(supervise_continuous(budget, self.rtsp), 1)
             network.assert_not_called()
 
+    def test_synthetic_attested_interruption_preserves_history_and_quota(self):
+        with RollingBudget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+            budget.stage("STREAMING")
+            original = budget.read()
+            # This models a separately verified clean stop, not an ambiguous crash.
+            with patch("netvue_bridge.continuous.reconnect_delay", return_value=30):
+                budget.finish_retryable("live")
+            state = budget.read()
+            self.assertEqual(state["attempts"], original["attempts"])
+            self.assertEqual(state["total"], 1)
+            self.assertEqual((state["status"], state["stage"]), ("ready", "RECONNECT_WAIT"))
+            with self.assertRaisesRegex(ValueError, "backoff"):
+                budget.reserve()
+            self.advance(30)
+            budget.reserve()
+            budget.finish_retryable("live")
+            self.advance(1801)
+            budget.reserve()
+            budget.finish_retryable("live")
+            self.advance(1801)
+            with self.assertRaisesRegex(ValueError, "BUDGET_EXHAUSTED"):
+                budget.reserve()
+            self.assertEqual(budget.read()["total"], 3)
+
+    def test_blocked_budget_has_no_existing_reconciliation(self):
+        with RollingBudget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+            budget.block()
+            with self.assertRaisesRegex(ValueError, "No attempt in progress"):
+                budget.finish_retryable("live")
+            with self.assertRaisesRegex(ValueError, "BUDGET_BLOCKED"):
+                budget.reserve()
+            self.assertEqual(budget.read()["total"], 1)
+
     def test_clock_change_and_reboot_block_before_network(self):
         with RollingBudget(self.path, self.source, self.target) as budget:
             budget.initialize()

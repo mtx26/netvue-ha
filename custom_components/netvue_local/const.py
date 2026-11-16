@@ -1,0 +1,11 @@
+DOMAIN = "netvue_local"
+CONF_HOST = "host"
+CONF_STREAM_URL = "stream_url"
+CONF_STREAM_NAME = "stream_name"
+CONF_SOURCE = "source"
+CONF_CONFIRM = "confirm"
+DEFAULT_NAME = "Netvue Local"
+DEFAULT_STREAM_NAME = "netvue2"
+DISCOVERY_PORT = 36868
+DISCOVERY_TIMEOUT = 2.0
+UPDATE_INTERVAL = 30
