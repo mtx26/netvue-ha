@@ -36,7 +36,7 @@ Le superviseur détient le verrou du budget, vérifie son état, puis réserve u
 
 `H264Publisher` conserve l'état du décodeur, les tampons et la publication ; les calculs de frontières de trames et d'interpolation PTS sont isolés dans `h264.py`. Il conserve les limites de mémoire, le rejet des images B, l'attente de l'IDR lors d'un changement de paramètres et les règles de réinitialisation PTS. La correction expérimentale des horodatages identiques ne résout que certains cas contrôlés ; les cas ambigus échouent explicitement. Ses hypothèses et limites sont détaillées dans [phase12b-timestamp-recovery.md](../findings/phase12b-timestamp-recovery.md). Aucun test synthétique ne constitue une validation sur la caméra.
 
-Le verrou ne coordonne que les processus partageant le même répertoire. Ne pas contourner un état `blocked` ou `in_progress` avec une copie ou un nouveau répertoire. Le budget v4 n'impose aucun quota journalier ou hebdomadaire ; seul le backoff progressif limite les erreurs transitoires. Un arrêt ambigu reste `in_progress` et les erreurs critiques restent `blocked`.
+Le verrou coordonne les processus partageant le même répertoire ; au démarrage, le superviseur vérifie aussi dans `/proc` qu'aucun travailleur connu ne tourne déjà pour la même caméra. Après un redémarrage, un `in_progress` n'est repris que si cette absence est vérifiée et que l'horloge est cohérente ; la reprise le transforme en nouvel essai réessayable avec backoff. Un processus actif, un état corrompu, une horloge ambiguë ou `blocked` arrête le démarrage sans modifier l'état bloqué. Ne jamais contourner un état avec une copie ou un nouveau répertoire. Le budget v4 n'impose aucun quota journalier ou hebdomadaire ; seul le backoff progressif limite les erreurs transitoires.
 
 ## Contrat du superviseur unique
 
@@ -57,10 +57,12 @@ commande n'a pas été exécutée sur les données réelles.
 
 Chaque exécution vérifie le RTSP loopback avant réservation. Le travailleur
 signale étapes et progrès vidéo ; watchdog et seuil mémoire arrêtent le
-processus ou laissent l'état bloqué pour examen. Le verrou protège uniquement
-les processus qui partagent le même répertoire et ne garantit pas
-l'exclusivité entre hôtes. Le mode `test` est celui destiné aux essais
-synthétiques et ne constitue pas une autorisation de contacter une caméra.
+processus ou laissent l'état à examiner. La reprise après arrêt récupère un
+`in_progress` seulement après contrôle des processus et de l'horloge ; elle
+respecte le backoff. Le verrou et le contrôle de processus ne garantissent pas
+l'exclusivité entre hôtes ou espaces PID différents. Le mode `test` est celui
+destiné aux essais synthétiques et ne constitue pas une autorisation de
+contacter une caméra.
 
 ## Home Assistant et déploiement
 

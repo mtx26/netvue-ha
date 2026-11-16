@@ -8,7 +8,11 @@ aux modes continu et test borné. Le stockage `/state` contient un unique
 atomiquement. Le format n'applique aucun quota permanent : les erreurs
 transitoires utilisent un backoff de 5, 15, 60, 300 puis 900 secondes.
 L'authentification refusée, les erreurs critiques et les arrêts ambigus
-conservent un état bloqué ou `in_progress`.
+conservent un état bloqué ou `in_progress`. Après un redémarrage normal, un
+`in_progress` n'est récupéré qu'après vérification de l'absence de session
+active pour la caméra et de la cohérence de l'horloge ; un backoff est alors
+appliqué. Un état `blocked`, corrompu ou ambigu n'est jamais débloqué par
+cette reprise.
 
 Le mode borné est `test --max-duration N --max-attempts M`. Il partage le
 même état et les mêmes contrôles que `run` ; l'échéance arrête le processus
@@ -81,8 +85,8 @@ dans Home Assistant après autorisation ; un test RTSP seul ne suffit pas.
 La mémoire vidéo peut être exposée par le swap ou les dumps système. Les
 journaux doivent être expurgés avant partage.
 
-La surveillance locale n'assure pas l'exclusivité entre hôtes ni la reprise
-après redémarrage. `in_progress`, une erreur bloquante ou une horloge ambiguë
-nécessitent un examen explicite. Le déploiement réel, le fonctionnement
-prolongé, les permissions Swarm et la migration d'un budget réel n'ont pas
-été validés par les tests du dépôt.
+La surveillance locale n'assure pas l'exclusivité entre hôtes ou espaces PID
+différents. Si la session précédente ne peut pas être vérifiée ou si l'horloge
+est ambiguë, l'état reste intact et le démarrage s'arrête pour examen.
+Le déploiement réel, le fonctionnement prolongé, les permissions Swarm et la
+migration d'un budget réel n'ont pas été validés par les tests du dépôt.

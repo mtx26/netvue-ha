@@ -183,6 +183,34 @@ class Budget:
             raise ValueError("CLOCK_AMBIGUOUS; manual review required")
         return state, wall, boot
 
+    def recover_after_restart(self) -> bool:
+        state = self.read()
+        if state["status"] == "blocked":
+            return False
+        wall, boot, boot_id = clock_sample()
+        rebooted = boot_id != state["boot_id"]
+        if rebooted:
+            if wall + 5 < state["wall"]:
+                raise ValueError("CLOCK_AMBIGUOUS; wall clock moved backwards")
+        elif (boot < state["boot"]
+              or abs((wall - state["wall"]) - (boot - state["boot"])) > 5):
+            raise ValueError("CLOCK_AMBIGUOUS; manual review required")
+
+        if state["status"] == "ready" and not rebooted:
+            return False
+        if state["status"] == "in_progress":
+            streak = min(state["streak"] + 1, 1000000)
+            error = "connect" if state["stage"] in ("CONNECTING", "AUTHENTICATING") else "live"
+            wait_until = boot + retry_delay(streak, self.retry_delays, self.retry_jitter)
+            state.update(status="ready", stage="RECONNECT_WAIT", streak=streak,
+                         last_error=error, wait_until=wait_until)
+        else:
+            remaining = max(0.0, state["wait_until"] - state["boot"])
+            state["wait_until"] = boot + remaining
+        state.update(wall=wall, boot=boot, boot_id=boot_id)
+        self._write(state)
+        return True
+
     def reserve(self) -> int:
         state, wall, boot = self.checked()
         if state["status"] != "ready":
@@ -211,7 +239,7 @@ class Budget:
             raise ValueError("No attempt in progress")
         if stage not in ("discovery", "connect", "live", "video"):
             raise ValueError("Invalid retryable stage")
-        streak = state["streak"] + 1
+        streak = min(state["streak"] + 1, 1000000)
         state.update(status="ready", stage="RECONNECT_WAIT", streak=streak,
                      last_error=stage, wait_until=boot + retry_delay(
                          streak, self.retry_delays, self.retry_jitter),

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import budget as budget_module
 from .budget import Budget, DEFAULT_RETRY_DELAYS, parse_retry_delays, retry_delay
 from .rtsp import validate_local_rtsp_url
 from .stream import run_sessions
@@ -47,6 +48,52 @@ def wait_for_rtsp(port: int, timeout: float = 15) -> bool:
                 print("supervisor: RTSP listener unavailable", flush=True)
                 return False
             time.sleep(min(0.5, remaining))
+
+
+def active_session_pids(target: str, proc_root: Path = Path("/proc")) -> list[int]:
+    modules = {
+        b"netvue_bridge.continuous": {b"run", b"_run", b"_session"},
+        b"netvue_bridge.supervisor": {b"run", b"_worker"},
+        b"netvue_bridge.stream": None,
+        b"netvue_bridge.client": None,
+    }
+    target_arg = str(target).encode("ascii")
+    active = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdecimal():
+            continue
+        pid = int(entry.name)
+        if pid == os.getpid():
+            continue
+        try:
+            with (entry / "cmdline").open("rb") as command_line:
+                raw = command_line.read(65537)
+        except FileNotFoundError:
+            continue
+        if len(raw) > 65536:
+            raise ValueError(f"Cannot safely inspect process {pid} command line")
+        args = raw.rstrip(b"\0").split(b"\0")
+        try:
+            module_index = args.index(b"-m")
+            module = args[module_index + 1]
+        except (ValueError, IndexError):
+            continue
+        actions = modules.get(module, set())
+        if module not in modules or (actions is not None and
+                                     (module_index + 2 >= len(args)
+                                      or args[module_index + 2] not in actions)):
+            continue
+        if any(arg == b"--target" and index + 1 < len(args)
+               and args[index + 1] == target_arg
+               for index, arg in enumerate(args)):
+            active.append(pid)
+    return sorted(active)
+
+
+def require_no_active_session(target: str) -> None:
+    pids = active_session_pids(target)
+    if pids:
+        raise RuntimeError("ACTIVE_SESSION; refusing another session")
 
 
 def run_bounded(command: list[str], duration: float) -> int:
@@ -289,8 +336,18 @@ def supervise(budget: Budget, rtsp: str, video_timeout: float = 30,
     port = urlsplit(rtsp).port
     if port is None:
         raise ValueError("RTSP port required")
+    state = budget.read()
+    if state["status"] == "blocked":
+        print("continuous: BUDGET_BLOCKED", flush=True)
+        return 1
+    _, _, boot_id = budget_module.clock_sample()
+    if state["status"] == "in_progress" or state["boot_id"] != boot_id:
+        require_no_active_session(budget.target)
+        if budget.recover_after_restart():
+            print("continuous: recovered interrupted state after restart", flush=True)
     attempts = 0
     while True:
+        require_no_active_session(budget.target)
         state, wall, boot = budget.checked()
         if state["status"] != "ready":
             print("continuous: BUDGET_" + state["status"].upper(), flush=True)

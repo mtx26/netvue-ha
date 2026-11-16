@@ -81,12 +81,18 @@ class ContinuousTimestampIntegrationTests(unittest.TestCase):
                 except (OSError, TimeoutError, ValueError, ProtocolError, av.error.FFmpegError) as exc:
                     errors.append(type(exc).__name__)
 
+            with socket.socket() as port_socket:
+                port_socket.bind(("127.0.0.1", 0))
+                port = port_socket.getsockname()[1]
             config = Path(__file__).resolve().parents[1] / "deployment" / "mediamtx.yml"
-            server = subprocess.Popen([os.environ["NETVUE_MEDIAMTX"], str(config)],
+            test_config = Path(directory) / "mediamtx.yml"
+            test_config.write_text(config.read_text().replace(":8554", f":{port}"))
+            url = f"rtsp://127.0.0.1:{port}/netvue2"
+            server = subprocess.Popen([os.environ["NETVUE_MEDIAMTX"], str(test_config)],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             command = [sys.executable, "-B", "-m", "netvue_bridge.continuous",
                        "--source", "127.0.0.1", "--target", fake_host,
-                       "--state-dir", directory]
+                       "--state-dir", directory, "--rtsp", url]
             process = None
             thread = threading.Thread(target=camera)
             try:

@@ -13,7 +13,7 @@ from unittest.mock import patch
 if os.name == "posix":
     from netvue_bridge.budget import Budget, retry_delay
     from netvue_bridge.continuous import (
-        main, resource_snapshot, run_bounded, run_worker, supervise,
+        active_session_pids, main, resource_snapshot, run_bounded, run_worker, supervise,
     )
 
 
@@ -86,15 +86,145 @@ class SupervisorTests(unittest.TestCase):
             budget.mark_stable()
             self.assertEqual((budget.read()["total"], budget.read()["streak"]), (2, 0))
 
-    def test_reboot_or_clock_ambiguity_fails_before_network(self):
+    def test_clock_ambiguity_on_same_boot_fails_before_network(self):
         with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
-        self.boot_id = "other-boot"
+        self.wall += 100
         with Budget(self.path, self.source, self.target) as budget, \
              patch("netvue_bridge.continuous.wait_for_rtsp") as network:
             with self.assertRaisesRegex(ValueError, "CLOCK_AMBIGUOUS"):
                 supervise(budget, self.rtsp)
             network.assert_not_called()
+
+    def test_reboot_recovers_in_progress_with_backoff(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+            budget.stage("STREAMING")
+        previous_wait = self.boot
+        self.wall += 60
+        self.boot = 5
+        self.boot_id = "other-boot"
+        with Budget(self.path, self.source, self.target) as budget:
+            self.assertTrue(budget.recover_after_restart())
+            state = budget.read()
+        self.assertEqual((state["status"], state["stage"], state["streak"], state["total"]),
+                         ("ready", "RECONNECT_WAIT", 1, 1))
+        self.assertEqual(state["wait_until"], self.boot + retry_delay(1))
+        self.assertEqual(state["boot"], self.boot)
+        self.assertNotEqual(state["boot"], previous_wait)
+
+    def test_supervisor_resumes_after_reboot_and_observes_backoff(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+        self.wall += 60
+        self.boot = 5
+        self.boot_id = "other-boot"
+
+        def sleep(seconds):
+            self.advance(seconds)
+
+        with Budget(self.path, self.source, self.target) as budget, \
+             patch("netvue_bridge.continuous.wait_for_rtsp", return_value=True) as network, \
+             patch("netvue_bridge.continuous.run_worker", return_value="connect") as worker, \
+             patch("netvue_bridge.continuous.time.sleep", side_effect=sleep), \
+             patch("builtins.print"):
+            self.assertEqual(supervise(budget, self.rtsp, max_attempts=1), 0)
+        network.assert_called_once_with(8554)
+        worker.assert_called_once()
+        with Budget(self.path, self.source, self.target) as budget:
+            state = budget.read()
+        self.assertEqual((state["total"], state["status"], state["streak"]),
+                         (2, "ready", 2))
+
+    def test_reboot_rebases_existing_retry_backoff(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+            budget.finish_retryable("video")
+            old_remaining = budget.read()["wait_until"] - self.boot
+        self.wall += 60
+        self.boot = 5
+        self.boot_id = "other-boot"
+        with Budget(self.path, self.source, self.target) as budget:
+            self.assertTrue(budget.recover_after_restart())
+            state = budget.read()
+        self.assertEqual(state["wait_until"], self.boot + old_remaining)
+        self.assertEqual((state["status"], state["last_error"]), ("ready", "video"))
+
+    def test_reboot_with_backwards_wall_clock_remains_unmodified(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            original = budget.read()
+        self.boot_id = "other-boot"
+        self.wall -= 10
+        with Budget(self.path, self.source, self.target) as budget:
+            with self.assertRaisesRegex(ValueError, "CLOCK_AMBIGUOUS"):
+                budget.recover_after_restart()
+            self.assertEqual(budget.read(), original)
+
+    def test_container_restart_recovers_in_progress_on_same_boot(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+        self.advance(2)
+        with Budget(self.path, self.source, self.target) as budget:
+            self.assertTrue(budget.recover_after_restart())
+            state = budget.read()
+        self.assertEqual((state["status"], state["streak"], state["total"]),
+                         ("ready", 1, 1))
+        self.assertEqual(state["last_error"], "connect")
+
+    def test_active_old_session_prevents_restart_recovery(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+        self.boot_id = "other-boot"
+        with Budget(self.path, self.source, self.target) as budget, \
+             patch("netvue_bridge.continuous.active_session_pids", return_value=[123]):
+            with self.assertRaisesRegex(RuntimeError, "ACTIVE_SESSION"):
+                supervise(budget, self.rtsp)
+            self.assertEqual(budget.read()["status"], "in_progress")
+
+    def test_blocked_state_is_not_recovered_after_reboot(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            state = budget.read()
+            state.update(status="blocked", stage="BLOCKED")
+            budget._write(state)
+        self.boot_id = "other-boot"
+        with Budget(self.path, self.source, self.target) as budget, \
+             patch("netvue_bridge.continuous.wait_for_rtsp") as network:
+            self.assertEqual(supervise(budget, self.rtsp), 1)
+            self.assertEqual(budget.read()["status"], "blocked")
+            network.assert_not_called()
+
+    def test_corrupt_state_is_preserved_and_stops_before_network(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+        corrupt = b'{"version":4'
+        (self.path / "budget.json").write_bytes(corrupt)
+        with Budget(self.path, self.source, self.target) as budget, \
+             patch("netvue_bridge.continuous.wait_for_rtsp") as network:
+            with self.assertRaisesRegex(ValueError, "invalid"):
+                supervise(budget, self.rtsp)
+            network.assert_not_called()
+        self.assertEqual((self.path / "budget.json").read_bytes(), corrupt)
+
+    def test_active_session_scan_matches_camera_and_known_workers(self):
+        proc = self.path / "proc"
+        for pid, command in (
+                (101, [b"python", b"-m", b"netvue_bridge.continuous", b"_session",
+                       b"--target", self.target.encode()]),
+                (102, [b"python", b"-m", b"netvue_bridge.supervisor", b"_worker",
+                       b"--target", self.target.encode()]),
+                (103, [b"python", b"-m", b"netvue_bridge.continuous", b"run",
+                       b"--target", b"192.0.2.99"])):
+            directory = proc / str(pid)
+            directory.mkdir(parents=True)
+            (directory / "cmdline").write_bytes(b"\0".join(command) + b"\0")
+        self.assertEqual(active_session_pids(self.target, proc), [101, 102])
 
     def test_v2_migration_audits_and_preserves_ambiguous_state_as_blocked(self):
         legacy = {"version": 2, "source": self.source, "target": self.target,
