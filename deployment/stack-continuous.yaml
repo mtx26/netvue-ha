@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  bridge:
+    entrypoint: ["python", "-m", "netvue_bridge.continuous"]
+    command:
+      - run
+      - --source
+      - ${NETVUE_SOURCE:?set the authorized LAN source}
+      - --target
+      - ${NETVUE_TARGET:?set the authorized camera}
+      - --state-dir
+      - /state
+    deploy:
+      restart_policy:
+        condition: none

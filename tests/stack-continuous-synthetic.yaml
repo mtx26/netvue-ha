@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  bridge:
+    command:
+      - run
+      - --source
+      - 127.0.0.1
+      - --target
+      - 127.254.9.9
+      - --state-dir
+      - /state
+      - --rtsp
+      - rtsp://127.0.0.1:28554/netvue2
+    deploy:
+      replicas: 0

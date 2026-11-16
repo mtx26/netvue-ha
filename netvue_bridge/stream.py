@@ -16,7 +16,8 @@ class StreamInterrupted(ProtocolError):
     pass
 
 
-def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: float) -> None:
+def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: float,
+                   on_video: Callable[[H264Publisher], None] | None = None) -> None:
     if duration <= 0:
         raise ValueError("Duration must be positive")
     sock.settimeout(2)
@@ -55,6 +56,8 @@ def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: floa
                 if before == 0 and publisher.published_frames > 0:
                     print("live: RTSP publisher ready", flush=True)
                 last_video = time.monotonic()
+                if on_video is not None:
+                    on_video(publisher)
             elif frame_type != 2:
                 raise ProtocolError("Unexpected media frame type")
         else:
@@ -77,7 +80,9 @@ def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: floa
 
 def run_sessions(source: str, target: str, rtsp: str, duration: float,
                  max_attempts: int = 1, retry_delay: float = 1.0,
-                 on_retryable: Callable[[str], None] | None = None) -> int:
+                 on_retryable: Callable[[str], None] | None = None,
+                 on_stage: Callable[[str], None] | None = None,
+                 on_video: Callable[[H264Publisher], None] | None = None) -> int:
     if max_attempts < 1 or duration <= 0 or retry_delay < 0:
         raise ValueError("Invalid session limits")
     session_started = time.monotonic()
@@ -88,17 +93,23 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
         stage_started = time.monotonic()
         timings: dict[str, float] = {}
         try:
+            if on_stage is not None:
+                on_stage(stage)
             print("discovery: sending one request", flush=True)
             camera = discover(source, target)
             timings["discovery_seconds"] = round(time.monotonic() - stage_started, 3)
             if camera.port != 5555:
                 raise ProtocolError("Discovered port differs from the authorized port")
             stage = "connect"
+            if on_stage is not None:
+                on_stage(stage)
             stage_started = time.monotonic()
             print("tcp: connecting once", flush=True)
             with connect(camera) as sock:
                 timings["tcp_seconds"] = round(time.monotonic() - stage_started, 3)
                 stage = "authentication"
+                if on_stage is not None:
+                    on_stage(stage)
                 stage_started = time.monotonic()
                 print("authentication: sending one request", flush=True)
                 result = authenticate(sock, camera)
@@ -107,12 +118,14 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
                 if result != 0:
                     return 1
                 stage = "live"
+                if on_stage is not None:
+                    on_stage(stage)
                 stage_started = time.monotonic()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Session deadline expired before LIVE")
                 publisher = H264Publisher(rtsp)
-                receive_stream(sock, publisher, remaining)
+                receive_stream(sock, publisher, remaining, on_video)
                 print(f"live: published_frames={publisher.published_frames} "
                       f"key_frames={publisher.key_frames} "
                       f"parameter_updates={publisher.parameter_updates}", flush=True)

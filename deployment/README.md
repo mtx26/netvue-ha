@@ -1,6 +1,16 @@
 # Préparation Swarm Netvue
 
-**Pilote borné uniquement.** Les phases 10 et 11 ont chacune bénéficié d'une autorisation et d'un budget distincts. Aucun usage permanent n'est activé ; une nouvelle connexion caméra ou une modification de Home Assistant exige une autorisation distincte. Voir les rapports de [phase 10](../findings/phase10-swarm-installation.md) et de [phase 11](../findings/phase11-recovery.md). Ne jamais réutiliser un budget épuisé ou bloqué.
+Les phases 10 et 11 ont chacune bénéficié d'une autorisation et d'un budget distincts. La phase 12 autorise un fonctionnement continu spécifique, avec ses propres plafonds : voir le [rapport de phase 12](../findings/phase12-continuous-operation.md). Ne jamais réutiliser un budget épuisé ou bloqué ; toute modification de Home Assistant nécessite une autorisation distincte.
+
+## Mode continu phase 12
+
+Le superviseur continu [continuous.py](../netvue_bridge/continuous.py) est distinct du mode borné décrit ci-dessous. La surcharge [stack-continuous.yaml](./stack-continuous.yaml) s'utilise avec [stack.yaml](./stack.yaml) : même si elle remplace la commande, `NETVUE_MAX_DURATION` doit rester défini pour l'interpolation du fichier de base. Swarm ne construit pas l'image ; utiliser une image locale préalablement testée et un identifiant immuable. Ne pas déployer une seconde stack MediaMTX ou un second pont pour la même caméra.
+
+Le budget dédié enregistre durablement chaque réservation avant découverte : maximum trois tentatives en 24 h glissantes et huit en sept jours. Le verrou exclusif couvre toute la vie du superviseur ; il ne protège que les instances partageant le **même répertoire**. Le stockage doit rester sur le même nœud, sans copie ni restauration ancienne. Au plafond ou après refus, l'arrêt est durable ; aucun redémarrage ne réinitialise les compteurs. Après interruption récupérable et fermeture du travailleur, les délais aléatoires sont au minimum 30, 120, 300 secondes puis croissent jusqu'à 1 800 secondes. Après crash, arrêt du service ou état `in_progress`, la reprise est bloquée. Un changement de boot ou un saut d'horloge suspect bloque également la reprise, même après une fermeture récupérable : c'est une limite volontaire, pas une reprise automatique après redémarrage Debian.
+
+Le parent surveille les progrès du travailleur et de la publication ; il arrête le travailleur s'il ne progresse pas pendant 30 s, sans dépendre de la présence d'un lecteur RTSP. Il vérifie le cgroup v2 et bloque à 95 % de mémoire allouée. Les limites Docker s'appliquent aux deux processus ensemble ; leur lecture doit être disponible. Une erreur de santé ambiguë laisse le budget `in_progress` et exige un examen. Le pont utilise `restart_policy: none` : en cas de crash ou d'arrêt, Swarm ne le relance pas automatiquement. Aucune procédure de déblocage ou de réconciliation après reboot n'est encore implémentée ; ne pas modifier manuellement le budget pour contourner ce verrou.
+
+La stack `netvue-pilot` existante a été mise à jour par `docker service update`, sans redéployer MediaMTX ; l'ancienne spécification est conservée sur Debian. La configuration enregistrée dans Portainer peut donc être différente du service effectif : ne pas redéployer depuis Portainer sans réconcilier la configuration et préserver le budget courant. Les journaux `continuous_health` exposent uniquement des métriques ; les journaux complets doivent tout de même être expurgés avant partage. Le transport Netvue et RTSP loopback n'est pas chiffré.
 
 ## Architecture et prérequis
 
