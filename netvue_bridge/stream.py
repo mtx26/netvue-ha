@@ -1,4 +1,5 @@
 import argparse
+import json
 import socket
 import time
 
@@ -51,8 +52,20 @@ def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: floa
                 raise ProtocolError("Unexpected media frame type")
         else:
             raise ProtocolError("Unexpected packet during LIVE")
-    if not channel_ok or publisher.published_frames == 0:
-        raise ProtocolError("No confirmed, publishable video was received")
+    if not channel_ok:
+        raise ProtocolError("LIVE confirmation missing")
+    if publisher.video_packets == 0:
+        raise ProtocolError("No video packets received")
+    if publisher.sps is None:
+        raise ProtocolError("H.264 SPS missing at end of LIVE")
+    if publisher.pps is None:
+        raise ProtocolError("H.264 PPS missing at end of LIVE")
+    if not publisher.started:
+        raise ProtocolError("H.264 IDR missing at end of LIVE")
+    if publisher.config_changed:
+        raise ProtocolError("H.264 parameter change unresolved at end of LIVE")
+    if publisher.published_frames == 0:
+        raise ProtocolError("No H.264 image decoded at end of LIVE")
 
 
 def run_sessions(source: str, target: str, rtsp: str, duration: float,
@@ -82,7 +95,8 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
                 publisher = H264Publisher(rtsp)
                 receive_stream(sock, publisher, remaining)
                 print(f"live: published_frames={publisher.published_frames} "
-                      f"key_frames={publisher.key_frames}", flush=True)
+                      f"key_frames={publisher.key_frames} "
+                      f"parameter_updates={publisher.parameter_updates}", flush=True)
             return 0
         except (StreamInterrupted, ConnectionClosed, TimeoutError, OSError) as exc:
             print(f"{stage}: interrupted={type(exc).__name__}", flush=True)
@@ -97,6 +111,7 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
             return 1
         finally:
             if publisher is not None:
+                print("live_metrics: " + json.dumps(publisher.safe_metrics()), flush=True)
                 publisher.close()
         print("session: retrying after interruption", flush=True)
         time.sleep(retry_delay)

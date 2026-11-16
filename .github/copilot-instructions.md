@@ -4,7 +4,20 @@
 
 Le propriétaire possède deux caméras Netvue Vigil de génération non encore confirmée et un serveur Debian exécutant Home Assistant en conteneur. Les caméras n'ont actuellement pas de carte microSD installée. Des analyses TCP du réseau local ont montré uniquement le port 5555 ouvert sur chacune ; Telnet (23) et RTSP standard (554) sont fermés.
 
-Le but final serait de récupérer un flux vidéo autorisé vers Home Assistant, idéalement localement. Le but **immédiat** est plus modeste : comprendre l'application Netvue Android et identifier les voies de communication et les bibliothèques vidéo, sans toucher au matériel.
+Le but final serait de récupérer un flux vidéo autorisé vers Home Assistant, idéalement localement. Le projet a terminé sa phase initiale d'analyse statique.
+
+L'objectif actuel est de développer, tester et stabiliser
+une passerelle vidéo locale Netvue LAN → RTSP,
+puis de l'intégrer à Home Assistant.
+
+Les tests réseau réels sur les caméras appartenant
+au propriétaire peuvent être réalisés lorsqu'une
+autorisation explicite et limitée a été accordée.
+
+Les restrictions propres à l'analyse statique
+concernent la phase 1 et ne doivent pas être
+interprétées comme une interdiction permanente
+des tests autorisés des phases suivantes.
 
 ## Règles de travail
 
@@ -31,12 +44,22 @@ Le but final serait de récupérer un flux vidéo autorisé vers Home Assistant,
    - Modifier le firmware.
    - Modifier le réseau ou le serveur.
    - Installer des logiciels au niveau du système.
-   - Exécuter l'APK ou du code extrait.du propriétaire.
+   - Exécuter l'APK ou du code extrait.
 8. Toute nouvelle commande doit indiquer sa finalité, ses prérequis, les données qu'elle produit et ses risques. Les commandes de lecture locale sont prioritaires.
 9. Préserver les fichiers originaux ; écrire les résultats sous `findings/` et n'écraser aucun résultat existant sans justification.
 10. Ne jamais exposer dans Git, un rapport partagé ou le Chat : mots de passe, jetons, cookies, adresses MAC complètes, Device IDs, clés cryptographiques, adresses IP publiques, captures brutes contenant des secrets.
 11. Si une hypothèse exige une capture réseau non visible depuis le serveur à cause de la commutation Ethernet/Wi-Fi, le signaler : un `tcpdump` exécuté sur Debian n'observe pas automatiquement le trafic unicast entre une caméra et la box.
-12. Arrêter la phase 1 avant tout flash, exploitation, tentative d'authentification ou modification physique.
+12. Les restrictions spécifiques à la phase 1
+s'appliquent uniquement à l'analyse statique.
+
+Les phases de développement ultérieures peuvent
+inclure des interactions réseau légitimes avec
+les appareils du propriétaire, sous réserve
+d'autorisation explicite.
+
+Les modifications de firmware, réinitialisations
+et opérations destructives nécessitent toujours
+une autorisation spécifique.
 
 ## Livrable
 

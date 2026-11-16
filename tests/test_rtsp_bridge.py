@@ -13,6 +13,7 @@ from fractions import Fraction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from netvue_bridge.check_rtsp import partial_diagnostics
 from netvue_bridge.discovery import DiscoveredCamera
 from netvue_bridge.protocol import ConnectionClosed, ProtocolError, command_packet, read_packet
 from netvue_bridge.rtsp import H264Publisher, TimestampClock, annexb_nals, validate_local_rtsp_url
@@ -20,6 +21,19 @@ from netvue_bridge.stream import StreamInterrupted, receive_stream, run_sessions
 
 
 class RtspTests(unittest.TestCase):
+    def test_partial_reader_diagnostics_are_explicit(self):
+        outputs = {
+            "ffprobe": (json.dumps({"streams": [{"codec_name": "h264", "width": 64,
+                                                   "height": 64}],
+                                     "packets": [{"flags": "K__"}]}).encode(), b""),
+            "home_assistant_ffprobe": (b"{", b"failure\n"),
+            "ffmpeg": (b"frame=4\n", b""),
+        }
+        summary = partial_diagnostics(outputs)
+        self.assertEqual(summary["ffprobe"]["keyframes"], 1)
+        self.assertTrue(summary["home_assistant_ffprobe"]["incomplete_json"])
+        self.assertEqual(summary["ffmpeg"]["decoded_frames"], 4)
+
     def test_only_local_rtsp_is_allowed(self):
         validate_local_rtsp_url("rtsp://127.0.0.1:8554/netvue2")
         for url in ("rtsp://example.com:8554/netvue2", "rtsp://0.0.0.0:8554/x",
@@ -36,6 +50,12 @@ class RtspTests(unittest.TestCase):
         self.assertEqual([clock.update(n) for n in (0xFFFFFFFE, 1, 21)], [0, 3, 23])
         with self.assertRaises(ProtocolError):
             clock.update(20)
+        clock = TimestampClock()
+        self.assertEqual([clock.update(n) for n in (100, 200, 500)], [0, 100, 400])
+        with self.assertRaisesRegex(ProtocolError, "Duplicate"):
+            clock.update(500)
+        with self.assertRaisesRegex(ProtocolError, "discontinuity"):
+            clock.update(12000)
 
     def test_missing_channel_confirmation_is_rejected(self):
         left, right = socket.socketpair()
@@ -51,6 +71,7 @@ class RtspTests(unittest.TestCase):
     def test_waits_for_parameters_and_idr_and_bounds_startup(self):
         decoder = MagicMock()
         decoder.decode.return_value = []
+        decoder.has_b_frames = False
         fake_av = types.SimpleNamespace(
             CodecContext=types.SimpleNamespace(create=MagicMock(return_value=decoder)),
             Packet=lambda data: data,
@@ -73,9 +94,110 @@ class RtspTests(unittest.TestCase):
             publisher.close()
             self.assertEqual(publisher.pending_bytes, 0)
 
+    def test_parameter_change_waits_for_idr_and_handles_dimensions(self):
+        frame = types.SimpleNamespace(width=64, height=64)
+        decoder = MagicMock()
+        decoder.decode.return_value = [frame]
+        decoder.has_b_frames = False
+        fake_av = types.SimpleNamespace(
+            CodecContext=types.SimpleNamespace(create=MagicMock(return_value=decoder)),
+            Packet=lambda data: data,
+            error=types.SimpleNamespace(FFmpegError=ValueError),
+        )
+        with patch.dict(sys.modules, {"av": fake_av}):
+            publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+            publisher.started = True
+            publisher.sps, publisher.pps = b"\x67old", b"\x68pps"
+            publisher.width, publisher.height = 64, 64
+            publisher.output = MagicMock()
+            with patch.object(publisher, "_mux") as mux:
+                publisher.push(b"\x00\x00\x01\x67new\x00\x00\x01\x41delta", 0)
+                self.assertTrue(publisher.config_changed)
+                mux.assert_not_called()
+                publisher.push(b"\x00\x00\x01\x65idr", 100)
+                self.assertFalse(publisher.config_changed)
+                self.assertEqual(publisher.parameter_updates, 1)
+                self.assertTrue(mux.call_args.args[0].startswith(
+                    b"\x00\x00\x00\x01\x67new\x00\x00\x00\x01\x68pps"))
+                frame.width = 128
+                publisher.push(b"\x00\x00\x01\x67next\x00\x00\x01\x65idr", 200)
+                self.assertEqual((publisher.width, publisher.height), (128, 64))
+                decoder.has_b_frames = True
+                with self.assertRaisesRegex(ProtocolError, "B-frame"):
+                    publisher.push(b"\x00\x00\x01\x67other\x00\x00\x01\x65idr", 300)
+            publisher.close()
+
+    def test_change_recovers_from_decode_error_and_waits_for_next_idr(self):
+        frame = types.SimpleNamespace(width=64, height=64)
+        decoder = MagicMock()
+        decoder.has_b_frames = False
+        decoder.decode.side_effect = [ValueError("synthetic"), [], [frame]]
+        fake_av = types.SimpleNamespace(
+            CodecContext=types.SimpleNamespace(create=MagicMock(return_value=decoder)),
+            Packet=lambda data: data, error=types.SimpleNamespace(FFmpegError=ValueError),
+        )
+        with patch.dict(sys.modules, {"av": fake_av}):
+            publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+            publisher.started = True
+            publisher.sps, publisher.pps = b"\x67sps", b"\x68old"
+            publisher.width, publisher.height = 64, 64
+            publisher.output = MagicMock()
+            with patch.object(publisher, "_mux") as mux, patch("builtins.print"):
+                publisher.push(b"\x00\x00\x01\x68new\x00\x00\x01\x65idr", 100)
+                self.assertEqual((publisher.pps_changes, publisher.decode_errors), (1, 1))
+                publisher.push(b"\x00\x00\x01\x65idr", 200)
+                self.assertEqual(mux.call_count, 0)
+                publisher.push(b"\x00\x00\x01\x41delta", 300)
+                self.assertEqual(mux.call_count, 2)
+                self.assertEqual(publisher.parameter_updates, 1)
+            publisher.close()
+
+    def test_missing_idr_is_reported_separately(self):
+        fake_av = types.SimpleNamespace(
+            CodecContext=types.SimpleNamespace(create=MagicMock()), Packet=lambda data: data,
+            error=types.SimpleNamespace(FFmpegError=ValueError),
+        )
+        with patch.dict(sys.modules, {"av": fake_av}), \
+             patch("netvue_bridge.rtsp.time.monotonic", side_effect=[0, 0, 6]):
+            publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+            publisher.sps, publisher.pps = b"\x67sps", b"\x68pps"
+            publisher.push(b"\x00\x00\x01\x41delta", 0)
+            with self.assertRaisesRegex(ProtocolError, "IDR missing"):
+                publisher.push(b"\x00\x00\x01\x41delta", 100)
+            publisher.close()
+
+    @unittest.skipUnless(os.environ.get("NETVUE_MEDIAMTX"),
+                         "requires PyAV and synthetic H.264 encoder")
+    def test_b_frames_are_rejected_before_publication(self):
+        import av
+
+        codec = av.CodecContext.create("libx264", "w")
+        codec.width, codec.height, codec.pix_fmt = 64, 64, "yuv420p"
+        codec.time_base = Fraction(1, 10)
+        codec.options = {"preset": "medium", "x264-params": "keyint=10:bframes=2"}
+        codec.open()
+        packets = []
+        for index in range(20):
+            frame = av.VideoFrame(64, 64, "yuv420p")
+            frame.pts = index
+            for plane in frame.planes:
+                plane.update(bytes(plane.buffer_size))
+            packets.extend(codec.encode(frame))
+        packets.extend(codec.encode(None))
+        self.assertTrue(any(packet.pts != packet.dts for packet in packets))
+        publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+        try:
+            with self.assertRaisesRegex(ProtocolError, "B-frame"):
+                for index, packet in enumerate(packets):
+                    publisher.push(bytes(packet), index * 100)
+            self.assertEqual(publisher.published_frames, 0)
+        finally:
+            publisher.close()
+
     def test_controlled_reconnection_and_no_retry_on_auth_failure(self):
         camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
         publisher = MagicMock()
+        publisher.safe_metrics.return_value = {}
         with patch("netvue_bridge.stream.discover", return_value=camera), \
              patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
              patch("netvue_bridge.stream.authenticate", return_value=0) as auth, \
@@ -227,12 +349,23 @@ class RtspTests(unittest.TestCase):
     def test_bounded_check_with_synthetic_camera(self):
         import av
 
+        duration = int(os.environ.get("NETVUE_TEST_DURATION", "10"))
+        reader_delay = 3 if duration >= 30 else 0
+        probe_duration = 20 if duration >= 30 else 3
+        reconfigure = bool(os.environ.get("NETVUE_TEST_RECONFIG"))
+        resize = bool(os.environ.get("NETVUE_TEST_RESIZE"))
+        interrupt = bool(os.environ.get("NETVUE_TEST_INTERRUPT"))
+        pps_change = bool(os.environ.get("NETVUE_TEST_PPS"))
+        drop_frame = bool(os.environ.get("NETVUE_TEST_DROP"))
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(udp.close)
+        self.addCleanup(tcp.close)
+        fake_host = f"127.254.{(os.getpid() >> 8) % 256}.{os.getpid() % 256}"
         udp.settimeout(4)
         tcp.settimeout(4)
-        udp.bind(("127.0.0.2", 36868))
-        tcp.bind(("127.0.0.2", 5555))
+        udp.bind((fake_host, 36868))
+        tcp.bind((fake_host, 5555))
         tcp.listen(1)
         counts = []
         failures = []
@@ -241,7 +374,7 @@ class RtspTests(unittest.TestCase):
             try:
                 _, sender = udp.recvfrom(65535)
                 udp.sendto(command_packet([{"A": 8, "V": 2, "C": 0, "P": [
-                    "fake-id", "fake-fw", "127.0.0.2", 5555, "fake-key"
+                    "fake-id", "fake-fw", fake_host, 5555, "fake-key"
                 ]}]), sender)
                 sock, _ = tcp.accept()
                 with sock:
@@ -250,18 +383,31 @@ class RtspTests(unittest.TestCase):
                     sock.sendall(command_packet([{"A": 1, "V": 1, "C": 0}]))
                     read_packet(sock, time.monotonic() + 3)
                     sock.sendall(command_packet([{"A": 3, "V": 2, "C": 0}]))
-                    codec = av.CodecContext.create("libx264", "w")
-                    codec.width, codec.height, codec.pix_fmt = 64, 64, "yuv420p"
-                    codec.time_base = Fraction(1, 10)
-                    codec.options = {"preset": "ultrafast", "tune": "zerolatency",
-                                     "x264-params": "keyint=10:min-keyint=10:scenecut=0:bframes=0"}
-                    codec.open()
-                    for index in range(90):
-                        frame = av.VideoFrame(64, 64, "yuv420p")
+                    def make_codec(level, width, cabac):
+                        codec = av.CodecContext.create("libx264", "w")
+                        codec.width, codec.height, codec.pix_fmt = width, 64, "yuv420p"
+                        codec.time_base = Fraction(1, 10)
+                        codec.options = {"preset": "ultrafast", "tune": "zerolatency",
+                                         "x264-params": "keyint=10:min-keyint=10:scenecut=0:"
+                                                        "bframes=0:level=" + level + ":cabac=" + cabac}
+                        codec.open()
+                        return codec
+
+                    width = 64
+                    codec = make_codec("3.0", width, "0")
+                    for index in range((duration - 1) * 10):
+                        if interrupt and index == 25:
+                            return
+                        if reconfigure and index == 100:
+                            width = 128 if resize else 64
+                            codec = make_codec("3.1", width, "1" if pps_change else "0")
+                        frame = av.VideoFrame(width, 64, "yuv420p")
                         frame.pts = index
                         for plane in frame.planes:
                             plane.update(bytes(plane.buffer_size))
                         for packet in codec.encode(frame):
+                            if drop_frame and index == 15:
+                                continue
                             body = bytes([0x10 | int(packet.is_keyframe)]) + \
                                 (index * 100).to_bytes(4, "little") + bytes(packet)
                             sock.sendall(struct.pack("<IIIHH", len(body), 0, 0, 0, 201) + body)
@@ -275,14 +421,48 @@ class RtspTests(unittest.TestCase):
         try:
             result = subprocess.run(
                 [sys.executable, "-B", "-m", "netvue_bridge.check_rtsp",
-                 "--source", "127.0.0.1", "--target", "127.0.0.2",
+                 "--source", "127.0.0.1", "--target", fake_host,
                  "--mediamtx", os.environ["NETVUE_MEDIAMTX"],
                  "--ffprobe", os.environ["NETVUE_FFPROBE"],
-                 "--ffmpeg", str(Path(os.environ["NETVUE_FFPROBE"]).with_name("ffmpeg"))],
-                capture_output=True, text=True, timeout=20,
+                 "--ffmpeg", str(Path(os.environ["NETVUE_FFPROBE"]).with_name("ffmpeg")),
+                 "--duration", str(duration), "--reader-delay", str(reader_delay),
+                 "--probe-duration", str(probe_duration)]
+                + (["--home-assistant-check"] if os.environ.get("NETVUE_TEST_HA") else [])
+                + (["--frame-probe"] if resize else []),
+                capture_output=True, text=True, timeout=duration + 12,
             )
+            if interrupt:
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                line = next(line for line in result.stdout.splitlines() if line.startswith("readers: "))
+                readers = json.loads(line.split(": ", 1)[1])
+                self.assertGreater(readers["ffprobe"]["packets"], 0)
+                self.assertGreater(readers["ffmpeg"]["decoded_frames"], 0)
+                if os.environ.get("NETVUE_TEST_HA"):
+                    self.assertGreater(readers["home_assistant_ffprobe"]["packets"], 0)
+                    self.assertGreater(readers["home_assistant_ffmpeg"]["decoded_frames"], 0)
+                return
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('"decoded_frames":', result.stdout)
+            if reconfigure:
+                line = next(line for line in result.stdout.splitlines() if line.startswith("bridge: "))
+                lines = json.loads(line.split(": ", 1)[1])
+                metrics_line = next(line for line in lines if line.startswith("live_metrics: "))
+                metrics = json.loads(metrics_line.split(": ", 1)[1])
+                self.assertGreater(metrics["sps_changes"], 0)
+                if pps_change:
+                    self.assertGreater(metrics["pps_changes"], 0)
+                if resize:
+                    self.assertGreater(metrics["resolution_changes"], 0)
+            if drop_frame:
+                line = next(line for line in result.stdout.splitlines() if line.startswith("bridge: "))
+                lines = json.loads(line.split(": ", 1)[1])
+                metrics_line = next(line for line in lines if line.startswith("live_metrics: "))
+                metrics = json.loads(metrics_line.split(": ", 1)[1])
+                self.assertEqual(metrics["video_packets"], (duration - 1) * 10 - 1)
+            if reconfigure and resize:
+                self.assertIn("decoded_dimensions: [[64, 64], [128, 64]]", result.stdout)
+            if os.environ.get("NETVUE_TEST_HA"):
+                self.assertIn("home_assistant_rtsp:", result.stdout)
             self.assertEqual(counts, ["login"])
             print("synthetic bounded check:", result.stdout.strip())
         finally:

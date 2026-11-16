@@ -6,8 +6,8 @@ Prototype pour la branche LAN classique analysée dans l'APK. La publication ne 
 
 - La configuration [mediamtx.local.yml](./mediamtx.local.yml) écoute uniquement sur `127.0.0.1:8554`, en RTSP/TCP. RTMP, HLS, WebRTC, SRT et les interfaces de contrôle sont désactivés. Tous les utilisateurs locaux pouvant accéder à cette boucle locale peuvent lire ou publier sur le chemin autorisé : ce n'est pas une isolation entre utilisateurs.
 - La connexion caméra n'utilise pas TLS. Les données de découverte et le flux peuvent être visibles sur le chemin réseau ; ne pas partager de paquets bruts ou de journaux sensibles.
-- Chaque connexion authentifiée consomme une tentative. **Les trois tentatives autorisées pour la caméra 2 ont déjà été utilisées. Ne pas lancer le pont réel avant une nouvelle autorisation.** `--max-attempts` est un plafond par exécution, pas un compteur global ; sa valeur par défaut est 1. Un refus ou une interruption pendant l'authentification ne déclenche pas de réessai automatique.
-- Le prototype attend une unité d'accès H.264 Annex B par paquet vidéo et démarre après SPS, PPS et IDR. Il rejette les changements de paramètres, les horodatages non monotones et les flux avec réordonnancement B détecté au démarrage. La fragmentation différente et les changements de format ne sont pas pris en charge.
+- Chaque connexion authentifiée consomme une tentative. Les deux tentatives de phase 5 ont été utilisées ; aucune tentative de phase 6 n'a été effectuée. Tout essai réel exige que les restrictions applicables et le budget autorisé le permettent. `--max-attempts` est un plafond par exécution, pas un compteur global ; sa valeur par défaut est 1. Un refus ou une interruption pendant l'authentification ne déclenche pas de réessai automatique.
+- Le prototype attend une unité d'accès H.264 Annex B par paquet vidéo et démarre après SPS, PPS et IDR. Après un changement SPS/PPS, il attend une IDR et vérifie le décodage ; les tampons et l'attente sont bornés. Une modification de résolution a été testée synthétiquement, mais cette correction n'a pas été vérifiée sur la caméra. Les horodatages non monotones, les B-frames détectées et les fragmentations différentes restent non pris en charge.
 - Les données en mémoire peuvent toutefois être exposées au swap ou aux dumps système. Le fonctionnement prolongé et les reconnexions avec une caméra réelle restent à valider.
 
 ## Utilisation future, après nouvelle autorisation
@@ -41,4 +41,4 @@ NETVUE_FFPROBE=tools/ffmpeg-btbn/ffprobe \
 tools/venv/bin/python -B -m unittest discover -s tests -p 'test*bridge.py' -v
 ```
 
-Le second test synthétique utilise temporairement les ports loopback 36868/UDP, 5555/TCP et 8554/TCP ; ils doivent être libres. Il n'envoie rien aux caméras. Voir le [rapport phase 4](../findings/phase4-rtsp-bridge.md) pour les résultats réels, la mesure des ressources et les limites.
+Le test synthétique utilise temporairement les ports loopback 36868/UDP, 5555/TCP et 8554/TCP ; ils doivent être libres. Il n'envoie rien aux caméras. Voir les rapports [phase 4](../findings/phase4-rtsp-bridge.md), [phase 5](../findings/phase5-real-rtsp.md) et [phase 6](../findings/phase6-rtsp-stability.md) pour les résultats et les limites.
