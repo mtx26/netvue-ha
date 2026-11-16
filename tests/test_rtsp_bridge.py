@@ -42,22 +42,25 @@ class RtspTests(unittest.TestCase):
         self.assertIn("${NETVUE_MEDIAMTX_CONFIG:?set the existing MediaMTX config volume path}", stack)
         self.assertIn("${NETVUE_STATE_DIR:?set the existing persistent state volume path}", stack)
         self.assertIn(
-            "${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204}",
+            "${NETVUE_BRIDGE_IMAGE:?set the published Phase 17 image tag}",
             stack,
         )
         self.assertNotIn("condition: none", stack)
         self.assertEqual(stack.count("condition: on-failure"), 2)
         self.assertIn('cpus: "0.50"', stack)
-        self.assertIn("memory: 256M", stack)
+        self.assertIn("memory: 512M", stack)
         self.assertIn("memory: 128M", stack)
 
     def test_stack_uses_portainer_variables_without_a_local_env_file(self):
         root = Path(__file__).resolve().parents[1]
         stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
-        for name in ("NETVUE_NODE", "NETVUE_SOURCE", "NETVUE_TARGET",
+        for name in ("NETVUE_NODE", "NETVUE_SOURCE",
                      "NETVUE_MEDIAMTX_CONFIG", "NETVUE_STATE_DIR"):
             with self.subTest(name=name):
                 self.assertIn(name, stack)
+        self.assertNotIn("NETVUE_TARGET", stack)
+        self.assertIn("netvue_bridge.manager", (root / "deployment/Dockerfile")
+                      .read_text(encoding="utf-8"))
         self.assertFalse((root / "deployment/.env.example").exists())
 
     def test_ghcr_workflow_publishes_the_stack_image(self):
@@ -69,9 +72,11 @@ class RtspTests(unittest.TestCase):
         self.assertIn("packages: write", workflow)
         self.assertIn("ghcr.io/mtx26/netvue-ha", workflow)
         self.assertIn("--platform linux/amd64", workflow)
+        self.assertIn('--tag "$IMAGE:phase17"', workflow)
+        self.assertIn('--tag "$IMAGE:sha-${GITHUB_SHA}"', workflow)
         self.assertIn("--push .", workflow)
         stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
-        self.assertIn("ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204", stack)
+        self.assertIn("${NETVUE_BRIDGE_IMAGE:?set the published Phase 17 image tag}", stack)
 
     def test_check_rtsp_help_keeps_cli_options(self):
         result = subprocess.run([sys.executable, "-B", "-m", "netvue_bridge.check_rtsp", "--help"],

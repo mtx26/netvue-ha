@@ -151,33 +151,23 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(flow._host, "192.168.10.2")
             discover.assert_awaited_once_with("192.168.10.1", 24)
 
-    async def test_manual_flow_confirmation_and_duplicate(self):
+    async def test_manual_flow_creates_a_unique_managed_stream(self):
         hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: []))
         flow = NetvueConfigFlow()
         flow.hass = hass
-        data = {"name": "Test", "host": "192.168.10.2",
-                "stream_name": "test"}
-        with patch("custom_components.netvue_local.config_flow.async_probe_stream",
-                   new=unittest.mock.AsyncMock(return_value=True)) as probe:
-            form = await flow.async_step_manual()
-            self.assertEqual(form["data_schema"]({"name": "Test", "host": "192.168.10.2"})
-                             ["stream_name"], "netvue2")
-            invalid = await flow.async_step_manual({**data, "stream_name": "../test"})
-            self.assertEqual(invalid["errors"]["base"], "invalid_input")
-            result = await flow.async_step_manual(data)
-            self.assertEqual(result["step_id"], "confirm")
-            self.assertEqual(result["description_placeholders"]["url"],
-                             "rtsp://127.0.0.1:8554/test")
-            probe.assert_not_awaited()
-            result = await flow.async_step_confirm({"confirm": False})
-            self.assertEqual(result["errors"]["base"], "confirmation_required")
-            result = await flow.async_step_confirm({"confirm": True})
-            self.assertEqual(result["step_id"], "status")
-            probe.assert_awaited_once_with("rtsp://127.0.0.1:8554/test")
-            result = await flow.async_step_status({})
-            self.assertEqual(result["type"], "create_entry")
-            self.assertEqual(result["data"], {"name": "Test", "host": "192.168.10.2",
-                                              "stream_url": "rtsp://127.0.0.1:8554/test"})
+        data = {"name": "Test", "host": "192.168.10.2"}
+        form = await flow.async_step_manual()
+        self.assertEqual(form["data_schema"](data), data)
+        invalid = await flow.async_step_manual({**data, "host": "8.8.8.8"})
+        self.assertEqual(invalid["errors"]["base"], "invalid_input")
+        result = await flow.async_step_manual(data)
+        name = "netvue_192_168_10_2"
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(result["title"], "Test")
+        self.assertEqual(result["data"], {
+            "host": "192.168.10.2", "stream_name": name,
+            "stream_url": f"rtsp://127.0.0.1:8554/{name}",
+        })
 
     async def test_options_change_ip_and_duplicates(self):
         entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
@@ -189,24 +179,17 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         flow = NetvueOptionsFlow()
         flow.hass = hass
         flow.handler = "1"
-        result = await flow.async_step_init({"host": "192.168.10.4",
-                        "stream_name": "a"})
+        result = await flow.async_step_init({"host": "192.168.10.4"})
         self.assertEqual(result["errors"]["base"], "already_configured")
-        result = await flow.async_step_init({"host": "192.168.10.3",
-                        "stream_name": "a"})
-        self.assertEqual(result["description_placeholders"]["url"], "rtsp://127.0.0.1:8554/a")
-        with patch("custom_components.netvue_local.config_flow.async_probe_stream",
-                   new=unittest.mock.AsyncMock(return_value=False)) as probe:
-            result = await flow.async_step_confirm({"confirm": False})
-            self.assertEqual(result["errors"]["base"], "confirmation_required")
-            probe.assert_not_awaited()
-            result = await flow.async_step_confirm({"confirm": True})
-            self.assertEqual(result["step_id"], "status")
-            self.assertEqual(result["description_placeholders"]["status"], "indisponible / unavailable")
-            probe.assert_awaited_once_with("rtsp://127.0.0.1:8554/a")
-            result = await flow.async_step_status({})
-            self.assertEqual(result["data"], {"host": "192.168.10.3",
-                                               "stream_url": "rtsp://127.0.0.1:8554/a"})
+        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
+                   new=unittest.mock.AsyncMock()) as stop:
+            result = await flow.async_step_init({"host": "192.168.10.3"})
+        stop.assert_awaited_once_with(hass, "192.168.10.2")
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(result["data"], {
+            "host": "192.168.10.3", "stream_url": "rtsp://127.0.0.1:8554/a",
+            "stream_name": "a",
+        })
 
     async def test_legacy_options_preserve_or_explicitly_replace_url(self):
         for old_url in ("rtsp://127.0.0.1:8555/legacy", "rtsp://127.0.0.1:8554/a/b"):
@@ -218,30 +201,27 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             flow.hass = hass
             flow.handler = "1"
             form = await flow.async_step_init()
-            self.assertEqual(form["description_placeholders"]["url"], old_url)
             self.assertEqual(form["data_schema"]({"host": "192.168.10.3"}),
                              {"host": "192.168.10.3"})
             result = await flow.async_step_init({"host": "192.168.10.3"})
-            self.assertEqual(result["description_placeholders"]["url"], old_url)
-            with patch("custom_components.netvue_local.config_flow.async_probe_stream",
-                       new=unittest.mock.AsyncMock(return_value=True)):
-                await flow.async_step_confirm({"confirm": True})
-                result = await flow.async_step_status({})
-            self.assertEqual(result["data"]["stream_url"], old_url)
-            result = await flow.async_step_init({"host": "192.168.10.3", "stream_name": "new"})
-            self.assertEqual(result["description_placeholders"]["url"],
-                             "rtsp://127.0.0.1:8554/new")
+            self.assertEqual(result["type"], "create_entry")
+            self.assertEqual(result["data"], {"host": "192.168.10.3", "stream_url": old_url})
 
     async def test_setup_unload_and_camera(self):
         entry = SimpleNamespace(entry_id="1", title="Fake",
-                                data={"stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
+                                data={"host": "192.168.10.2", "stream_name": "a",
+                                      "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
         entries = SimpleNamespace(async_forward_entry_setups=unittest.mock.AsyncMock(),
                                   async_unload_platforms=unittest.mock.AsyncMock(return_value=True))
         hass = SimpleNamespace(config_entries=entries)
         coordinator = SimpleNamespace(data=True, last_update_success=True,
                                       async_refresh=unittest.mock.AsyncMock())
-        with patch("custom_components.netvue_local.NetvueCoordinator", return_value=coordinator):
+        with patch("custom_components.netvue_local.async_ensure_camera",
+                   new=unittest.mock.AsyncMock()) as ensure, \
+                patch("custom_components.netvue_local.NetvueCoordinator",
+                      return_value=coordinator):
             self.assertTrue(await async_setup_entry(hass, entry))
+            ensure.assert_awaited_once_with(hass, "192.168.10.2", "a")
         camera = NetvueCamera(entry, coordinator)
         self.assertEqual(await camera.stream_source(), entry.data["stream_url"])
         self.assertTrue(camera.available)
@@ -251,7 +231,10 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         coordinator.data = False
         self.assertFalse(camera.available)
         self.assertFalse(sensor.is_on)
-        self.assertTrue(await async_unload_entry(hass, entry))
+        with patch("custom_components.netvue_local.async_stop_camera",
+                   new=unittest.mock.AsyncMock()) as stop:
+            self.assertTrue(await async_unload_entry(hass, entry))
+        stop.assert_awaited_once_with(hass, "192.168.10.2")
         entries.async_unload_platforms.assert_awaited_once()
 
     async def test_existing_entries_with_removed_fields_keep_plain_stream_url(self):

@@ -3,70 +3,60 @@
     "step": {
       "user": {
         "title": "Netvue Local",
-        "description": "Use a separately provisioned bridge and RTSP stream. Compatibility is not verified for other models.",
-        "menu_options": {"discover": "Search the local network", "manual": "Add by IP"}
+        "description": "Recherchez une caméra sur le réseau local ou ajoutez-la par adresse IP.",
+        "menu_options": {
+          "discover": "Rechercher des caméras",
+          "manual": "Ajouter manuellement"
+        }
       },
       "discover": {
-        "title": "Discover cameras",
-        "description": "Select an authorized local interface. One UDP broadcast is sent; replies are not guaranteed. No camera authentication is attempted.",
-        "data": {"source": "Authorized network interface"}
+        "title": "Rechercher des caméras",
+        "description": "Choisissez l'interface locale. Une seule diffusion UDP est envoyée sur le sous-réseau sélectionné.",
+        "data": {"source": "Interface réseau"}
       },
       "select": {
-        "title": "Select a detected candidate",
-        "description": "Discovery does not establish video compatibility.",
-        "data": {"host": "Detected address"}
+        "title": "Choisir une caméra détectée",
+        "description": "Sélectionnez une adresse détectée, puis donnez un nom à la caméra.",
+        "data": {"host": "Caméra détectée"}
       },
       "manual": {
-        "title": "Configure an existing stream",
-        "description": "Enter the camera address and an existing stream name. A name does not create a stream or prove the camera association. Only letters, digits, underscores and hyphens are allowed.",
-        "data": {"name": "Display name", "host": "Camera IPv4 address", "stream_name": "RTSP stream name"}
-      },
-      "confirm": {
-        "title": "Confirm the association",
-        "description": "Confirm that {host} is the camera publishing {url}. Continuing probes this RTSP URL and enables periodic probes; a source-on-demand may start. No direct camera connection is made by this integration.",
-        "data": {"confirm": "I confirm this association and authorize probing the existing stream"}
-      },
-      "status": {
-        "title": "Stream verification",
-        "description": "RTSP probe result: {status}. An H.264 SDP announcement does not prove decoding or the camera association. A name alone does not create a stream. You can add an unavailable stream."
+        "title": "Ajouter une caméra",
+        "description": "Indiquez le nom affiché et l'adresse IPv4. L'intégration crée un flux unique et demande au pont de le démarrer.",
+        "data": {"name": "Nom affiché", "host": "Adresse IPv4 de la caméra"}
       }
     },
     "error": {
-      "invalid_input": "Invalid IP address, display name or RTSP stream name.",
-      "already_configured": "This IP address or RTSP URL is already configured.",
-      "confirmation_required": "Confirm the camera-to-stream association.",
-      "invalid_interface": "The selected interface is no longer available.",
-      "discovery_failed": "UDP discovery failed; check the network or use manual configuration.",
-      "no_devices": "No response. Broadcast discovery is not verified; manual configuration is available."
+      "invalid_input": "Adresse IPv4 ou nom affiché invalide.",
+      "already_configured": "Cette caméra est déjà configurée.",
+      "invalid_interface": "L'interface sélectionnée n'est plus disponible.",
+      "discovery_failed": "La recherche UDP a échoué. Vérifiez le réseau ou ajoutez la caméra manuellement.",
+      "no_devices": "Aucune caméra n'a répondu. Vous pouvez l'ajouter manuellement."
     },
     "abort": {
-      "already_configured": "This IP address or RTSP URL is already configured.",
-      "invalid_input": "The configuration is incomplete."
+      "no_interfaces": "Aucune interface IPv4 privée compatible n'est disponible.",
+      "already_configured": "Cette caméra est déjà configurée."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Update camera association",
-        "description": "Current URL: {url}. Enter an existing stream name using letters, digits, underscores or hyphens. This does not create a stream. For an older URL using another port or a nested path, leave the name blank to preserve that URL.",
-        "data": {"host": "Camera IPv4 address", "stream_name": "RTSP stream name"}
-      },
-      "confirm": {
-        "title": "Confirm the association",
-        "description": "Confirm that {host} corresponds to {url}. Continuing probes this RTSP URL; a source-on-demand may start. The bridge is not reconfigured.",
-        "data": {"confirm": "I confirm the association and authorize probing"}
-      },
-      "status": {
-        "title": "Stream verification",
-        "description": "RTSP probe result for {url}: {status}. H.264 SDP does not prove decoding or the camera association. An unavailable stream can be saved."
+        "title": "Modifier l'adresse de la caméra",
+        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse.",
+        "data": {"host": "Adresse IPv4 de la caméra"}
       }
     },
     "error": {
-      "invalid_input": "Invalid IP address or RTSP stream name.",
-      "already_configured": "This IP address or RTSP URL is already configured.",
-      "confirmation_required": "Confirm the camera-to-stream association."
+      "invalid_input": "Adresse IPv4 invalide.",
+      "already_configured": "Cette caméra est déjà configurée.",
+      "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée."
     },
-    "abort": {"invalid_input": "The configuration is incomplete.", "already_configured": "This IP address or RTSP URL is already configured."}
+    "abort": {
+      "already_configured": "Cette caméra est déjà configurée."
+    }
   },
-  "entity": {"binary_sensor": {"rtsp_available": {"name": "RTSP H.264 stream available"}}}
+  "entity": {
+    "binary_sensor": {
+      "rtsp_available": {"name": "Flux RTSP H.264 disponible"}
+    }
+  }
 }

@@ -33,17 +33,14 @@ services:
         order: stop-first
 
   bridge:
-    image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204}
+    image: ${NETVUE_BRIDGE_IMAGE:?set the published Phase 17 image tag}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
     networks: [host]
     command:
-      - run
       - --source
       - ${NETVUE_SOURCE:?set the authorized LAN source}
-      - --target
-      - ${NETVUE_TARGET:?set the authorized camera}
       - --state-dir
       - /state
     volumes:
@@ -51,7 +48,7 @@ services:
         source: ${NETVUE_STATE_DIR:?set the existing persistent state volume path}
         target: /state
     stop_signal: SIGTERM
-    stop_grace_period: 20s
+    stop_grace_period: 30s
     deploy:
       replicas: 1
       placement:
@@ -60,7 +57,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          memory: 512M
       restart_policy:
         condition: on-failure
         delay: 10s

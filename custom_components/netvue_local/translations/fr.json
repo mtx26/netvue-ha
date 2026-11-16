@@ -1,24 +1,62 @@
 {
   "config": {
     "step": {
-      "user": {"title": "Netvue Local", "description": "Utilisez une passerelle et un flux RTSP déjà configurés séparément. La compatibilité des autres modèles n'est pas vérifiée.", "menu_options": {"discover": "Rechercher sur le réseau local", "manual": "Ajouter par adresse IP"}},
-      "discover": {"title": "Rechercher des caméras", "description": "Sélectionnez une interface locale autorisée. Une diffusion UDP est envoyée ; une réponse n'est pas garantie. Aucune authentification caméra n'est tentée.", "data": {"source": "Interface réseau autorisée"}},
-      "select": {"title": "Sélectionner un candidat détecté", "description": "La découverte ne confirme pas la compatibilité vidéo.", "data": {"host": "Adresse détectée"}},
-      "manual": {"title": "Configurer un flux existant", "description": "Indiquez l'adresse de la caméra et le nom d'un flux existant. Un nom ne crée pas de flux et ne prouve pas l'association avec la caméra. Seuls les lettres, chiffres, tirets et caractères de soulignement sont autorisés.", "data": {"name": "Nom affiché", "host": "Adresse IPv4 de la caméra", "stream_name": "Nom du flux RTSP"}},
-      "confirm": {"title": "Confirmer l'association", "description": "Confirmez que {host} correspond à la caméra publiant {url}. Continuer sonde cette URL RTSP et active les sondes périodiques ; une source à la demande peut démarrer. Cette intégration ne contacte pas directement la caméra.", "data": {"confirm": "Je confirme l'association et autorise la vérification du flux existant"}},
-      "status": {"title": "Vérification du flux", "description": "Résultat RTSP : {status}. Une annonce SDP H.264 ne prouve ni le décodage ni l'association à la caméra. Un nom ne crée pas de flux. Un flux indisponible peut être ajouté."}
+      "user": {
+        "title": "Netvue Local",
+        "description": "Recherchez une caméra sur le réseau local ou ajoutez-la par adresse IP.",
+        "menu_options": {
+          "discover": "Rechercher des caméras",
+          "manual": "Ajouter manuellement"
+        }
+      },
+      "discover": {
+        "title": "Rechercher des caméras",
+        "description": "Choisissez l'interface locale. Une seule diffusion UDP est envoyée sur le sous-réseau sélectionné.",
+        "data": {"source": "Interface réseau"}
+      },
+      "select": {
+        "title": "Choisir une caméra détectée",
+        "description": "Sélectionnez une adresse détectée, puis donnez un nom à la caméra.",
+        "data": {"host": "Caméra détectée"}
+      },
+      "manual": {
+        "title": "Ajouter une caméra",
+        "description": "Indiquez le nom affiché et l'adresse IPv4. L'intégration crée un flux unique et demande au pont de le démarrer.",
+        "data": {"name": "Nom affiché", "host": "Adresse IPv4 de la caméra"}
+      }
     },
-    "error": {"invalid_input": "Adresse IP, nom affiché ou nom du flux RTSP invalide.", "already_configured": "Cette adresse IP ou URL RTSP est déjà configurée.", "confirmation_required": "Confirmez l'association entre caméra et flux.", "invalid_interface": "L'interface sélectionnée n'est plus disponible.", "discovery_failed": "La recherche UDP a échoué ; vérifiez le réseau ou utilisez la configuration manuelle.", "no_devices": "Aucune réponse. La découverte par diffusion n'est pas vérifiée ; utilisez la configuration manuelle."},
-    "abort": {"already_configured": "Cette adresse IP ou URL RTSP est déjà configurée.", "invalid_input": "La configuration est incomplète."}
+    "error": {
+      "invalid_input": "Adresse IPv4 ou nom affiché invalide.",
+      "already_configured": "Cette caméra est déjà configurée.",
+      "invalid_interface": "L'interface sélectionnée n'est plus disponible.",
+      "discovery_failed": "La recherche UDP a échoué. Vérifiez le réseau ou ajoutez la caméra manuellement.",
+      "no_devices": "Aucune caméra n'a répondu. Vous pouvez l'ajouter manuellement."
+    },
+    "abort": {
+      "no_interfaces": "Aucune interface IPv4 privée compatible n'est disponible.",
+      "already_configured": "Cette caméra est déjà configurée."
+    }
   },
   "options": {
     "step": {
-      "init": {"title": "Modifier l'association de la caméra", "description": "URL actuelle : {url}. Indiquez le nom d'un flux existant avec des lettres, chiffres, tirets ou caractères de soulignement. Cela ne crée pas de flux. Pour une ancienne URL utilisant un autre port ou un chemin imbriqué, laissez le nom vide pour la conserver.", "data": {"host": "Adresse IPv4 de la caméra", "stream_name": "Nom du flux RTSP"}},
-      "confirm": {"title": "Confirmer l'association", "description": "Confirmez que {host} correspond à {url}. Continuer sonde cette URL RTSP ; une source à la demande peut démarrer. La passerelle n'est pas reconfigurée.", "data": {"confirm": "Je confirme l'association et autorise les vérifications"}},
-      "status": {"title": "Vérification du flux", "description": "Résultat RTSP pour {url} : {status}. Une annonce SDP H.264 ne prouve ni le décodage ni l'association à la caméra. Un flux indisponible peut être enregistré."}
+      "init": {
+        "title": "Modifier l'adresse de la caméra",
+        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse.",
+        "data": {"host": "Adresse IPv4 de la caméra"}
+      }
     },
-    "error": {"invalid_input": "Adresse IP ou nom du flux RTSP invalide.", "already_configured": "Cette adresse IP ou URL RTSP est déjà configurée.", "confirmation_required": "Confirmez l'association entre caméra et flux."},
-    "abort": {"invalid_input": "La configuration est incomplète.", "already_configured": "Cette adresse IP ou URL RTSP est déjà configurée."}
+    "error": {
+      "invalid_input": "Adresse IPv4 invalide.",
+      "already_configured": "Cette caméra est déjà configurée.",
+      "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée."
+    },
+    "abort": {
+      "already_configured": "Cette caméra est déjà configurée."
+    }
   },
-  "entity": {"binary_sensor": {"rtsp_available": {"name": "Flux RTSP H.264 disponible"}}}
+  "entity": {
+    "binary_sensor": {
+      "rtsp_available": {"name": "Flux RTSP H.264 disponible"}
+    }
+  }
 }

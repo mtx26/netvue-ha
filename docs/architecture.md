@@ -2,13 +2,13 @@
 
 ## Périmètre
 
-Le projet comprend deux composants indépendants : la passerelle Python et l'intégration Home Assistant. MediaMTX est un service distinct. L'intégration ne démarre pas la passerelle, ne gère pas ses budgets et ne configure pas MediaMTX.
+Le projet comprend la passerelle Python, son API de contrôle loopback, l'intégration Home Assistant et MediaMTX. L'intégration demande au gestionnaire du pont de démarrer ou d'arrêter les sessions ; le pont reste seul responsable des budgets et de l'authentification LAN Netvue.
 
 ```text
-Caméra -- UDP découverte --> discovery
-       -- TCP authentification LAN/LIVE --> stream --> H.264 / PTS --> RTSP/TCP
-                                                                  |
-Home Assistant <-- lecture RTSP et sonde SDP <-- MediaMTX <-------+
+Home Assistant -- découverte UDP utilisateur --> caméra
+       -- HTTP loopback 127.0.0.1:8765 --> gestionnaire --> superviseur v4
+                                                         --> authentification LAN --> caméra
+Home Assistant <-- RTSP 127.0.0.1:8554 <-- MediaMTX <-- H.264/RTSP/TCP
 ```
 
 Le transport Netvue local n'est pas chiffré. RTSP est limité à la boucle locale dans la configuration fournie, mais reste accessible aux autres processus partageant cet espace réseau. Aucun accès Internet ni enregistrement ne sont nécessaires.
@@ -17,6 +17,7 @@ Le transport Netvue local n'est pas chiffré. RTSP est limité à la boucle loca
 
 | Module | Responsabilité |
 |---|---|
+| [manager.py](../netvue_bridge/manager.py) | API HTTP loopback, validation des demandes, allocation des budgets par caméra et cycle de vie des sessions. |
 | [protocol.py](../netvue_bridge/protocol.py) | Trames, JSON, validation des en-têtes et lectures bornées. |
 | [discovery.py](../netvue_bridge/discovery.py) | Découverte UDP unicast, validation de l'émetteur et extraction des paramètres de connexion. |
 | [connection.py](../netvue_bridge/connection.py), [authentication.py](../netvue_bridge/authentication.py) | Socket TCP et authentification LAN ; la clé ne figure pas dans la représentation de l'objet découvert. |
@@ -66,6 +67,6 @@ contacter une caméra.
 
 ## Home Assistant et déploiement
 
-[config_flow.py](../custom_components/netvue_local/config_flow.py) propose une découverte UDP déclenchée par l'utilisateur ou une saisie manuelle. Il génère une URL loopback depuis le nom technique, affiche cette URL et demande confirmation avant la sonde RTSP. Les anciennes URL enregistrées restent utilisées. [coordinator.py](../custom_components/netvue_local/coordinator.py) sonde périodiquement l'annonce SDP ; [camera.py](../custom_components/netvue_local/camera.py) et [binary_sensor.py](../custom_components/netvue_local/binary_sensor.py) exposent le flux et sa disponibilité. Une annonce SDP ne prouve ni le décodage ni l'identité de la caméra.
+[config_flow.py](../custom_components/netvue_local/config_flow.py) propose une découverte UDP déclenchée par l'utilisateur ou un ajout manuel. La sélection démarre le gestionnaire via [bridge_api.py](../custom_components/netvue_local/bridge_api.py) ; une URL et un nom de flux déterministes sont associés à chaque IPv4. Le gestionnaire démarre un superviseur et un budget distincts par caméra, sans plafond logiciel fixe ; la capacité pratique dépend des ressources allouées au service. L'API est sans authentification mais écoute uniquement sur 127.0.0.1:8765 ; elle est accessible aux processus partageant l'espace réseau de l'hôte. [coordinator.py](../custom_components/netvue_local/coordinator.py) sonde périodiquement le RTSP ; [camera.py](../custom_components/netvue_local/camera.py) et [binary_sensor.py](../custom_components/netvue_local/binary_sensor.py) exposent l'entité caméra et l'état de disponibilité. Les anciennes URL non standard restent lues sans être reconfigurées par le gestionnaire.
 
-[stack.yaml](../deployment/stack.yaml) épingle les deux services au nœud Home Assistant, utilise le réseau host, ne publie aucun port RTSP, et conserve le budget v4 dans `/srv/netvue-bridge/state`. MediaMTX reste lié à `127.0.0.1:8554`. Portainer/Swarm ne construit pas l'image du pont : elle doit être construite sur le nœud cible, ou fournie par une registry si le Swarm est multi-nœud. Lire [deployment/README.md](../deployment/README.md) avant toute opération autorisée.
+[stack.yaml](../deployment/stack.yaml) épingle les deux services au nœud Home Assistant, utilise le réseau host, ne publie aucun port et conserve les budgets v4 dans le volume d'état. MediaMTX reste lié à `127.0.0.1:8554` ; l'API du pont écoute sur `127.0.0.1:8765`. Lire le guide [Home Assistant](../custom_components/netvue_local/README.md) et [deployment/README.md](../deployment/README.md) avant toute opération autorisée.

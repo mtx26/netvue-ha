@@ -15,6 +15,11 @@ def stream_url_from_name(name: str) -> str:
     return f"rtsp://127.0.0.1:8554/{name}"
 
 
+def stream_name_for_host(host: str) -> str:
+    address = validate_host(host)
+    return "netvue_" + address.replace(".", "_")
+
+
 def stream_name_from_url(url: str) -> str | None:
     validate_stream_url(url)
     parts = urlsplit(url)

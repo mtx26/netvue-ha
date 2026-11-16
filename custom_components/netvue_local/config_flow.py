@@ -9,12 +9,15 @@ from homeassistant.components.network import async_get_adapters
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 
+from .bridge_api import BridgeError, async_stop_camera
 from .const import (
-    CONF_CONFIRM, CONF_HOST, CONF_SOURCE, CONF_STREAM_NAME, CONF_STREAM_URL,
-    DEFAULT_NAME, DEFAULT_STREAM_NAME, DOMAIN,
+    CONF_HOST, CONF_SOURCE, CONF_STREAM_NAME, CONF_STREAM_URL,
+    DEFAULT_NAME, DOMAIN,
 )
 from .discovery import async_discover, local_network
-from .rtsp import async_probe_stream, stream_name_from_url, stream_url_from_name, validate_host
+from .rtsp import (
+    stream_name_for_host, stream_name_from_url, stream_url_from_name, validate_host,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,8 +54,6 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._sources = {}
         self._candidates = []
         self._host = ""
-        self._data = {}
-        self._status = ""
 
     @staticmethod
     @callback
@@ -79,6 +80,8 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if self._candidates:
                         return await self.async_step_select()
                     errors["base"] = "no_devices"
+        if not self._sources:
+            return self.async_abort(reason="no_interfaces")
         return self.async_show_form(
             step_id="discover",
             data_schema=vol.Schema({vol.Required(CONF_SOURCE): vol.In(self._sources)}),
@@ -99,7 +102,8 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 host = validate_host(user_input[CONF_HOST])
-                url = stream_url_from_name(user_input[CONF_STREAM_NAME])
+                stream_name = stream_name_for_host(host)
+                url = stream_url_from_name(stream_name)
             except (ValueError, KeyError):
                 errors["base"] = "invalid_input"
             else:
@@ -108,115 +112,63 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 elif not user_input[CONF_NAME].strip():
                     errors["base"] = "invalid_input"
                 else:
-                    self._data = {CONF_HOST: host, CONF_STREAM_URL: url,
-                                  CONF_NAME: user_input[CONF_NAME].strip()}
-                    return await self.async_step_confirm()
+                    return self.async_create_entry(
+                        title=user_input[CONF_NAME].strip(),
+                        data={CONF_HOST: host, CONF_STREAM_NAME: stream_name,
+                              CONF_STREAM_URL: url},
+                    )
         return self.async_show_form(
             step_id="manual",
             data_schema=vol.Schema({
                 vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
                 vol.Required(CONF_HOST, default=self._host): str,
-                vol.Required(CONF_STREAM_NAME, default=DEFAULT_STREAM_NAME): str,
             }), errors=errors,
         )
-
-    async def async_step_confirm(self, user_input=None):
-        if not self._data:
-            return self.async_abort(reason="invalid_input")
-        errors = {}
-        if user_input is not None:
-            if not user_input.get(CONF_CONFIRM):
-                errors["base"] = "confirmation_required"
-            elif _duplicate(self.hass, self._data[CONF_HOST], self._data[CONF_STREAM_URL]):
-                errors["base"] = "already_configured"
-            else:
-                available = await async_probe_stream(self._data[CONF_STREAM_URL])
-                self._status = "H.264 SDP" if available else "indisponible / unavailable"
-                return await self.async_step_status()
-        return self.async_show_form(
-            step_id="confirm",
-            description_placeholders={
-                "host": self._data[CONF_HOST],
-                "url": self._data[CONF_STREAM_URL],
-            },
-            data_schema=vol.Schema({vol.Required(CONF_CONFIRM, default=False): bool}),
-            errors=errors,
-        )
-
-    async def async_step_status(self, user_input=None):
-        if not self._data:
-            return self.async_abort(reason="invalid_input")
-        if user_input is not None:
-            if _duplicate(self.hass, self._data[CONF_HOST], self._data[CONF_STREAM_URL]):
-                return self.async_abort(reason="already_configured")
-            return self.async_create_entry(title=self._data[CONF_NAME], data=self._data)
-        return self.async_show_form(step_id="status", data_schema=vol.Schema({}),
-                                    description_placeholders={"status": self._status})
 
 
 class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
     def __init__(self) -> None:
         self._data = {}
-        self._status = ""
 
     async def async_step_init(self, user_input=None):
         entry = self.config_entry
         old_url = entry.options.get(CONF_STREAM_URL, entry.data[CONF_STREAM_URL])
-        old_name = stream_name_from_url(old_url)
+        try:
+            old_name = stream_name_from_url(old_url)
+        except ValueError:
+            old_name = None
         errors = {}
         if user_input is not None:
             try:
                 host = validate_host(user_input[CONF_HOST])
-                name = user_input.get(CONF_STREAM_NAME, "")
-                url = old_url if old_name is None and not name else stream_url_from_name(name)
             except (ValueError, KeyError):
                 errors["base"] = "invalid_input"
             else:
+                stream_name = old_name
+                url = old_url if old_name is None else stream_url_from_name(stream_name)
                 if _duplicate(self.hass, host, url, entry.entry_id):
                     errors["base"] = "already_configured"
                 else:
+                    old_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
+                    if old_name is not None:
+                        try:
+                            await async_stop_camera(self.hass, old_host)
+                        except BridgeError:
+                            errors["base"] = "bridge_unavailable"
+                            return self.async_show_form(
+                                step_id="init",
+                                data_schema=vol.Schema({
+                                    vol.Required(CONF_HOST, default=host): str,
+                                }), errors=errors,
+                            )
                     self._data = {CONF_HOST: host, CONF_STREAM_URL: url}
-                    return await self.async_step_confirm()
+                    if stream_name is not None:
+                        self._data[CONF_STREAM_NAME] = stream_name
+                    return self.async_create_entry(title="", data=self._data)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
                 vol.Required(CONF_HOST, default=entry.options.get(
                     CONF_HOST, entry.data[CONF_HOST])): str,
-                (vol.Required(CONF_STREAM_NAME, default=old_name) if old_name is not None
-                 else vol.Optional(CONF_STREAM_NAME)): str,
-            }), errors=errors, description_placeholders={"url": old_url},
+            }), errors=errors,
         )
-
-    async def async_step_confirm(self, user_input=None):
-        if not self._data:
-            return self.async_abort(reason="invalid_input")
-        errors = {}
-        if user_input is not None:
-            if not user_input.get(CONF_CONFIRM):
-                errors["base"] = "confirmation_required"
-            elif _duplicate(self.hass, self._data[CONF_HOST], self._data[CONF_STREAM_URL],
-                            self.config_entry.entry_id):
-                errors["base"] = "already_configured"
-            else:
-                available = await async_probe_stream(self._data[CONF_STREAM_URL])
-                self._status = "H.264 SDP" if available else "indisponible / unavailable"
-                return await self.async_step_status()
-        return self.async_show_form(
-            step_id="confirm",
-            description_placeholders={"host": self._data[CONF_HOST],
-                                      "url": self._data[CONF_STREAM_URL]},
-            data_schema=vol.Schema({vol.Required(CONF_CONFIRM, default=False): bool}),
-            errors=errors,
-        )
-
-    async def async_step_status(self, user_input=None):
-        if not self._data:
-            return self.async_abort(reason="invalid_input")
-        if user_input is not None:
-            if _duplicate(self.hass, self._data[CONF_HOST], self._data[CONF_STREAM_URL],
-                          self.config_entry.entry_id):
-                return self.async_abort(reason="already_configured")
-            return self.async_create_entry(title="", data=self._data)
-        return self.async_show_form(step_id="status", data_schema=vol.Schema({}),
-                                    description_placeholders={"status": self._status,
-                                                              "url": self._data[CONF_STREAM_URL]})

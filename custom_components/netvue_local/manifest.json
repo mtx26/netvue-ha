@@ -1,8 +1,8 @@
 {
   "domain": "netvue_local",
   "name": "Netvue Local",
-  "version": "0.1.0",
-  "documentation": "https://github.com/netvue",
+  "version": "0.2.0",
+  "documentation": "https://github.com/mtx26/netvue-ha",
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["network", "stream"],
