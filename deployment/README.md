@@ -1,6 +1,6 @@
 # Préparation Swarm Netvue
 
-**Pilote borné uniquement.** En phase 10, la stack `netvue-pilot` a été validée sur Debian et une unique tentative caméra autorisée a été consommée. Son pont est arrêté, son budget est épuisé et bloqué, tandis que MediaMTX reste actif sur loopback. Aucun usage permanent n'est activé. Toute nouvelle connexion caméra et toute modification de Home Assistant nécessitent une autorisation distincte. Voir le [rapport de phase 10](../findings/phase10-swarm-installation.md).
+**Pilote borné uniquement.** Les phases 10 et 11 ont chacune bénéficié d'une autorisation et d'un budget distincts. Aucun usage permanent n'est activé ; une nouvelle connexion caméra ou une modification de Home Assistant exige une autorisation distincte. Voir les rapports de [phase 10](../findings/phase10-swarm-installation.md) et de [phase 11](../findings/phase11-recovery.md). Ne jamais réutiliser un budget épuisé ou bloqué.
 
 ## Architecture et prérequis
 
