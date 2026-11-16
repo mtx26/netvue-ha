@@ -38,6 +38,37 @@ class RtspTests(unittest.TestCase):
                 self.assertNotIn("authInternalUsers", text)
         stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
         self.assertNotRegex(stack, r"(?m)^\s+ports:")
+        self.assertIn("networks: [host]", stack)
+        self.assertIn("${NETVUE_MEDIAMTX_CONFIG:?set the existing MediaMTX config volume path}", stack)
+        self.assertIn("${NETVUE_STATE_DIR:?set the existing persistent state volume path}", stack)
+        self.assertIn("${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:phase16}", stack)
+        self.assertNotIn("condition: none", stack)
+        self.assertEqual(stack.count("condition: on-failure"), 2)
+        self.assertIn('cpus: "0.50"', stack)
+        self.assertIn("memory: 256M", stack)
+        self.assertIn("memory: 128M", stack)
+
+    def test_stack_uses_portainer_variables_without_a_local_env_file(self):
+        root = Path(__file__).resolve().parents[1]
+        stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
+        for name in ("NETVUE_NODE", "NETVUE_SOURCE", "NETVUE_TARGET",
+                     "NETVUE_MEDIAMTX_CONFIG", "NETVUE_STATE_DIR"):
+            with self.subTest(name=name):
+                self.assertIn(name, stack)
+        self.assertFalse((root / "deployment/.env.example").exists())
+
+    def test_ghcr_workflow_publishes_the_stack_image(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/publish-bridge-image.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("packages: write", workflow)
+        self.assertIn("ghcr.io/mtx26/netvue-ha", workflow)
+        self.assertIn("--platform linux/amd64", workflow)
+        self.assertIn("--push .", workflow)
+        stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
+        self.assertIn("ghcr.io/mtx26/netvue-ha:phase16", stack)
 
     def test_check_rtsp_help_keeps_cli_options(self):
         result = subprocess.run([sys.executable, "-B", "-m", "netvue_bridge.check_rtsp", "--help"],

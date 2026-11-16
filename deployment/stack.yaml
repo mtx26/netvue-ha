@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   mediamtx:
-    image: bluenviron/mediamtx:1.21.4@sha256:456791fae0607e00d4f7105fd4048e1b9bb9c5cb43e0fe0cb55e3beeea023f15
+    image: bluenviron/mediamtx:1.21.4@sha256:c730bccdbc8739f8f0c13cefe9bea8b61926f599b88fa4d0d229baa91846c7bc
     command: ["/mediamtx.yml"]
     user: "10001:10001"
     read_only: true
@@ -10,7 +10,7 @@ services:
     networks: [host]
     volumes:
       - type: bind
-        source: ${NETVUE_MEDIAMTX_CONFIG:?set an absolute MediaMTX configuration path}
+        source: ${NETVUE_MEDIAMTX_CONFIG:?set the existing MediaMTX config volume path}
         target: /mediamtx.yml
         read_only: true
     stop_grace_period: 15s
@@ -33,7 +33,7 @@ services:
         order: stop-first
 
   bridge:
-    image: ${NETVUE_BRIDGE_IMAGE:?set the prebuilt bridge image}
+    image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:phase16}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
@@ -48,7 +48,7 @@ services:
       - /state
     volumes:
       - type: bind
-        source: ${NETVUE_STATE_DIR:?set an absolute persistent budget directory}
+        source: ${NETVUE_STATE_DIR:?set the existing persistent state volume path}
         target: /state
     stop_signal: SIGTERM
     stop_grace_period: 20s
@@ -62,7 +62,10 @@ services:
           cpus: "0.50"
           memory: 256M
       restart_policy:
-        condition: none
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 120s
       update_config:
         order: stop-first
       rollback_config:
