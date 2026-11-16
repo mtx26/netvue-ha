@@ -183,6 +183,73 @@ def validate_local_readers(probe_out: bytes, probe_error: bytes, player_out: byt
     }
 
 
+def build_reader_commands(args: argparse.Namespace, container: str | None) -> list[tuple[str, list[str]]]:
+    probe_args = [
+        "-v", "error", "-rtsp_transport", "tcp",
+        "-select_streams", "v:0", "-show_entries",
+        "stream=codec_name,width,height:packet=pts_time,flags",
+        "-show_streams", "-show_packets", "-read_intervals",
+        f"%+{args.probe_duration}", "-of", "json", URL,
+    ]
+    readers = [
+        ("ffprobe", [args.ffprobe, *probe_args]),
+        ("ffmpeg", [
+            args.ffmpeg, "-v", "error", "-rtsp_transport", "tcp",
+            "-i", URL, "-t", str(args.probe_duration), "-f", "null", "-",
+            "-progress", "pipe:1", "-nostats",
+        ]),
+    ]
+    if args.frame_probe:
+        readers.append(("frame_probe", [
+            args.ffprobe, "-v", "error", "-rtsp_transport", "tcp",
+            "-select_streams", "v:0", "-show_entries", "frame=width,height",
+            "-show_frames", "-read_intervals", f"%+{args.probe_duration}",
+            "-of", "json", URL,
+        ]))
+    if container is not None:
+        reader_timeout = str(int(args.duration + 8))
+        readers.append(("home_assistant_ffprobe", [
+            "docker", "exec", container, "timeout", "-k", "2", reader_timeout,
+            "ffprobe", *probe_args,
+        ]))
+        readers.append(("home_assistant_ffmpeg", [
+            "docker", "exec", container, "timeout", "-k", "2", reader_timeout,
+            "ffmpeg", "-v", "error",
+            "-rtsp_transport", "tcp", "-i", URL, "-t", str(args.probe_duration),
+            "-f", "null", "-", "-progress", "pipe:1", "-nostats",
+        ]))
+    return readers
+
+
+def validate_frame_probe(stdout: bytes, stderr: bytes, returncode: int | None) -> list[tuple[int, int]]:
+    if returncode != 0:
+        raise RuntimeError(f"Frame probe failed; error lines={len(stderr.splitlines())}")
+    frames = json.loads(stdout).get("frames", [])
+    sizes = sorted({(frame["width"], frame["height"]) for frame in frames
+                    if "width" in frame and "height" in frame})
+    if not sizes:
+        raise RuntimeError("Frame probe did not decode image dimensions")
+    return sizes
+
+
+def validate_home_assistant_probe(stdout: bytes, stderr: bytes, returncode: int | None,
+                                  local_summary: dict[str, object]) -> dict[str, object]:
+    if returncode != 0:
+        raise RuntimeError(f"Home Assistant FFprobe failed; error lines={len(stderr.splitlines())}")
+    info = json.loads(stdout)
+    streams, packets = info.get("streams", []), info.get("packets", [])
+    if (not streams or streams[0].get("codec_name") != "h264"
+            or streams[0].get("width") != local_summary["width"]
+            or streams[0].get("height") != local_summary["height"]
+            or len(packets) < 2):
+        raise RuntimeError("Home Assistant FFprobe could not verify the RTSP stream")
+    return {
+        "codec": streams[0]["codec_name"], "width": streams[0]["width"],
+        "height": streams[0]["height"], "packets": len(packets),
+        "ffprobe_error_lines": len(stderr.splitlines()),
+    }
+
+
 def sample(pid: int) -> tuple[float, int] | None:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
@@ -195,8 +262,7 @@ def sample(pid: int) -> tuple[float, int] | None:
         return None
 
 
-def main() -> int:
-    start = time.monotonic()
+def parse_arguments() -> tuple[argparse.Namespace, str | None]:
     parser = argparse.ArgumentParser(description="One bounded local RTSP camera check")
     parser.add_argument("--source", required=True)
     parser.add_argument("--target", required=True)
@@ -241,6 +307,12 @@ def main() -> int:
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         if result.returncode:
             parser.error("timeout is unavailable in the Home Assistant container")
+    return args, container
+
+
+def main() -> int:
+    start = time.monotonic()
+    args, container = parse_arguments()
     with socket.socket() as check:
         check.bind(("127.0.0.1", 8554))
     config = Path(__file__).with_name("mediamtx.local.yml")
@@ -329,41 +401,7 @@ def main() -> int:
                     ready_at = time.monotonic()
             if ready_at is not None and not readers_started and time.monotonic() >= ready_at + args.reader_delay:
                 readers_started = True
-                probe_args = [
-                    "-v", "error", "-rtsp_transport", "tcp",
-                    "-select_streams", "v:0", "-show_entries",
-                    "stream=codec_name,width,height:packet=pts_time,flags",
-                    "-show_streams", "-show_packets", "-read_intervals",
-                    f"%+{args.probe_duration}", "-of", "json", URL,
-                ]
-                readers = [
-                    ("ffprobe", [args.ffprobe, *probe_args]),
-                    ("ffmpeg", [
-                        args.ffmpeg, "-v", "error", "-rtsp_transport", "tcp",
-                        "-i", URL, "-t", str(args.probe_duration), "-f", "null", "-",
-                        "-progress", "pipe:1", "-nostats",
-                    ]),
-                ]
-                if args.frame_probe:
-                    readers.append(("frame_probe", [
-                        args.ffprobe, "-v", "error", "-rtsp_transport", "tcp",
-                        "-select_streams", "v:0", "-show_entries", "frame=width,height",
-                        "-show_frames", "-read_intervals", f"%+{args.probe_duration}",
-                        "-of", "json", URL,
-                    ]))
-                if container is not None:
-                    reader_timeout = str(int(args.duration + 8))
-                    readers.append(("home_assistant_ffprobe", [
-                        "docker", "exec", container, "timeout", "-k", "2", reader_timeout,
-                        "ffprobe", *probe_args,
-                    ]))
-                    readers.append(("home_assistant_ffmpeg", [
-                        "docker", "exec", container, "timeout", "-k", "2", reader_timeout,
-                        "ffmpeg", "-v", "error",
-                        "-rtsp_transport", "tcp", "-i", URL, "-t", str(args.probe_duration),
-                        "-f", "null", "-", "-progress", "pipe:1", "-nostats",
-                    ]))
-                for name, cmd in readers:
+                for name, cmd in build_reader_commands(args, container):
                     process = launch(name, cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     worker = threading.Thread(target=drain, args=(name, process))
                     drains[name] = worker
@@ -407,31 +445,14 @@ def main() -> int:
         if args.frame_probe:
             frame_probe = processes["frame_probe"]
             frames_out, frames_error = outputs["frame_probe"]
-            if frame_probe.returncode != 0:
-                raise RuntimeError(f"Frame probe failed; error lines={len(frames_error.splitlines())}")
-            frames = json.loads(frames_out).get("frames", [])
-            sizes = sorted({(frame["width"], frame["height"]) for frame in frames
-                            if "width" in frame and "height" in frame})
-            if not sizes:
-                raise RuntimeError("Frame probe did not decode image dimensions")
+            sizes = validate_frame_probe(frames_out, frames_error, frame_probe.returncode)
             print("decoded_dimensions:", json.dumps(sizes))
         if container is not None:
             ha = processes["home_assistant_ffprobe"]
             ha_out, ha_error = outputs["home_assistant_ffprobe"]
-            if ha.returncode != 0:
-                raise RuntimeError(f"Home Assistant FFprobe failed; error lines={len(ha_error.splitlines())}")
-            ha_info = json.loads(ha_out)
-            ha_streams, ha_packets = ha_info.get("streams", []), ha_info.get("packets", [])
-            if (not ha_streams or ha_streams[0].get("codec_name") != "h264"
-                    or ha_streams[0].get("width") != summary["width"]
-                    or ha_streams[0].get("height") != summary["height"]
-                    or len(ha_packets) < 2):
-                raise RuntimeError("Home Assistant FFprobe could not verify the RTSP stream")
-            print("home_assistant_rtsp:", json.dumps({
-                "codec": ha_streams[0]["codec_name"], "width": ha_streams[0]["width"],
-                "height": ha_streams[0]["height"], "packets": len(ha_packets),
-                "ffprobe_error_lines": len(ha_error.splitlines()),
-            }))
+            print("home_assistant_rtsp:", json.dumps(validate_home_assistant_probe(
+                ha_out, ha_error, ha.returncode, summary,
+            )))
             ha_player = processes["home_assistant_ffmpeg"]
             ha_player_info = reader_summary.get("home_assistant_ffmpeg", {})
             ha_frames = ha_player_info.get("decoded_frames")

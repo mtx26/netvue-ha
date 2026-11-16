@@ -1,6 +1,7 @@
 """Focused H.264 timestamp recovery tests using synthetic encoded pictures."""
 
 import unittest
+from collections import deque
 from fractions import Fraction
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +11,22 @@ except ModuleNotFoundError:
     av = None
 
 from netvue_bridge.protocol import ProtocolError
+from netvue_bridge.h264 import interpolate_duplicate_timestamps
 from netvue_bridge.rtsp import H264Publisher, annexb_nals
+
+
+class TimestampInterpolationTests(unittest.TestCase):
+    def test_interpolation_preserves_cadence_across_wrap(self):
+        intervals = deque([100, 100, 100])
+        self.assertEqual(interpolate_duplicate_timestamps(300, 600, 2, intervals), [400, 500])
+        self.assertEqual(interpolate_duplicate_timestamps(0xFFFFFF9B, 99, 1, intervals),
+                         [0xFFFFFFFF])
+
+    def test_interpolation_rejects_missing_history_and_unsafe_gap(self):
+        with self.assertRaisesRegex(ProtocolError, "cadence"):
+            interpolate_duplicate_timestamps(None, 100, 1, deque([100] * 3))
+        with self.assertRaisesRegex(ProtocolError, "safely interpolated"):
+            interpolate_duplicate_timestamps(300, 301, 1, deque([100] * 3))
 
 
 @unittest.skipIf(av is None, "requires PyAV and libx264")

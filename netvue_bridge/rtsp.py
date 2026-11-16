@@ -1,9 +1,12 @@
 import time
 from fractions import Fraction
-from statistics import median
+from statistics import median as median
 from urllib.parse import urlsplit
 
-from .h264 import START_CODE, TimestampClock, annexb_nals, first_slice_macroblock
+from .h264 import (
+    START_CODE, TimestampClock, annexb_nals, first_slice_macroblock,
+    interpolate_duplicate_timestamps, picture_boundary_prefix,
+)
 from .protocol import ProtocolError
 
 
@@ -135,15 +138,7 @@ class H264Publisher:
             self._last_access_unit = data if len(data) <= MAX_COLLISION_BYTES else None
 
     def _verify_picture_boundary(self, previous: bytes, current: bytes) -> None:
-        if previous == current:
-            raise ProtocolError("Identical H.264 payloads make timestamp resolution ambiguous")
-        if self.sps is None or self.pps is None:
-            raise ProtocolError("H.264 parameters unavailable for timestamp resolution")
-        for data in (previous, current):
-            slices = [nal for nal in annexb_nals(data) if (nal[0] & 31) in (1, 5)]
-            if not slices or first_slice_macroblock(slices[0]) != 0:
-                raise ProtocolError("Ambiguous H.264 picture boundary for duplicate timestamp")
-        prefix = b"\x00\x00\x00\x01" + self.sps + b"\x00\x00\x00\x01" + self.pps
+        prefix = picture_boundary_prefix(previous, current, self.sps, self.pps)
         parser = self.av.CodecContext.create("h264", "r")
         try:
             packets = parser.parse(prefix + previous)
@@ -155,17 +150,10 @@ class H264Publisher:
             raise ProtocolError("Ambiguous H.264 picture boundary for duplicate timestamp")
 
     def _resolve_collisions(self, next_data: bytes, next_timestamp: int, now: float) -> None:
-        previous = self.clock.previous
-        if previous is None or len(self.clock.intervals) < 3:
-            raise ProtocolError("Insufficient cadence history for duplicate timestamp")
-        gap = (next_timestamp - previous) & 0xFFFFFFFF
-        count = len(self._collision_frames) + 1
-        expected = median(self.clock.intervals)
-        if (gap > 10000 or gap >= 0x80000000 or gap < count
-                or not expected * 0.5 <= gap / count <= expected * 1.5):
-            raise ProtocolError("Duplicate timestamp cannot be safely interpolated")
-        for index, (frame, arrival) in enumerate(self._collision_frames, 1):
-            interpolated = (previous + gap * index // count) & 0xFFFFFFFF
+        timestamps = interpolate_duplicate_timestamps(
+            self.clock.previous, next_timestamp, len(self._collision_frames), self.clock.intervals,
+        )
+        for (frame, arrival), interpolated in zip(self._collision_frames, timestamps):
             self._push_frame(frame, interpolated, arrival)
             self.timestamp_corrections += 1
         self._collision_frames.clear()

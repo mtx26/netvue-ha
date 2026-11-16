@@ -15,7 +15,8 @@ from unittest.mock import MagicMock, patch
 
 from netvue_bridge import h264, rtsp
 from netvue_bridge.check_rtsp import (
-    enforce_bridge_deadline, finish_readers, partial_diagnostics, validate_local_readers,
+    build_reader_commands, enforce_bridge_deadline, finish_readers, partial_diagnostics,
+    validate_frame_probe, validate_home_assistant_probe, validate_local_readers,
 )
 from netvue_bridge.discovery import DiscoveredCamera
 from netvue_bridge.protocol import ConnectionClosed, ProtocolError, command_packet, read_packet
@@ -24,6 +25,52 @@ from netvue_bridge.stream import StreamInterrupted, receive_stream, run_sessions
 
 
 class RtspTests(unittest.TestCase):
+    def test_check_rtsp_help_keeps_cli_options(self):
+        result = subprocess.run([sys.executable, "-B", "-m", "netvue_bridge.check_rtsp", "--help"],
+                                capture_output=True, text=True, timeout=5, check=True)
+        for option in ("--source", "--target", "--mediamtx", "--ffprobe", "--ffmpeg",
+                       "--duration", "--probe-duration", "--reader-delay", "--bridge-timeout",
+                       "--home-assistant-check", "--frame-probe"):
+            with self.subTest(option=option):
+                self.assertIn(option, result.stdout)
+
+    def test_reader_commands_keep_optional_checks_and_local_url(self):
+        args = types.SimpleNamespace(ffprobe="probe", ffmpeg="decoder", duration=10,
+                                     probe_duration=3, frame_probe=False)
+        basic = dict(build_reader_commands(args, None))
+        self.assertEqual(list(basic), ["ffprobe", "ffmpeg"])
+        self.assertEqual(basic["ffprobe"][-1], "rtsp://127.0.0.1:8554/netvue2")
+        self.assertIn("%+3", basic["ffprobe"])
+        args.frame_probe = True
+        extended = dict(build_reader_commands(args, "fake-ha"))
+        self.assertEqual(list(extended), ["ffprobe", "ffmpeg", "frame_probe",
+                                          "home_assistant_ffprobe", "home_assistant_ffmpeg"])
+        self.assertEqual(extended["home_assistant_ffprobe"][:7],
+                         ["docker", "exec", "fake-ha", "timeout", "-k", "2", "18"])
+        self.assertEqual(extended["home_assistant_ffprobe"][8:], basic["ffprobe"][1:])
+
+    def test_frame_probe_checks_decoded_dimensions(self):
+        data = json.dumps({"frames": [{"width": 128, "height": 64},
+                                      {"width": 64, "height": 64},
+                                      {"width": 64, "height": 64}, {}]}).encode()
+        self.assertEqual(validate_frame_probe(data, b"", 0), [(64, 64), (128, 64)])
+        with self.assertRaisesRegex(RuntimeError, "did not decode"):
+            validate_frame_probe(b'{"frames":[]}', b"", 0)
+        with self.assertRaisesRegex(RuntimeError, "error lines=1"):
+            validate_frame_probe(b"", b"error\n", 1)
+
+    def test_home_assistant_probe_checks_matching_stream(self):
+        data = json.dumps({"streams": [{"codec_name": "h264", "width": 64, "height": 64}],
+                           "packets": [{}, {}]}).encode()
+        local = {"width": 64, "height": 64}
+        self.assertEqual(validate_home_assistant_probe(data, b"", 0, local),
+                         {"codec": "h264", "width": 64, "height": 64,
+                          "packets": 2, "ffprobe_error_lines": 0})
+        with self.assertRaisesRegex(RuntimeError, "could not verify"):
+            validate_home_assistant_probe(data, b"", 0, {"width": 128, "height": 64})
+        with self.assertRaisesRegex(RuntimeError, "error lines=1"):
+            validate_home_assistant_probe(data, b"error\n", 1, local)
+
     def test_local_reader_validation_preserves_summary_and_thresholds(self):
         probe = json.dumps({
             "streams": [{"codec_name": "h264", "width": 64, "height": 32}],
