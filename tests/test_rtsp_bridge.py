@@ -13,7 +13,7 @@ from fractions import Fraction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from netvue_bridge.check_rtsp import partial_diagnostics
+from netvue_bridge.check_rtsp import enforce_bridge_deadline, finish_readers, partial_diagnostics
 from netvue_bridge.discovery import DiscoveredCamera
 from netvue_bridge.protocol import ConnectionClosed, ProtocolError, command_packet, read_packet
 from netvue_bridge.rtsp import H264Publisher, TimestampClock, annexb_nals, validate_local_rtsp_url
@@ -21,6 +21,18 @@ from netvue_bridge.stream import StreamInterrupted, receive_stream, run_sessions
 
 
 class RtspTests(unittest.TestCase):
+    def test_bridge_watchdog_stops_overdue_process(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertFalse(enforce_bridge_deadline(process, time.monotonic() + 1))
+            self.assertTrue(enforce_bridge_deadline(process, time.monotonic() - 1))
+            process.wait(timeout=3)
+            self.assertNotEqual(process.returncode, 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=3)
+
     def test_partial_reader_diagnostics_are_explicit(self):
         outputs = {
             "ffprobe": (json.dumps({"streams": [{"codec_name": "h264", "width": 64,
@@ -33,6 +45,52 @@ class RtspTests(unittest.TestCase):
         self.assertEqual(summary["ffprobe"]["keyframes"], 1)
         self.assertTrue(summary["home_assistant_ffprobe"]["incomplete_json"])
         self.assertEqual(summary["ffmpeg"]["decoded_frames"], 4)
+
+    def test_interrupted_readers_are_drained_after_termination(self):
+        processes = {}
+        outputs = {}
+        workers = {}
+        try:
+            for name in ("ffprobe", "ffmpeg", "home_assistant_ffprobe", "home_assistant_ffmpeg"):
+                payload = ('{"packets":[{"pts_time":"1.0","flags":"K"}]}'
+                           if "ffprobe" in name else "frame=4")
+                script = ("import sys,time; "
+                          f"print({payload!r}, flush=True); "
+                          "print('ready', file=sys.stderr, flush=True); time.sleep(30)")
+                process = subprocess.Popen([sys.executable, "-u", "-c", script],
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                processes[name] = process
+                self.assertEqual(process.stderr.readline().strip(), b"ready")
+                worker = threading.Thread(target=lambda n=name, p=process: outputs.update(
+                    {n: p.communicate()}))
+                workers[name] = worker
+                worker.start()
+            finish_readers(processes, workers)
+            summary = partial_diagnostics(outputs)
+            for name in processes:
+                self.assertIsNotNone(processes[name].returncode)
+                self.assertFalse(workers[name].is_alive())
+                self.assertTrue(summary[name]["connection_verified"])
+        finally:
+            for process in processes.values():
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+            for worker in workers.values():
+                worker.join(timeout=3)
+            for process in processes.values():
+                for pipe in (process.stdout, process.stderr):
+                    if pipe is not None and not pipe.closed:
+                        pipe.close()
+
+    def test_partial_probe_json_preserves_complete_packets(self):
+        data = (b'{"packets":[{"pts_time":"0.1","flags":"K"},'
+                b'{"pts_time":"0.2","flags":"__"},{"pts_time":')
+        summary = partial_diagnostics({"ffprobe": (data, b"")})["ffprobe"]
+        self.assertTrue(summary["incomplete_json"])
+        self.assertEqual(summary["packets"], 2)
+        self.assertEqual(summary["keyframes"], 1)
+        self.assertEqual(summary["timestamp_span_seconds"], 0.1)
 
     def test_only_local_rtsp_is_allowed(self):
         validate_local_rtsp_url("rtsp://127.0.0.1:8554/netvue2")
@@ -125,6 +183,55 @@ class RtspTests(unittest.TestCase):
                 decoder.has_b_frames = True
                 with self.assertRaisesRegex(ProtocolError, "B-frame"):
                     publisher.push(b"\x00\x00\x01\x67other\x00\x00\x01\x65idr", 300)
+            publisher.close()
+
+    def test_acknowledged_reconfiguration_rebases_zero_timestamp_only(self):
+        frame = types.SimpleNamespace(width=64, height=64)
+        decoder = MagicMock()
+        decoder.decode.return_value = [frame]
+        decoder.has_b_frames = False
+        fake_av = types.SimpleNamespace(
+            CodecContext=types.SimpleNamespace(create=MagicMock(return_value=decoder)),
+            Packet=lambda data: data,
+            error=types.SimpleNamespace(FFmpegError=ValueError),
+        )
+        with patch.dict(sys.modules, {"av": fake_av}):
+            for acknowledged, timestamp in ((False, 0), (True, 1), (True, 0)):
+                publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+                publisher.started = True
+                publisher.sps, publisher.pps = b"\x67old", b"\x68pps"
+                publisher.width, publisher.height = 64, 64
+                publisher.output = MagicMock()
+                for value in (0, 5000, 10808):
+                    publisher.clock.update(value)
+                publisher.last_clock_time = 100.0
+                if acknowledged:
+                    publisher.note_repeated_live_confirmation()
+                with patch.object(publisher, "_mux") as mux, \
+                     patch("netvue_bridge.rtsp.time.monotonic", return_value=100.12):
+                    data = b"\x00\x00\x01\x67new\x00\x00\x01\x65idr"
+                    if not acknowledged or timestamp != 0:
+                        with self.assertRaisesRegex(ProtocolError, "moved backwards"):
+                            publisher.push(data, timestamp)
+                    else:
+                        publisher.push(data, timestamp)
+                        self.assertEqual(mux.call_args.args[1], 10928)
+                        self.assertEqual(publisher.safe_metrics()["timestamp_resets"], 1)
+                        self.assertEqual(publisher.clock.previous, 0)
+                publisher.close()
+
+    def test_reconfirmed_zero_pts_without_parameter_change_is_rejected(self):
+        fake_av = types.SimpleNamespace(
+            CodecContext=types.SimpleNamespace(create=MagicMock()),
+            Packet=lambda data: data, error=types.SimpleNamespace(FFmpegError=ValueError),
+        )
+        with patch.dict(sys.modules, {"av": fake_av}):
+            publisher = H264Publisher("rtsp://127.0.0.1:8554/netvue2")
+            publisher.clock.update(100)
+            publisher.last_clock_time = 100.0
+            publisher.note_repeated_live_confirmation()
+            with self.assertRaisesRegex(ProtocolError, "moved backwards"):
+                publisher._timestamp(0, 100.1, True)
             publisher.close()
 
     def test_change_recovers_from_decode_error_and_waits_for_next_idr(self):
@@ -225,12 +332,62 @@ class RtspTests(unittest.TestCase):
                                           10, max_attempts=2, retry_delay=0), 1)
             self.assertEqual(auth.call_count, 1)
 
+    def test_retry_callback_only_for_transient_non_authentication_failure(self):
+        camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
+        publisher = MagicMock()
+        publisher.safe_metrics.return_value = {}
+        callback = MagicMock()
+        with patch("netvue_bridge.stream.discover", return_value=camera), \
+             patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
+             patch("netvue_bridge.stream.authenticate",
+                   side_effect=ConnectionClosed("closed")), patch("builtins.print"):
+            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                          10, on_retryable=callback), 1)
+            callback.assert_not_called()
+        with patch("netvue_bridge.stream.discover", return_value=camera), \
+             patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
+             patch("netvue_bridge.stream.authenticate", return_value=0), \
+             patch("netvue_bridge.stream.H264Publisher", return_value=publisher), \
+             patch("netvue_bridge.stream.receive_stream",
+                   side_effect=StreamInterrupted("stalled")), patch("builtins.print"):
+            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                          10, on_retryable=callback), 1)
+            callback.assert_called_once_with("live")
+
+    def test_interruption_closes_socket_and_publisher(self):
+        camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
+        publisher = MagicMock()
+        publisher.safe_metrics.return_value = {}
+        left, right = socket.socketpair()
+        try:
+            with patch("netvue_bridge.stream.discover", return_value=camera), \
+                 patch("netvue_bridge.stream.connect", return_value=left), \
+                 patch("netvue_bridge.stream.authenticate", return_value=0), \
+                 patch("netvue_bridge.stream.H264Publisher", return_value=publisher), \
+                 patch("netvue_bridge.stream.receive_stream", side_effect=KeyboardInterrupt), \
+                 patch("builtins.print"):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2", 10)
+            self.assertEqual(left.fileno(), -1)
+            publisher.close.assert_called_once()
+        finally:
+            left.close()
+            right.close()
+
     @unittest.skipUnless(os.environ.get("NETVUE_MEDIAMTX") and os.environ.get("NETVUE_FFPROBE"),
                          "requires portable MediaMTX, FFprobe, and PyAV")
     def test_synthetic_camera_to_rtsp_ffprobe(self):
+        self.check_synthetic_camera_to_rtsp("netvue_bridge", "mediamtx.local.yml")
+
+    @unittest.skipUnless(os.environ.get("NETVUE_MEDIAMTX") and os.environ.get("NETVUE_FFPROBE"),
+                         "requires portable MediaMTX, FFprobe, and PyAV")
+    def test_deployment_config_with_synthetic_camera(self):
+        self.check_synthetic_camera_to_rtsp("deployment", "mediamtx.yml")
+
+    def check_synthetic_camera_to_rtsp(self, directory, filename):
         import av
 
-        config = Path(__file__).resolve().parents[1] / "netvue_bridge" / "mediamtx.local.yml"
+        config = Path(__file__).resolve().parents[1] / directory / filename
         with socket.socket() as port_socket:
             port_socket.bind(("127.0.0.1", 0))
             port = port_socket.getsockname()[1]
@@ -351,12 +508,17 @@ class RtspTests(unittest.TestCase):
 
         duration = int(os.environ.get("NETVUE_TEST_DURATION", "10"))
         reader_delay = 3 if duration >= 30 else 0
-        probe_duration = 20 if duration >= 30 else 3
+        probe_duration = int(os.environ.get("NETVUE_TEST_PROBE_DURATION",
+                                            "20" if duration >= 30 else "3"))
+        bridge_timeout = os.environ.get("NETVUE_TEST_BRIDGE_TIMEOUT")
         reconfigure = bool(os.environ.get("NETVUE_TEST_RECONFIG"))
         resize = bool(os.environ.get("NETVUE_TEST_RESIZE"))
         interrupt = bool(os.environ.get("NETVUE_TEST_INTERRUPT"))
         pps_change = bool(os.environ.get("NETVUE_TEST_PPS"))
+        reset_pts = bool(os.environ.get("NETVUE_TEST_PTS_RESET"))
         drop_frame = bool(os.environ.get("NETVUE_TEST_DROP"))
+        if reset_pts and not reconfigure:
+            self.fail("Synthetic timestamp reset requires reconfiguration")
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.addCleanup(udp.close)
@@ -399,6 +561,8 @@ class RtspTests(unittest.TestCase):
                         if interrupt and index == 25:
                             return
                         if reconfigure and index == 100:
+                            if reset_pts:
+                                sock.sendall(command_packet([{"A": 3, "V": 2, "C": 0}]))
                             width = 128 if resize else 64
                             codec = make_codec("3.1", width, "1" if pps_change else "0")
                         frame = av.VideoFrame(width, 64, "yuv420p")
@@ -408,8 +572,9 @@ class RtspTests(unittest.TestCase):
                         for packet in codec.encode(frame):
                             if drop_frame and index == 15:
                                 continue
+                            pts_index = index - 100 if reset_pts and index >= 100 else index
                             body = bytes([0x10 | int(packet.is_keyframe)]) + \
-                                (index * 100).to_bytes(4, "little") + bytes(packet)
+                                (pts_index * 100).to_bytes(4, "little") + bytes(packet)
                             sock.sendall(struct.pack("<IIIHH", len(body), 0, 0, 0, 201) + body)
                         time.sleep(0.1)
                     time.sleep(1.5)
@@ -428,6 +593,7 @@ class RtspTests(unittest.TestCase):
                  "--duration", str(duration), "--reader-delay", str(reader_delay),
                  "--probe-duration", str(probe_duration)]
                 + (["--home-assistant-check"] if os.environ.get("NETVUE_TEST_HA") else [])
+                + (["--bridge-timeout", bridge_timeout] if bridge_timeout else [])
                 + (["--frame-probe"] if resize else []),
                 capture_output=True, text=True, timeout=duration + 12,
             )
@@ -453,6 +619,8 @@ class RtspTests(unittest.TestCase):
                     self.assertGreater(metrics["pps_changes"], 0)
                 if resize:
                     self.assertGreater(metrics["resolution_changes"], 0)
+                if reset_pts:
+                    self.assertEqual(metrics["timestamp_resets"], 1)
             if drop_frame:
                 line = next(line for line in result.stdout.splitlines() if line.startswith("bridge: "))
                 lines = json.loads(line.split(": ", 1)[1])

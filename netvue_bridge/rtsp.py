@@ -54,6 +54,13 @@ class TimestampClock:
         self.previous = value
         return self.elapsed
 
+    def rebase_zero(self, gap_ms: int) -> int:
+        if self.previous is None or self.previous == 0 or not 0 < gap_ms <= 10000:
+            raise ProtocolError("Invalid timestamp reset or arrival-time gap")
+        self.elapsed += gap_ms
+        self.previous = 0
+        return self.elapsed
+
 
 class H264Publisher:
     def __init__(self, url: str) -> None:
@@ -72,6 +79,10 @@ class H264Publisher:
         self.pps: bytes | None = None
         self.started = False
         self.clock = TimestampClock()
+        self.last_clock_time: float | None = None
+        self.live_reconfirmed = False
+        self.timestamp_resets = 0
+        self.last_reset_gap_ms: int | None = None
         self.pending: list[tuple[bytes, int, bool]] = []
         self.pending_bytes = 0
         self.output = None
@@ -93,6 +104,8 @@ class H264Publisher:
         self.input_key_frames = 0
         self.first_video_time: float | None = None
         self.last_video_time: float | None = None
+        self.first_video_pts: int | None = None
+        self.last_video_pts: int | None = None
         self.published_frames = 0
         self.key_frames = 0
 
@@ -101,7 +114,9 @@ class H264Publisher:
         self.video_packets += 1
         if self.first_video_time is None:
             self.first_video_time = now
+            self.first_video_pts = timestamp
         self.last_video_time = now
+        self.last_video_pts = timestamp
         units = annexb_nals(data)
         types = {nal[0] & 31 for nal in units}
         self.input_key_frames += int(5 in types)
@@ -121,6 +136,7 @@ class H264Publisher:
                         self.pending.clear()
                         self.pending_bytes = 0
                         self.clock = TimestampClock()
+                        self.last_clock_time = None
                         self.waiting_since = now
                     elif not self.config_changed or self.change_decoder is not None:
                         self.waiting_since = now
@@ -157,7 +173,7 @@ class H264Publisher:
                     return
                 self.change_decoder = self.av.CodecContext.create("h264", "r")
                 data = b"\x00\x00\x00\x01" + self.sps + b"\x00\x00\x00\x01" + self.pps + data
-            pts = self.clock.update(timestamp)
+            pts = self._timestamp(timestamp, now, key)
             self.change_pending_bytes += len(data)
             if (self.change_pending_bytes > MAX_STARTUP_BYTES
                     or len(self.change_pending) >= MAX_STARTUP_FRAMES):
@@ -184,6 +200,7 @@ class H264Publisher:
                 self.resolution_changes += 1
             self.width, self.height = frames[0].width, frames[0].height
             self.config_changed = False
+            self.live_reconfirmed = False
             self.parameter_updates += 1
             self.consecutive_decode_errors = 0
             self.change_decoder = None
@@ -192,7 +209,7 @@ class H264Publisher:
             self.change_pending.clear()
             self.change_pending_bytes = 0
             return
-        pts = self.clock.update(timestamp)
+        pts = self._timestamp(timestamp, now, key)
         if self.output is None:
             self.pending_bytes += len(data)
             if self.pending_bytes > MAX_STARTUP_BYTES or len(self.pending) >= MAX_STARTUP_FRAMES:
@@ -230,6 +247,27 @@ class H264Publisher:
         else:
             self._mux(data, pts, key)
 
+    def note_repeated_live_confirmation(self) -> None:
+        self.live_reconfirmed = True
+
+    def _timestamp(self, timestamp: int, now: float, key: bool) -> int:
+        previous = self.clock.previous
+        if (self.config_changed and key and self.live_reconfirmed
+                and timestamp == 0 and previous is not None
+                and ((timestamp - previous) & 0xFFFFFFFF) > 0x80000000):
+            if self.last_clock_time is None:
+                raise ProtocolError("Timestamp reset has no previous arrival time")
+            gap_ms = round((now - self.last_clock_time) * 1000)
+            pts = self.clock.rebase_zero(gap_ms)
+            self.timestamp_resets += 1
+            self.last_reset_gap_ms = gap_ms
+            self.live_reconfirmed = False
+            print("live: PTS reset rebased using arrival time", flush=True)
+        else:
+            pts = self.clock.update(timestamp)
+        self.last_clock_time = now
+        return pts
+
     def _mux(self, data: bytes, pts: int, key: bool) -> None:
         packet = self.av.Packet(data)
         packet.pts = packet.dts = pts
@@ -257,7 +295,11 @@ class H264Publisher:
             "resolution_changes": self.resolution_changes,
             "parameter_updates": self.parameter_updates,
             "decode_errors": self.decode_errors,
+            "timestamp_resets": self.timestamp_resets,
+            "last_reset_gap_ms": self.last_reset_gap_ms,
             "video_wall_span_seconds": span,
+            "first_video_pts": self.first_video_pts,
+            "last_video_pts": self.last_video_pts,
             "video_pts_span_ms": self.clock.elapsed,
         }
 

@@ -13,6 +13,64 @@ from pathlib import Path
 URL = "rtsp://127.0.0.1:8554/netvue2"
 
 
+def partial_probe_array(text: str, name: str) -> list[dict]:
+    marker = f'"{name}"'
+    position = text.find(marker)
+    if position < 0:
+        return []
+    position = text.find("[", position + len(marker))
+    if position < 0:
+        return []
+    decoder = json.JSONDecoder()
+    result = []
+    position += 1
+    while True:
+        while position < len(text) and text[position] in " \t\r\n,":
+            position += 1
+        if position >= len(text) or text[position] == "]":
+            break
+        try:
+            item, position = decoder.raw_decode(text, position)
+        except json.JSONDecodeError:
+            break
+        if not isinstance(item, dict):
+            break
+        result.append(item)
+    return result
+
+
+def finish_readers(processes: dict[str, subprocess.Popen],
+                   workers: dict[str, threading.Thread]) -> None:
+    for process in processes.values():
+        if process.poll() is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+    deadline = time.monotonic() + 3
+    for process in processes.values():
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            process.kill()
+    deadline = time.monotonic() + 3
+    for process in processes.values():
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+    deadline = time.monotonic() + 3
+    for worker in workers.values():
+        worker.join(timeout=max(0, deadline - time.monotonic()))
+
+
+def enforce_bridge_deadline(process: subprocess.Popen, deadline: float) -> bool:
+    if process.poll() is None and time.monotonic() >= deadline:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return False
+        return True
+    return False
+
+
 def partial_diagnostics(outputs: dict[str, tuple[bytes, bytes]]) -> dict[str, dict[str, object]]:
     result: dict[str, dict[str, object]] = {}
     for name in ("ffprobe", "home_assistant_ffprobe"):
@@ -24,28 +82,66 @@ def partial_diagnostics(outputs: dict[str, tuple[bytes, bytes]]) -> dict[str, di
             data = json.loads(stdout)
         except (json.JSONDecodeError, UnicodeDecodeError):
             info["incomplete_json"] = True
+            try:
+                text = stdout.decode("utf-8")
+            except UnicodeDecodeError:
+                text = ""
+            streams = partial_probe_array(text, "streams")
+            packets = partial_probe_array(text, "packets")
         else:
             streams = data.get("streams", [])
             packets = data.get("packets", [])
-            if streams:
-                info.update({key: streams[0].get(key) for key in ("codec_name", "width", "height")})
-            info["packets"] = len(packets)
-            info["keyframes"] = sum("K" in packet.get("flags", "") for packet in packets)
-            times = [float(p["pts_time"]) for p in packets if "pts_time" in p]
-            if len(times) >= 2 and times[-1] > times[0]:
-                info["fps_from_timestamps"] = round((len(times) - 1) / (times[-1] - times[0]), 2)
-            info["connection_verified"] = bool(packets)
+        if streams:
+            info.update({key: streams[0].get(key) for key in ("codec_name", "width", "height")})
+        info["packets"] = len(packets)
+        info["keyframes"] = sum("K" in packet.get("flags", "") for packet in packets)
+        times = []
+        invalid_times = 0
+        for packet in packets:
+            if "pts_time" in packet:
+                try:
+                    times.append(float(packet["pts_time"]))
+                except (TypeError, ValueError):
+                    invalid_times += 1
+        if invalid_times:
+            info["invalid_timestamp_values"] = invalid_times
+        if times:
+            info["first_pts_seconds"] = times[0]
+            info["last_pts_seconds"] = times[-1]
+        if len(times) >= 2:
+            gaps = [b - a for a, b in zip(times, times[1:])]
+            span = times[-1] - times[0]
+            info["timestamp_span_seconds"] = round(span, 3)
+            info["timestamps_strictly_increasing"] = all(gap > 0 for gap in gaps)
+            info["max_timestamp_gap_seconds"] = round(max(gaps), 3)
+            if span > 0:
+                info["fps_from_timestamps"] = round((len(times) - 1) / span, 2)
+        info["connection_verified"] = bool(packets)
         result[name] = info
     for name in ("ffmpeg", "home_assistant_ffmpeg"):
         if name not in outputs:
             continue
         stdout, stderr = outputs[name]
-        counts = [int(line.split("=", 1)[1]) for line in stdout.decode().splitlines()
-                  if line.startswith("frame=")]
-        fps = [float(line.split("=", 1)[1]) for line in stdout.decode().splitlines()
-               if line.startswith("fps=")]
+        counts, fps, durations = [], [], []
+        invalid_values = 0
+        for line in stdout.decode("utf-8", errors="replace").splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key not in ("frame", "fps", "out_time_us"):
+                continue
+            try:
+                if key == "frame":
+                    counts.append(int(value))
+                elif key == "fps":
+                    fps.append(float(value))
+                else:
+                    durations.append(int(value))
+            except ValueError:
+                invalid_values += 1
         result[name] = {"decoded_frames": max(counts, default=0),
                         "reported_fps": fps[-1] if fps else None,
+                        "decoded_duration_seconds": round(max(durations) / 1000000, 3)
+                        if durations else None,
+                        "invalid_progress_values": invalid_values,
                         "connection_verified": bool(counts and max(counts) > 0),
                         "error_lines": len(stderr.splitlines())}
     return result
@@ -64,6 +160,7 @@ def sample(pid: int) -> tuple[float, int] | None:
 
 
 def main() -> int:
+    start = time.monotonic()
     parser = argparse.ArgumentParser(description="One bounded local RTSP camera check")
     parser.add_argument("--source", required=True)
     parser.add_argument("--target", required=True)
@@ -73,12 +170,15 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=10)
     parser.add_argument("--probe-duration", type=float, default=3)
     parser.add_argument("--reader-delay", type=float, default=0)
+    parser.add_argument("--bridge-timeout", type=float)
     parser.add_argument("--home-assistant-check", action="store_true")
     parser.add_argument("--frame-probe", action="store_true")
     args = parser.parse_args()
     if not (0 < args.duration <= 30 and 0 < args.probe_duration
             and args.reader_delay >= 0
-            and args.reader_delay + args.probe_duration <= args.duration - 3):
+            and args.reader_delay + args.probe_duration <= args.duration - 3
+            and (args.bridge_timeout is None
+                 or args.duration < args.bridge_timeout <= 30)):
         parser.error("Invalid duration, probe duration or reader delay")
     for binary in (args.mediamtx, args.ffprobe, args.ffmpeg):
         if not os.access(binary, os.X_OK):
@@ -101,6 +201,10 @@ def main() -> int:
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
             if result.returncode:
                 parser.error(f"{binary} is unavailable in the Home Assistant container")
+        result = subprocess.run(["docker", "exec", container, "timeout", "--help"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        if result.returncode:
+            parser.error("timeout is unavailable in the Home Assistant container")
     with socket.socket() as check:
         check.bind(("127.0.0.1", 8554))
     config = Path(__file__).with_name("mediamtx.local.yml")
@@ -109,7 +213,13 @@ def main() -> int:
     lines: queue.SimpleQueue[str] = queue.SimpleQueue()
     outputs: dict[str, tuple[bytes, bytes]] = {}
     drains: dict[str, threading.Thread] = {}
-    start = time.monotonic()
+    bridge_lines: list[str] = []
+    bridge_thread: threading.Thread | None = None
+    bridge_errors: list[str] = []
+    bridge_error_thread: threading.Thread | None = None
+    bridge_started = None
+    bridge_stopped_at = None
+    ready_at = None
 
     def launch(name: str, cmd: list[str], **kwargs) -> subprocess.Popen:
         process = subprocess.Popen(cmd, **kwargs)
@@ -144,6 +254,8 @@ def main() -> int:
                 time.sleep(0.05)
         if server.poll() is not None:
             raise RuntimeError("MediaMTX exited during startup")
+        if time.monotonic() - start > 35:
+            raise RuntimeError("Preflight took too long to start a bounded session")
         bridge = launch(
             "bridge", [sys.executable, "-B", "-m", "netvue_bridge.stream",
                        "--source", args.source, "--target", args.target,
@@ -156,15 +268,23 @@ def main() -> int:
             for line in bridge.stdout:
                 lines.put(line.strip())
 
-        thread = threading.Thread(target=read_bridge)
-        thread.start()
+        bridge_thread = threading.Thread(target=read_bridge)
+        bridge_thread.start()
+
+        def read_bridge_errors() -> None:
+            for _ in bridge.stderr:
+                bridge_errors.append("")
+
+        bridge_error_thread = threading.Thread(target=read_bridge_errors)
+        bridge_error_thread.start()
         ready = False
-        ready_at = None
         readers_started = False
-        bridge_lines = []
-        bridge_stopped_at = None
-        while time.monotonic() - start < args.duration + 12:
+        while (time.monotonic() - bridge_started < args.duration + 12
+               and time.monotonic() - start < 65):
             collect()
+            if (args.bridge_timeout is not None
+                    and enforce_bridge_deadline(bridge, bridge_started + args.bridge_timeout)):
+                raise RuntimeError("Bridge exceeded the publication watchdog deadline")
             while not lines.empty():
                 line = lines.get_nowait()
                 bridge_lines.append(line)
@@ -196,11 +316,14 @@ def main() -> int:
                         "-of", "json", URL,
                     ]))
                 if container is not None:
+                    reader_timeout = str(int(args.duration + 8))
                     readers.append(("home_assistant_ffprobe", [
-                        "docker", "exec", container, "ffprobe", *probe_args,
+                        "docker", "exec", container, "timeout", "-k", "2", reader_timeout,
+                        "ffprobe", *probe_args,
                     ]))
                     readers.append(("home_assistant_ffmpeg", [
-                        "docker", "exec", container, "ffmpeg", "-v", "error",
+                        "docker", "exec", container, "timeout", "-k", "2", reader_timeout,
+                        "ffmpeg", "-v", "error",
                         "-rtsp_transport", "tcp", "-i", URL, "-t", str(args.probe_duration),
                         "-f", "null", "-", "-progress", "pipe:1", "-nostats",
                     ]))
@@ -217,18 +340,15 @@ def main() -> int:
                                 "home_assistant_ffmpeg", "frame_probe")):
                 break
             time.sleep(0.1)
-        thread.join(timeout=1)
+        bridge_thread.join(timeout=1)
         while not lines.empty():
             bridge_lines.append(lines.get_nowait())
-        print("bridge:", json.dumps(bridge_lines))
-        if bridge_stopped_at is not None:
-            print("bridge_process_seconds:", round(bridge_stopped_at - bridge_started, 3))
+        drain_deadline = time.monotonic() + 3
         for worker in drains.values():
-            worker.join(timeout=3)
+            worker.join(timeout=max(0, drain_deadline - time.monotonic()))
         reader_summary = partial_diagnostics(outputs)
         for name in drains:
             reader_summary.setdefault(name, {})["returncode"] = processes[name].poll()
-        print("readers:", json.dumps(reader_summary), flush=True)
         if bridge.poll() is None or bridge.returncode != 0 or not ready:
             raise RuntimeError("Bridge did not complete successfully")
         if not readers_started:
@@ -264,6 +384,8 @@ def main() -> int:
             "height": streams[0].get("height"), "packets": len(packets),
             "keyframes": keys, "timestamped_packets": len(times),
             "decoded_frames": max(frame_counts),
+            "first_pts_seconds": times[0],
+            "last_pts_seconds": times[-1],
             "timestamp_span_seconds": round(span, 3),
             "max_timestamp_gap_seconds": round(max_gap, 3),
             "fps_from_timestamps": round((len(times) - 1) / span, 2),
@@ -312,8 +434,10 @@ def main() -> int:
         return 1
     finally:
         collect()
-        elapsed = time.monotonic() - start
-        for process in reversed(list(processes.values())):
+        for name in ("bridge", "mediamtx"):
+            process = processes.get(name)
+            if process is None:
+                continue
             if process.poll() is None:
                 process.terminate()
                 try:
@@ -321,12 +445,34 @@ def main() -> int:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=3)
-        for worker in drains.values():
-            worker.join(timeout=3)
+        if bridge_thread is not None:
+            bridge_thread.join(timeout=3)
+        if bridge_error_thread is not None:
+            bridge_error_thread.join(timeout=3)
+        while not lines.empty():
+            bridge_lines.append(lines.get_nowait())
+        if "bridge" in processes:
+            print("bridge:", json.dumps(bridge_lines), flush=True)
+            print("bridge_stderr_lines:", len(bridge_errors), flush=True)
+        if bridge_started is not None and bridge_stopped_at is not None:
+            print("bridge_process_seconds:", round(bridge_stopped_at - bridge_started, 3))
+        if bridge_started is not None and ready_at is not None:
+            print("publisher_ready_seconds:", round(ready_at - bridge_started, 3))
+        readers = {name: processes[name] for name in drains}
+        if any(process.poll() is None for process in readers.values()):
+            time.sleep(1)
+        finish_readers(readers, drains)
+        reader_summary = partial_diagnostics(outputs)
+        for name, process in readers.items():
+            reader_summary.setdefault(name, {})["returncode"] = process.returncode
+            if name not in outputs:
+                reader_summary[name]["output_unavailable"] = True
+        print("readers:", json.dumps(reader_summary), flush=True)
         for process in processes.values():
             for pipe in (process.stdout, process.stderr):
                 if pipe is not None and not pipe.closed:
                     pipe.close()
+        elapsed = time.monotonic() - start
         metrics = {}
         for name, (began, cpu, rss) in samples.items():
             wall = max(0.001, elapsed - (began - start))
@@ -334,6 +480,7 @@ def main() -> int:
                              "sampled_cpu_percent": round(cpu / wall * 100, 1),
                              "peak_sampled_rss_kib": rss}
         print("resources:", json.dumps(metrics), flush=True)
+        print("check_total_seconds:", round(elapsed, 3), flush=True)
 
 
 if __name__ == "__main__":

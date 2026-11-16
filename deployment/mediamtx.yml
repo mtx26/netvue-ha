@@ -1,0 +1,30 @@
+logLevel: warn
+logDestinations: [stdout]
+dumpPackets: false
+rtsp: true
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+rtspEncryption: "no"
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+moq: false
+api: false
+metrics: false
+pprof: false
+playback: false
+authInternalUsers:
+  - user: any
+    pass:
+    ips: [127.0.0.1, "::1"]
+    permissions:
+      - action: publish
+        path: netvue2
+      - action: read
+        path: netvue2
+pathDefaults:
+  record: false
+  overridePublisher: false
+paths:
+  netvue2:

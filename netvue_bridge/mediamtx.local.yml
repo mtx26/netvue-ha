@@ -6,6 +6,7 @@ rtmp: false
 hls: false
 webrtc: false
 srt: false
+moq: false
 api: false
 metrics: false
 pprof: false

@@ -1,0 +1,76 @@
+version: "3.8"
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.4@sha256:456791fae0607e00d4f7105fd4048e1b9bb9c5cb43e0fe0cb55e3beeea023f15
+    command: ["/mediamtx.yml"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    networks: [host]
+    volumes:
+      - type: bind
+        source: ${NETVUE_MEDIAMTX_CONFIG:?set an absolute MediaMTX configuration path}
+        target: /mediamtx.yml
+        read_only: true
+    stop_grace_period: 15s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the Home Assistant node hostname}
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      update_config:
+        order: stop-first
+      rollback_config:
+        order: stop-first
+
+  bridge:
+    image: ${NETVUE_BRIDGE_IMAGE:?set the prebuilt bridge image}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    networks: [host]
+    command:
+      - run
+      - --source
+      - ${NETVUE_SOURCE:?set the authorized LAN source}
+      - --target
+      - ${NETVUE_TARGET:?set the authorized camera}
+      - --state-dir
+      - /state
+      - --max-duration
+      - ${NETVUE_MAX_DURATION:?set the authorized maximum duration in seconds}
+    volumes:
+      - type: bind
+        source: ${NETVUE_STATE_DIR:?set an absolute persistent budget directory}
+        target: /state
+    stop_signal: SIGTERM
+    stop_grace_period: 20s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the Home Assistant node hostname}
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+      restart_policy:
+        condition: none
+      update_config:
+        order: stop-first
+      rollback_config:
+        order: stop-first
+
+networks:
+  host:
+    external: true
+    name: host
