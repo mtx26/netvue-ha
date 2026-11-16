@@ -1,6 +1,6 @@
 # Préparation Swarm Netvue
 
-**À examiner, pas à déployer maintenant.** La phase 7 a épuisé le budget caméra. L'image a été construite et testée temporairement sur Debian en phase 9 ; la stack n'a pas été déployée. Le déploiement, l'activation du flux et la modification de Home Assistant nécessitent un accord distinct.
+**Pilote borné uniquement.** En phase 10, la stack `netvue-pilot` a été validée sur Debian et une unique tentative caméra autorisée a été consommée. Son pont est arrêté, son budget est épuisé et bloqué, tandis que MediaMTX reste actif sur loopback. Aucun usage permanent n'est activé. Toute nouvelle connexion caméra et toute modification de Home Assistant nécessitent une autorisation distincte. Voir le [rapport de phase 10](../findings/phase10-swarm-installation.md).
 
 ## Architecture et prérequis
 

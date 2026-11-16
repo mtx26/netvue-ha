@@ -114,6 +114,22 @@ class SupervisorTests(unittest.TestCase):
                 self.assertEqual(supervise(budget, self.rtsp), 1)
                 run.assert_not_called()
 
+    def test_budget_status_diagnostics_precede_network_access(self):
+        for status in ("in_progress", "blocked", "exhausted"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                with Budget(Path(directory), self.source, self.target) as budget:
+                    budget.initialize(1)
+                    budget.reserve()
+                    if status != "in_progress":
+                        budget.finish(retryable=status == "exhausted")
+                    with patch("netvue_bridge.supervisor.wait_for_rtsp") as wait, \
+                         patch("netvue_bridge.supervisor.run_sessions") as run, \
+                         patch("builtins.print") as log:
+                        self.assertEqual(supervise(budget, self.rtsp), 1)
+                        self.assertIn("BUDGET_" + status.upper(), str(log.call_args_list))
+                        wait.assert_not_called()
+                        run.assert_not_called()
+
     def test_sigterm_unwinds_running_session_and_keeps_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

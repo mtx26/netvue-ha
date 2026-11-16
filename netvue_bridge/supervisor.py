@@ -153,12 +153,15 @@ def supervise(budget: Budget, rtsp: str) -> int:
         raise ValueError("RTSP port required")
     while True:
         state = budget.read()
-        if state["status"] != "ready":
-            print("supervisor: unfinished or terminal attempt; manual review required", flush=True)
+        if state["status"] == "in_progress":
+            print("supervisor: BUDGET_IN_PROGRESS; manual review required", flush=True)
+            return 1
+        if state["status"] == "blocked":
+            print("supervisor: BUDGET_BLOCKED; manual review required", flush=True)
             return 1
         used, limit = state["used"], state["limit"]
         if used >= limit:
-            print("supervisor: connection budget exhausted", flush=True)
+            print("supervisor: BUDGET_EXHAUSTED; connection budget exhausted", flush=True)
             return 1
         if used:
             delay = retry_delay(used)
@@ -259,6 +262,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     try:
         if args.action == "run":
+            print("supervisor: starting bounded worker", flush=True)
             command = [sys.executable, "-B", "-m", "netvue_bridge.supervisor", "_worker",
                        "--source", args.source, "--target", args.target,
                        "--state-dir", str(args.state_dir), "--rtsp", args.rtsp]
