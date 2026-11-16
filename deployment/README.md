@@ -73,7 +73,7 @@ variables suivantes :
 | Variable | Obligatoire | Valeur |
 |---|---:|---|
 | `NETVUE_NODE` | oui | Nom exact du nœud Swarm partageant le réseau avec Home Assistant |
-| `NETVUE_BRIDGE_IMAGE` | non | Défaut : `ghcr.io/mtx26/netvue-ha:phase16` |
+| `NETVUE_BRIDGE_IMAGE` | non | Défaut : `ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204` |
 | `NETVUE_SOURCE` | oui | IPv4 de l'interface hôte qui rejoint le LAN caméra |
 | `NETVUE_TARGET` | oui | IPv4 de la caméra 2 validée ; ne pas supposer que la caméra 1 est compatible |
 | `NETVUE_MEDIAMTX_CONFIG` | oui | Chemin hôte du fichier MediaMTX monté en lecture seule |
@@ -128,7 +128,7 @@ avoir contrôlé son origine et créé une autre sauvegarde, lancez uniquement l
 migration explicite avec le même couple source/caméra :
 
 ```sh
-NETVUE_BRIDGE_IMAGE=ghcr.io/mtx26/netvue-ha:phase16
+NETVUE_BRIDGE_IMAGE=ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204
 NETVUE_SOURCE=192.168.10.1
 NETVUE_TARGET=192.168.10.2
 NETVUE_STATE_DIR=/srv/netvue-bridge/state
@@ -173,8 +173,8 @@ validation isolée.
 
 Publiez une nouvelle image depuis **Actions → Publish Netvue Bridge image**
 après avoir fusionné le code choisi. Le workflow ajoute les tags `phase16` et
-`sha-<commit>`. Dans Portainer, choisissez l'image versionnée souhaitée via
-`NETVUE_BRIDGE_IMAGE`, puis redéployez la stack.
+`sha-<commit>`. Le tag SHA par défaut de la stack est immuable ; pour mettre à
+jour, remplacez `NETVUE_BRIDGE_IMAGE` par le nouveau tag SHA, puis redéployez.
 
 Ne changez ni le chemin d'état ni l'identité source/caméra sans plan de
 migration. Conservez l'ancien tag jusqu'à validation, pour permettre un retour

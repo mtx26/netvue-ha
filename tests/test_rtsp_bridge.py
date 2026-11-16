@@ -41,7 +41,10 @@ class RtspTests(unittest.TestCase):
         self.assertIn("networks: [host]", stack)
         self.assertIn("${NETVUE_MEDIAMTX_CONFIG:?set the existing MediaMTX config volume path}", stack)
         self.assertIn("${NETVUE_STATE_DIR:?set the existing persistent state volume path}", stack)
-        self.assertIn("${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:phase16}", stack)
+        self.assertIn(
+            "${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204}",
+            stack,
+        )
         self.assertNotIn("condition: none", stack)
         self.assertEqual(stack.count("condition: on-failure"), 2)
         self.assertIn('cpus: "0.50"', stack)
@@ -68,7 +71,7 @@ class RtspTests(unittest.TestCase):
         self.assertIn("--platform linux/amd64", workflow)
         self.assertIn("--push .", workflow)
         stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
-        self.assertIn("ghcr.io/mtx26/netvue-ha:phase16", stack)
+        self.assertIn("ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204", stack)
 
     def test_check_rtsp_help_keeps_cli_options(self):
         result = subprocess.run([sys.executable, "-B", "-m", "netvue_bridge.check_rtsp", "--help"],

@@ -33,7 +33,7 @@ services:
         order: stop-first
 
   bridge:
-    image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:phase16}
+    image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-ha:sha-73fe8737048ca2912d89e4885dbe354116bbc204}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
