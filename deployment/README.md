@@ -26,13 +26,17 @@ et reste en échec pour intervention. Le superviseur gère lui-même les coupure
 transitoires et attend MediaMTX sans dépendre d'un ordre de démarrage Swarm.
 
 Les budgets v4 et leurs verrous résident dans le volume bind monté sur
-`/state`. Le budget à la racine est conservé pour la caméra dont l'adresse y
-est inscrite ; les budgets suivants sont créés dans des sous-répertoires
-propres à chaque caméra lors de son ajout depuis Home Assistant. Seul le
-format v4 est accepté : un état d'une autre version, bloqué, corrompu ou
-ambigu arrête le service et reste inchangé. MediaMTX lit son fichier via un
-volume bind en lecture seule. Aucun mot de passe RTSP n'est utilisé ;
-l'authentification LAN Netvue reste dans le protocole du pont.
+`/state`. Pour une installation neuve, ce répertoire doit être dédié et vide :
+aucun budget racine n'est nécessaire au démarrage. À la première demande
+d'ajout d'une caméra, le gestionnaire crée son sous-répertoire et initialise
+le budget v4 avant de lancer son superviseur. Cette demande démarre alors une
+session caméra ; ne l'effectuez pas avant l'autorisation distincte de contact.
+Un budget déjà présent est validé sans réécriture ; un état bloqué, corrompu,
+ambigu ou d'une autre version arrête la session concernée. Les états
+expérimentaux abandonnés ne sont ni montés ni migrés vers ce répertoire neuf.
+MediaMTX lit son fichier via un volume bind en lecture seule. Aucun mot de
+passe RTSP n'est utilisé ; l'authentification LAN Netvue reste dans le
+protocole du pont.
 
 Le fichier [mediamtx.yml](./mediamtx.yml) fourni accepte les chemins de flux
 générés par le gestionnaire, ainsi que l'ancien chemin `netvue2` du test borné.
@@ -79,8 +83,9 @@ ne doit être placé dans le YAML ou dans une variable de stack.
 
 ## Installation depuis Portainer
 
-La stack utilise les fichiers et données existants comme volumes bind ; elle
-ne crée, ne copie et ne réinitialise aucun état. Dans Portainer, entrez les
+La stack utilise des fichiers bind ; elle ne copie aucun ancien état.
+`NETVUE_STATE_DIR` doit désigner un nouveau répertoire persistant vide,
+distinct des états expérimentaux archivés. Dans Portainer, entrez les
 variables suivantes :
 
 | Variable | Obligatoire | Valeur |
@@ -89,35 +94,31 @@ variables suivantes :
 | `NETVUE_BRIDGE_IMAGE` | oui | Image publiée épinglée par digest |
 | `NETVUE_SOURCE` | oui | IPv4 de l'interface hôte qui rejoint le LAN caméra |
 | `NETVUE_MEDIAMTX_CONFIG` | oui | Chemin hôte du fichier MediaMTX monté en lecture seule |
-| `NETVUE_STATE_DIR` | oui | Chemin hôte du volume persistant des budgets v4 |
+| `NETVUE_STATE_DIR` | oui | Chemin hôte du nouveau répertoire persistant vide |
 
 Les variables sont saisies dans **Stack → Environment variables** et
 interpolées par Portainer ; aucun fichier `.env`, copie locale ou `env_file`
-n'est requis. Utilisez les chemins de volumes réellement prévus sur l'hôte.
-Le fichier de configuration doit exister et être lisible ; le répertoire
-d'état doit être inscriptible par UID/GID 10001. La configuration des caméras
-et leurs flux sont ensuite gérés depuis Home Assistant.
-
-Le gestionnaire valide le budget racine existant avant d'accepter des sessions.
-S'il n'est pas au format v4, s'il est corrompu ou ambigu, le conteneur échoue
-explicitement sans le réécrire. Ne lancez pas `init` et ne remplacez pas ce
-fichier par un budget neuf. Un budget neuf est créé uniquement dans le
-sous-répertoire d'une nouvelle caméra ajoutée depuis Home Assistant.
+n'est requis. Utilisez les chemins prévus sur l'hôte. Le fichier MediaMTX doit
+exister et être lisible ; le nouveau répertoire d'état doit être inscriptible
+par UID/GID 10001. Ne pointez jamais cette variable vers une archive ou un
+ancien répertoire d'état.
 
 1. Dans **Stacks → Add stack → Upload**, chargez [stack.yaml](./stack.yaml).
 2. Saisissez les variables obligatoires, notamment `NETVUE_BRIDGE_IMAGE` avec
    le digest de l'image publiée.
-3. Vérifiez le nom du nœud, les adresses LAN, les chemins de volumes et le tag
-   de l'image.
+3. Vérifiez le nom du nœud, l'adresse source LAN, les chemins de volumes et
+   le digest de l'image. Le répertoire d'état doit être neuf, vide et
+   accessible à UID/GID 10001.
 
 Voir aussi la [documentation Portainer sur les stacks](https://docs.portainer.io/user/docker/stacks/add)
 pour l'import de YAML et les variables d'environnement.
 
 **Deploy** démarre le gestionnaire et MediaMTX, sans contacter une caméra.
-Une session démarre seulement quand une caméra est ajoutée dans Home
-Assistant. Aucun déploiement n'a été effectué et aucune stack existante n'a
-été modifiée. Vérifiez d'abord que les ports sont libres et qu'un basculement
-est explicitement autorisé.
+Le répertoire d'état reste vide jusqu'à l'ajout d'une caméra depuis Home
+Assistant ; cette opération crée son budget v4 et démarre aussitôt une
+session. N'ajoutez aucune caméra avant l'autorisation de contact. Vérifiez
+d'abord que l'archive des états abandonnés est vérifiée et que les ports sont
+libres. Aucun déploiement n'est effectué par ces instructions.
 
 ## Vérifier et exploiter
 
@@ -168,15 +169,23 @@ après avoir fusionné le code choisi. Le workflow ajoute les tags `phase17` et
 `sha-<commit>`. Pour mettre à jour, vérifiez l'image publiée et remplacez
 `NETVUE_BRIDGE_IMAGE` par sa référence épinglée par digest, puis redéployez.
 
-Ne changez ni le chemin d'état ni l'identité source/caméra sans plan de
-migration. Conservez l'ancien tag jusqu'à validation, pour permettre un retour
-au code précédent compatible avec budget v4.
+Ne réutilisez pas les états archivés lors d'une mise à jour ; les changements
+du chemin d'état ou de l'identité source/caméra exigent une décision explicite.
+Conservez l'ancien tag jusqu'à validation, pour permettre un retour au code
+précédent compatible avec budget v4.
 
 ## Sauvegarde et retour arrière
 
-Avant une sauvegarde à froid, mettez le service `bridge` à zéro réplique dans
-Portainer et attendez son arrêt. Gardez MediaMTX en service si souhaité. Puis,
-sur le Debian :
+Pour abandonner une ancienne installation, archivez à froid tous ses
+répertoires d'état, y compris les fichiers de verrouillage, en conservant
+contenus, propriétaires et permissions. Vérifiez que l'archive peut être lue
+et comparée aux sources avant de préparer le nouveau répertoire ; ne modifiez
+ni ne supprimez les états archivés. L'archive est une sauvegarde, pas un état
+à remonter dans la nouvelle stack.
+
+Pour une sauvegarde du volume de l'installation courante, mettez le service
+`bridge` à zéro réplique dans Portainer et attendez son arrêt. Gardez MediaMTX
+en service si souhaité. Puis, sur le Debian :
 
 ```sh
 BACKUP="/srv/netvue-bridge-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
@@ -191,11 +200,10 @@ stockage distinct. Sauvegardez également le fichier de stack et les variables
 de Portainer dans un emplacement protégé.
 
 Pour revenir en arrière côté code, remettez dans Portainer un tag d'image
-compatible avec le format v4 présent et redéployez, sans restaurer un ancien
-budget. Ne restaurez jamais une sauvegarde de budget pour effacer un blocage
-ou annuler une tentative. Ne lancez pas `init` sur un répertoire contenant
-déjà un état. Les versions antérieures du format ne sont pas migrées par le
-logiciel actuel ; conservez-les intactes pour une procédure ultérieure validée.
+compatible avec le format v4 courant et redéployez, sans restaurer un état
+expérimental archivé. L'archive est une copie de conservation, pas un volume
+de retour arrière. Ne lancez pas `init` sur un répertoire contenant déjà un
+état.
 
 ## Erreurs courantes
 
@@ -211,8 +219,9 @@ logiciel actuel ; conservez-les intactes pour une procédure ultérieure validé
   fichier de configuration écoute sur loopback et que 8554 n'est pas déjà
   utilisé.
 - **Budget `blocked`, invalide ou version non prise en charge** : ne pas
-  supprimer `budget.json` et ne pas lancer `init`. L'état reste inchangé ; son
-  traitement nécessite une procédure de migration validée ultérieurement.
+  supprimer `budget.json` et ne pas lancer `init`. L'état reste inchangé.
+  Pour une nouvelle installation abandonnant un ancien pilote, utilisez le
+  répertoire v4 neuf prévu à cet effet ; ne migrez ni ne montez l'archive.
 - **Pas de flux dans Home Assistant** : vérifier que HA partage le réseau host
   de ce même nœud et utilise l'URL de flux affichée par l'intégration.
 

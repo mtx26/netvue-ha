@@ -74,6 +74,12 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(body["state"], "starting")
             self.assertIn("rtsp://127.0.0.1:8554/netvue_192_168_10_2",
                           self.processes[0][1])
+            self.assertFalse((self.state_dir / "budget.json").exists())
+            state_dir = self.manager._cameras["192.168.10.2"].state_dir
+            self.assertEqual(
+                json.loads((state_dir / "budget.json").read_text(encoding="utf-8"))["version"],
+                4,
+            )
 
             status, body = await self.request(
                 "POST", "/api/v1/cameras",

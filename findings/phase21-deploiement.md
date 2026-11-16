@@ -2,10 +2,10 @@
 
 ## OBJECTIF
 
-Préparer la mise en service de la version actuelle sans interrompre les
-services existants, sans modifier Home Assistant et sans contacter les caméras.
-Vérifier les contrats du pont, de MediaMTX et de l'intégration HA avec des
-scénarios isolés avant de proposer un basculement réversible.
+Préparer la stack Portainer à partir d'un état v4 indépendant, après abandon
+et archivage vérifié des états expérimentaux, sans modifier Home Assistant ni
+contacter les caméras. La mise à jour du 17 novembre confirme qu'aucune
+migration v2/v3 n'est demandée.
 
 ## ÉTAT INITIAL OBSERVÉ
 
@@ -38,6 +38,38 @@ scénarios isolés avant de proposer un basculement réversible.
   Netvue des phases 10 à 12. Le compte SSH ne peut pas lire ces fichiers et
   `sudo -n` n'est pas disponible : leur version, leur état et l'identité
   associée restent inconnus. Aucun droit n'a été contourné ni modifié.
+- Résultat communiqué par l'administrateur pour le budget actif : version
+  **3**, état **blocked**, étape **BLOCKED**. Cette valeur a été rapportée
+  par l'utilisateur, pas lue directement par l'agent. Le code courant refuse
+  les budgets non-v4 et conserve les états bloqués ; ce budget ne peut donc
+  pas être utilisé pour démarrer la nouvelle stack.
+- Une lecture passive des journaux de l'ancien pont montre une authentification
+  réussie, une erreur vidéo classée dans les catégories « timestamp » et
+  « duplicate », puis une défaillance non réessayable. Cela constitue un
+  indice sur le blocage, sans prouver que le code courant corrigera le cas
+  réel. Les journaux bruts et identifiants n'ont pas été exposés.
+- À la demande explicite de l'utilisateur, la stack Swarm `netvue-pilot` et
+  ses deux services ont été supprimés. La vérification ne montre plus de stack
+  ni de service Netvue dans Swarm, et les ports 8554 et 8765 sont libres. Le
+  budget bloqué et le fichier de configuration MediaMTX existent toujours ;
+  aucune donnée persistante n'a été supprimée ni modifiée. Aucun contrôle de
+  l'interface Portainer n'a été effectué et aucune sauvegarde supplémentaire
+  n'a été créée.
+- Un nouvel inventaire passif ne trouve aucun service ou conteneur Netvue
+  nommé, aucun conteneur actif utilisant l'ancienne image identifiée, aucun
+  processus visible du pont et aucun volume Docker nommé Netvue. Les ports
+  8554 et 8765 sont libres. Huit fichiers `budget.json` ont été repérés dans
+  les anciens répertoires du pilote ; leur contenu n'a pas été lu par l'agent.
+  Cet inventaire est limité aux chemins accessibles inspectés.
+- L'utilisateur indique souhaiter abandonner les anciens états expérimentaux
+  et ne pas les migrer. Aucun état bloqué n'a été déplacé, réinitialisé ou
+  contourné ; aucune archive ni nouvelle installation n'a été créée.
+- Une nouvelle vérification confirme qu'aucun service, conteneur ou processus
+  visible du pont n'est actif et que les ports 8554 et 8765 sont libres. Le
+  budget actif reste présent, en mode `0600` et propriété de l'UID 10001 ; le
+  compte SSH ne peut pas le lire et `sudo -n` reste indisponible. Une
+  sauvegarde de son contenu et la vérification de cette sauvegarde n'ont donc
+  pas été réalisées.
 - MediaMTX utilise le fichier
   `/home/mtx26/netvue-pilot-phase10-179f7438/mediamtx.yml`, en lecture seule,
   qui ne définit que `netvue2`. Les deux services ont une limite de 0,5 CPU ;
@@ -116,6 +148,9 @@ scénarios isolés avant de proposer un basculement réversible.
   sur 80, le test borné exigeant des fichiers cgroup v2 absents. Déconnexions
   et reconnexions, budgets v2/v3 conservés, H.264, timestamps et changement de
   résolution sont couverts par des tests locaux, sans caméra réelle.
+- Après réception du résultat v3 bloqué, les deux tests ciblés de refus des
+  anciens formats sans modification et de conservation d'un blocage après
+  redémarrage ont réussi.
 - Suite de l'intégration HA 2026.11.2 isolée : **14 réussis**. Avertissement
   non bloquant sur l'absence de `libturbojpeg` dans cet environnement.
 - Image officielle HA 2026.11.2 sur réseau Docker interne, avec configuration
@@ -141,80 +176,68 @@ scénarios isolés avant de proposer un basculement réversible.
   supprimé, sans toucher aux volumes réels.
 - Aucun test de stabilité 24 h, d'accès caméra, de déploiement Swarm réel,
   d'exposition Internet effective ni d'intégration dans HA réel n'a été
-  effectué. Les permissions relevées ne révèlent pas le contenu du budget.
+  effectué. La version et l'état du budget ont été communiqués séparément par
+  l'administrateur ; les autres champs du budget et le diagnostic complet du
+  blocage restent inconnus.
+- Pour cette mise à jour, les tests Linux WSL de `test_bridge_manager.py`
+  passent (**5 réussis**), dont la création d'un budget v4 dans un sous-dossier
+  depuis un répertoire racine neuf. `test_rtsp_bridge.py` passe (**33 réussis,
+  4 ignorés** faute de PyAV/outils/cgroup v2). Le rendu `docker stack config`
+  de la stack mise à jour passe sur Debian avec des valeurs fictives, sans
+  déploiement. L'exécution Windows native des tests du gestionnaire ne peut
+  pas importer `fcntl` ; elle a été remplacée par l'exécution Linux WSL.
 
-## TRANSITION PROPOSÉE — EN ATTENTE D'ACCORD
+## DÉCISION ACTUALISÉE — ABANDON ET ÉTAT INDÉPENDANT
 
-L'inventaire passif a identifié les services et chemins ci-dessus. Il reste
-à examiner, avec des droits de lecture légitimes, la version et l'état des
-budgets réels ainsi que les variables Portainer nécessaires. Ne pas afficher
-ni publier les secrets ou les budgets complets. Un administrateur disposant
-des droits peut relever uniquement la version et l'état du budget actif,
-sans modifier le fichier :
+Le propriétaire confirme l'abandon de l'ancien pilote Debian et de ses états
+expérimentaux. Les budgets v2/v3 sont à archiver tels quels ; aucune migration
+vers v4 n'est demandée ni préparée. Aucune connexion caméra n'est autorisée.
 
-```sh
-sudo python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k:d.get(k) for k in ("version","status","stage")})' \
-  /home/mtx26/netvue-phase12-179f7438/real-state/budget.json
-```
+Nouvelle vérification passive du 17 novembre 2026 :
 
-Le résultat ne révèle ni adresses ni identifiants ; il ne suffit pas à lui
-seul à valider l'identité et la cohérence complètes du budget. Toute
-réconciliation reste une opération séparée.
+- Aucun service ou conteneur Netvue n'est présent dans Swarm/Docker, aucun
+  processus visible du pont n'est actif et les ports TCP 8554 et 8765 sont
+  libres. Swarm est actif. Aucun changement de service n'a été effectué.
+- Huit répertoires d'état ont été inventoriés dans les anciens répertoires des
+  phases 10 à 12. Ils contiennent huit `budget.json` et leurs fichiers
+  `budget.lock`. Les budgets/verrous sont en mode `0600`, propriété UID/GID
+  10001 ; les répertoires d'état sont en mode `0777`. Le contenu des fichiers
+  n'a pas été lu.
+- La session SSH est UID 1000 et `sudo -n` échoue. Elle ne peut donc pas lire
+  ni archiver fidèlement les fichiers `0600` appartenant à 10001. Aucun droit
+  n'a été contourné ou modifié ; aucune archive vérifiée ni nouveau répertoire
+  persistant n'a été créé. Les anciens états restent intacts.
+- La stack Portainer cible un nouveau répertoire vide distinct. Le gestionnaire
+  accepte ce répertoire sans budget racine ; à l'ajout d'une caméra, il crée
+  un budget v4 dans son sous-répertoire avant de démarrer la session. Cette
+  action HA déclenche donc un contact caméra et reste différée.
 
-L'image correspondant au code validé a été publiée et téléchargée. Le package
-GHCR est public et le pull anonyme par digest a réussi ; le dépôt source
-reste privé. L'image publique contient le code du pont. Ne pas utiliser le
-tag ancien comme image à jour.
+Le [YAML Portainer](../deployment/stack.yaml) et son
+[guide](../deployment/README.md) indiquent maintenant explicitement un
+répertoire d'état neuf, vide et inscriptible par UID/GID 10001. L'archive des
+anciens états ne doit jamais être montée comme volume de la nouvelle stack.
+L'absence actuelle de processus et la disponibilité des ports sont observées ;
+le contenu exact/version des budgets et la vérification d'une archive restent
+non vérifiés faute de droits de lecture.
 
-Après inventaire et autorisation expresse du basculement :
+## TRANSITION HISTORIQUE ABROGÉE
 
-1. Conserver hors serveur ou dans un emplacement protégé une copie de la
-   stack et des variables Portainer, configuration MediaMTX, version de
-   l'intégration HA et références exactes des anciennes images. Vérifier la
-   disponibilité des images de retour arrière.
-2. Arrêter proprement les sessions et le pont ancien, puis sauvegarder à froid
-   les états et budgets, métadonnées et permissions incluses, dans une archive
-   distincte protégée. Ne jamais restaurer un ancien budget pour effacer une
-   tentative ou un blocage.
-3. Vérifier le format et l'identité de chaque état sans les modifier. Un état
-   non-v4, corrompu, ambigu ou bloqué suspend la transition : aucune
-   initialisation, migration non validée ou utilisation d'un chemin neuf pour
-   le contourner. Une migration/réconciliation exige une procédure séparée,
-   testée hors ligne et autorisée.
-4. Identifier et arrêter seulement les services nécessaires pour libérer les
-   ports ; installer la configuration MediaMTX corrigée et déployer la stack
-   avec l'image publiée immuable, les chemins d'état validés et UID/GID 10001.
-   Vérifier limites, permissions, écoute loopback et absence de ports exposés.
-   Vérifier préalablement que HA partage le réseau host du même nœud.
-5. Pour HA, sauvegarder l'intégration existante et examiner les entrées :
-   l'entrée effectivement observée est refusée par le nouveau composant et
-   n'est pas migrée automatiquement. La suppression et le réajout nécessitent
-   une décision explicite ; le réajout demande immédiatement une session au
-   pont et ne doit donc pas être effectué sans autorisation caméra bornée.
-   Toute copie du composant, modification de HA et tout redémarrage attendent
-   une autorisation explicite distincte.
-
-### Retour arrière
-
-Si l'installation ne démarre pas, arrêter proprement la nouvelle stack,
-conserver ses journaux expurgés et ses états courants, restaurer uniquement
-la configuration et les images précédentes et vérifier les ports avant
-redémarrage. La reprise de l'ancien pont dépend de sa compatibilité avec
-l'état désormais présent : si elle est incertaine, le laisser arrêté et
-demander une procédure de réconciliation. Ne pas écraser le budget courant
-par la sauvegarde. Restaurer l'intégration HA uniquement avec autorisation et
-après vérification de compatibilité de ses entrées.
+Les étapes de migration et de réconciliation précédemment envisagées sont
+annulées par la décision d'abandon ci-dessus. L'ancien état reste inchangé et
+doit seulement être archivé ; le nouveau déploiement utilisera un chemin v4
+vide et indépendant.
 
 ## ÉTAT FINAL ET PROCHAINE ÉTAPE
 
-La correction locale, les tests synthétiques et la publication GHCR publique
-sont terminés. La validation Swarm réelle, la transition et la validation HA
-réelle ne sont pas effectuées. La prochaine étape est une lecture légitime
-des budgets réels. Après cet inventaire, présenter le basculement précis et
-obtenir son autorisation avant toute intervention.
+La préparation locale de la stack et de sa documentation est faite ; le
+comportement d'initialisation v4 d'un répertoire frais est couvert par le test
+du gestionnaire. Aucun état Debian n'a été modifié, archivé ou initialisé.
+Aucun déploiement Portainer, changement Home Assistant ou contact caméra n'a
+été effectué.
 
-Le premier essai caméra 2 exigera une autorisation séparée indiquant le nombre
-maximal de tentatives, la durée et les opérations permises : découverte,
-authentification LAN, vidéo, RTSP, lecture HA, mesures et déconnexion. Les
-limites de tentatives doivent être compatibles avec le mode de test choisi ;
-ne pas démarrer une supervision continue sans borne pour cet essai.
+Le seul blocage technique immédiat est l'accès en lecture privilégié requis
+pour créer et vérifier l'archive tout en préservant les permissions. Une
+session administrateur autorisée doit archiver les huit répertoires d'état et
+vérifier l'archive ; le nouveau chemin persistant devra ensuite être créé avec
+UID/GID 10001. La validation du déploiement réel reste distincte et ne doit
+pas démarrer de caméra.

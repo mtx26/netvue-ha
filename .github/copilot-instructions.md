@@ -70,9 +70,34 @@ Docker/SSH accessibles avec les droits déjà configurés.
 - Migration appliquée aux états/budgets persistants réels ou autre opération
   qui supprime, écrase ou rend difficilement récupérables des données.
 
-Ne pas contourner un budget/état bloqué en changeant de chemin ou en créant
-un répertoire neuf. Préparer et tester une migration/réconciliation sûre hors
-ligne avant toute application réelle. Ne pas exposer le flux sur Internet ;
+## Gestion des états expérimentaux
+
+Ne jamais réinitialiser silencieusement un budget bloqué
+appartenant à une installation active.
+
+Toutefois, le propriétaire peut décider explicitement
+d'abandonner une ancienne installation expérimentale.
+
+Dans ce cas, après vérification :
+
+1. Arrêter les anciennes sessions et services concernés.
+2. Sauvegarder les anciens états.
+3. Vérifier que les sauvegardes sont exploitables.
+4. Retirer les anciennes données du chemin actif.
+5. Préparer un nouvel état propre pour la nouvelle installation.
+
+Les anciens budgets restent archivés et inchangés.
+
+Cette opération constitue l'abandon volontaire d'un ancien
+pilote, et non le déblocage automatique d'une session active.
+
+Aucune connexion caméra ne doit être déclenchée sans
+autorisation distincte.
+
+Le propriétaire décide quelles anciennes versions
+expérimentales doivent être conservées ou abandonnées.
+
+Ne pas exposer le flux sur Internet ;
 privilégier RTSP sur loopback et des accès locaux contrôlés. Conserver les
 limitations raisonnables de ressources, les verrous de session, les délais de
 reconnexion et le traitement explicite des erreurs critiques. Pas de brute

@@ -45,7 +45,7 @@ services:
       - /state
     volumes:
       - type: bind
-        source: ${NETVUE_STATE_DIR:?set the existing persistent state volume path}
+        source: ${NETVUE_STATE_DIR:?set the new empty v4 state directory path}
         target: /state
     stop_signal: SIGTERM
     stop_grace_period: 30s

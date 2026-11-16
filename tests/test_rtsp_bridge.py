@@ -41,7 +41,7 @@ class RtspTests(unittest.TestCase):
         self.assertNotRegex(stack, r"(?m)^\s+ports:")
         self.assertIn("networks: [host]", stack)
         self.assertIn("${NETVUE_MEDIAMTX_CONFIG:?set the existing MediaMTX config volume path}", stack)
-        self.assertIn("${NETVUE_STATE_DIR:?set the existing persistent state volume path}", stack)
+        self.assertIn("${NETVUE_STATE_DIR:?set the new empty v4 state directory path}", stack)
         self.assertIn(
             "${NETVUE_BRIDGE_IMAGE:?set the published immutable bridge image reference}",
             stack,
