@@ -1,66 +1,104 @@
-# Instructions permanentes — projet Netvue Vigil
+# Instructions permanentes — Netvue Bridge
 
-## Contexte
+## Projet
 
-Le propriétaire possède deux caméras Netvue Vigil de génération non encore confirmée et un serveur Debian exécutant Home Assistant en conteneur. Les caméras n'ont actuellement pas de carte microSD installée. Des analyses TCP du réseau local ont montré uniquement le port 5555 ouvert sur chacune ; Telnet (23) et RTSP standard (554) sont fermés.
+Ce dépôt développe une passerelle locale **Netvue Vigil LAN → H.264/RTSP → Home Assistant**.
+L'utilisateur possède deux caméras Netvue Vigil et un serveur Debian avec Docker,
+Portainer et Home Assistant. Le projet a dépassé l'analyse statique de l'APK.
 
-Le but final serait de récupérer un flux vidéo autorisé vers Home Assistant, idéalement localement. Le projet a terminé sa phase initiale d'analyse statique.
+Les travaux déjà démontrés comprennent la découverte LAN, une authentification
+locale autorisée sur la caméra 2, la réception H.264 et une publication RTSP
+lisible. Cela **ne prouve pas** la stabilité 24 h/24, la compatibilité de la
+caméra 1, ni la disponibilité permanente du flux.
 
-L'objectif actuel est de développer, tester et stabiliser
-une passerelle vidéo locale Netvue LAN → RTSP,
-puis de l'intégrer à Home Assistant.
+Objectifs : stabiliser le pont, obtenir une intégration Home Assistant simple,
+préparer une stack Portainer facile à installer et, plus tard, permettre
+l'enregistrement et la consultation d'historique.
 
-Les tests réseau réels sur les caméras appartenant
-au propriétaire peuvent être réalisés lorsqu'une
-autorisation explicite et limitée a été accordée.
+## Priorités de développement
 
-Les restrictions propres à l'analyse statique
-concernent la phase 1 et ne doivent pas être
-interprétées comme une interdiction permanente
-des tests autorisés des phases suivantes.
+1. Livrer le comportement demandé avec un code lisible, simple et testable.
+2. **Remplacer puis retirer** les anciennes implémentations devenues inutiles :
+   ne pas accumuler plusieurs superviseurs, budgets, wrappers ou variantes
+   pour une même responsabilité sans nécessité démontrée.
+3. Préférer les fonctions et mécanismes déjà présents aux nouvelles couches
+   d'abstraction. Éviter la duplication, les états excessifs et le code mort.
+4. Modifier directement le code dans le périmètre autorisé. Ne pas s'arrêter
+   au diagnostic ou au plan si la demande porte sur une implémentation.
+5. Conserver les fonctionnalités existantes lors du refactoring et caractériser
+   les comportements sensibles par des tests avant de les remplacer.
+6. Mesurer la simplification avec des éléments concrets (responsabilités,
+   fichiers obsolètes retirés, duplications éliminées), **pas seulement** avec
+   le nombre de lignes. Ne jamais supprimer une protection utile pour atteindre
+   artificiellement un objectif de réduction.
 
-## Règles de travail
+## Méthode
 
-1. Écrire en français clair. Distinguer systématiquement « observé », « déduit » et « non vérifié ».
-2. Favoriser les sources primaires : code source, application fournie, projet officiel Netvue, documentation VS Code/Home Assistant, dépôts originaux des outils.
-3. Citer pour chaque découverte le chemin de fichier, la méthode et si possible les classes, méthodes ou offsets. Ne jamais inventer un résultat d'analyse ou de scan.
-4. Ne jamais supposer que `5555/tcp` correspond à Freeciv, ADB, RTSP, Telnet ou un protocole précis : ce sont des étiquettes possibles, pas des preuves.
-5. Ne pas supposer que GK7101 est confirmé sur ces exemplaires : c'est une piste issue des spécifications de certaines Vigil de première génération.
-6. Travailler avec des captures et binaires appartenant au propriétaire ; ne pas utiliser de secrets obtenus ailleurs.
-7. MODE AUTONOME : l'agent est autorisé à télécharger des APK
-   publiques depuis les serveurs officiels Netvue, à les analyser,
-   à utiliser le terminal et à télécharger des outils portables
-   depuis leurs dépôts officiels (GitHub notamment).
+- Lire uniquement les modules, tests et rapports pertinents ; ne pas refaire
+  l'analyse statique déjà terminée.
+- Définir les critères de réussite de la tâche, implémenter, tester, corriger
+  puis enlever le code remplacé. Continuer tant que des étapes sûres et
+  autorisées permettent d'atteindre ces critères.
+- Exécuter les tests hors ligne adaptés et signaler honnêtement les échecs
+  intermittents ; ne pas transformer des réussites au rejeu en preuve
+  d'absence de défaut.
+- Séparer **code terminé et testé hors ligne** de **déploiement et validation
+  réelle encore à effectuer**. Ne pas qualifier toute la refonte d'inachevée
+  seulement parce qu'un test caméra ou une mise en production reste à autoriser.
+- En cas de vrai blocage, préciser le fait bloquant et ce qui a été terminé.
+  Ne jamais déclarer réussie une vérification non exécutée.
+- Pour une tâche complexe, utiliser des sous-agents si disponibles : analyses
+  indépendantes en parallèle, modifications par zones de fichiers distinctes,
+  intégration et validation sous la responsabilité de l'agent principal.
 
-   Il doit effectuer automatiquement toutes les étapes de l'analyse
-   statique sans demander de confirmation à chaque étape.
+## Sécurité et autorisations
 
-   Les outils supplémentaires doivent être installés exclusivement
-   dans le dossier tools/ du projet, sans droits administrateur.
+**Autorisés sans nouvelle confirmation pour les tâches de développement :**
+lecture et modification des fichiers du dépôt, suppression de code obsolète
+après vérification, tests purement locaux ou synthétiques, dépendances
+installées uniquement dans le projet, diagnostics passifs et lecture des états
+Docker/SSH accessibles avec les droits déjà configurés.
 
-   Une autorisation reste obligatoire pour :
-   - Accéder aux comptes Netvue.
-   - Communiquer directement avec les caméras.
-   - Modifier le firmware.
-   - Modifier le réseau ou le serveur.
-   - Installer des logiciels au niveau du système.
-   - Exécuter l'APK ou du code extrait.
-8. Toute nouvelle commande doit indiquer sa finalité, ses prérequis, les données qu'elle produit et ses risques. Les commandes de lecture locale sont prioritaires.
-9. Préserver les fichiers originaux ; écrire les résultats sous `findings/` et n'écraser aucun résultat existant sans justification.
-10. Ne jamais exposer dans Git, un rapport partagé ou le Chat : mots de passe, jetons, cookies, adresses MAC complètes, Device IDs, clés cryptographiques, adresses IP publiques, captures brutes contenant des secrets.
-11. Si une hypothèse exige une capture réseau non visible depuis le serveur à cause de la commutation Ethernet/Wi-Fi, le signaler : un `tcpdump` exécuté sur Debian n'observe pas automatiquement le trafic unicast entre une caméra et la box.
-12. Les restrictions spécifiques à la phase 1
-s'appliquent uniquement à l'analyse statique.
+**Autorisation explicite distincte nécessaire avant :**
 
-Les phases de développement ultérieures peuvent
-inclure des interactions réseau légitimes avec
-les appareils du propriétaire, sous réserve
-d'autorisation explicite.
+- Tout contact actif avec les caméras réelles (préciser caméra, opérations,
+  nombre maximal de tentatives et durée).
+- Accès aux comptes Netvue ou utilisation de leurs identifiants.
+- Modification du firmware ou réinitialisation d'une caméra.
+- Modification ou redémarrage de Home Assistant, Docker/Swarm, des services,
+  du réseau ou du serveur de production.
+- Migration appliquée aux états/budgets persistants réels ou autre opération
+  qui supprime, écrase ou rend difficilement récupérables des données.
 
-Les modifications de firmware, réinitialisations
-et opérations destructives nécessitent toujours
-une autorisation spécifique.
+Ne pas contourner un budget/état bloqué en changeant de chemin ou en créant
+un répertoire neuf. Préparer et tester une migration/réconciliation sûre hors
+ligne avant toute application réelle. Ne pas exposer le flux sur Internet ;
+privilégier RTSP sur loopback et des accès locaux contrôlés. Conserver les
+limitations raisonnables de ressources, les verrous de session, les délais de
+reconnexion et le traitement explicite des erreurs critiques. Pas de brute
+force, d'exploitation de vulnérabilité ou de contournement des permissions.
 
-## Livrable
+Ne jamais publier de secrets, tokens, cookies, MAC complètes, identifiants
+matériels ou captures brutes sensibles. Expurger les journaux avant partage.
+Les ports 5555 des caméras ne prouvent **pas** à eux seuls un protocole donné ;
+le chipset de ces exemplaires n'est pas confirmé.
 
-Rédiger un rapport court, reproductible et orienté décision : API/cloud possible ? flux local plausible ? preuve manquante ? meilleure prochaine étape ?
+## Code, déploiement et documentation
+
+- Respecter les contrats publics utiles : CLI, flux RTSP, entités Home
+  Assistant et configuration déployée. Une compatibilité interne obsolète peut
+  être retirée après mise à jour des appelants et des tests.
+- La passerelle et MediaMTX sont des services distincts de Home Assistant ;
+  préparer une stack Portainer reproductible, sans modifier les autres stacks.
+- Utiliser les sources officielles pour les faits externes, sans transformer
+  chaque tâche de code en recherche générale.
+- Mettre à jour les documents actifs (`README.md`, `docs/`, guide de
+  déploiement) plutôt que créer systématiquement un nouveau rapport `findings/`.
+  Préserver les preuves historiques utiles et les sauvegardes utilisateur.
+- À la fin, donner un bilan **court et concret** : comportement livré, ancien
+  code supprimé ou fusionné, tests exécutés, limites non vérifiées et seule
+  prochaine action réellement nécessaire.
+
+Écrire en français clair. Pour les conclusions techniques importantes,
+distinguer **observé**, **déduit** et **non vérifié** ; citer les chemins du
+code source quand cela éclaire la décision.

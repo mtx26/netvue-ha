@@ -98,7 +98,7 @@ class ContinuousTimestampIntegrationTests(unittest.TestCase):
                           "continuous.resource_snapshot=lambda: "
                           "{'memory_bytes':1,'memory_limit_bytes':100,'cpu_usec':1}; ")
                 if interrupt:
-                    script += "continuous.reconnect_delay=lambda _:0.1; "
+                    script += "from netvue_bridge import budget; budget.retry_delay=lambda *_:0.1; "
                 script += "raise SystemExit(continuous.main())"
                 run_command = [sys.executable, "-B", "-c", script, "run"] + command[4:]
                 process = subprocess.Popen(run_command,

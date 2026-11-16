@@ -2,6 +2,12 @@
 
 > Le projet comprend désormais une passerelle LAN → RTSP et une intégration Home Assistant en cours de stabilisation. Voir [l'architecture](docs/architecture.md), [le développement](docs/development.md), [la passerelle](netvue_bridge/README.md) et [le déploiement](deployment/README.md). Le guide ci-dessous conserve le contexte historique de la phase 1 ; il ne décrit pas l'état actuel du pont ni n'autorise une connexion caméra.
 
+Le pont utilise maintenant un superviseur et un état de budget uniques
+(format v4), avec backoff progressif et sans quotas journaliers ou
+hebdomadaires. La migration v2/v3 est explicite et auditée ; un état ambigu
+reste bloqué. Cette simplification est testée hors ligne, mais n'a pas été
+déployée et ne prouve pas le fonctionnement réel 24 h/24.
+
 Espace de travail prêt à ouvrir dans **VS Code avec GitHub Copilot (harness « Copilot »)**. La première phase est exclusivement consacrée à l'analyse statique de l'application Android Netvue et aux recherches documentaires. Aucun accès à un compte Netvue n'est nécessaire.
 
 ## Ce qui est inclus

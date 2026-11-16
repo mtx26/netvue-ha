@@ -1,175 +1,232 @@
+"""Tests for the unified state, retry supervisor and bounded test mode."""
+
+import json
 import os
-import signal
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 if os.name == "posix":
+    from netvue_bridge.budget import Budget, retry_delay
     from netvue_bridge.continuous import (
-        DAY, WEEK, RollingBudget, clock_sample, reconnect_delay, resource_snapshot, run_worker,
-        supervise_continuous,
+        main, resource_snapshot, run_bounded, run_worker, supervise,
     )
-    from netvue_bridge.protocol import command_packet
-    from netvue_bridge.stream import StreamInterrupted, receive_stream
 
 
-@unittest.skipUnless(os.name == "posix", "requires Linux file locks")
-class ContinuousTests(unittest.TestCase):
+@unittest.skipUnless(os.name == "posix", "supervisor requires Linux file locks")
+class SupervisorTests(unittest.TestCase):
     source = "192.0.2.10"
     target = "192.0.2.20"
     rtsp = "rtsp://127.0.0.1:8554/netvue2"
 
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.path = Path(self.directory.name)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name)
         self.wall, self.boot, self.boot_id = 1700000000.0, 1000000.0, "test-boot"
-        clock = patch("netvue_bridge.continuous.clock_sample",
-                      side_effect=lambda: (self.wall, self.boot, self.boot_id))
+        clock = patch("netvue_bridge.budget.clock_sample", side_effect=self.sample)
         clock.start()
         self.addCleanup(clock.stop)
+
+    def sample(self):
+        return self.wall, self.boot, self.boot_id
 
     def advance(self, seconds):
         self.wall += seconds
         self.boot += seconds
 
-    def test_three_in_rolling_day_and_latched_exhaustion(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
+    def test_single_budget_is_exclusive_durable_and_fails_closed(self):
+        with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
-            for attempt in range(3):
-                self.assertEqual(budget.reserve(), attempt + 1)
-                budget.finish_retryable("live")
-                self.advance(600)
-            with self.assertRaisesRegex(ValueError, "BUDGET_EXHAUSTED"):
+            with self.assertRaises(FileExistsError):
+                budget.initialize()
+            with self.assertRaises(BlockingIOError):
+                with Budget(self.path, self.source, self.target):
+                    pass
+            self.assertEqual(budget.reserve(), 1)
+            budget.stage("STREAMING")
+        with Budget(self.path, self.source, self.target) as budget:
+            self.assertEqual(budget.read()["status"], "in_progress")
+            with self.assertRaisesRegex(ValueError, "BUDGET_IN_PROGRESS"):
                 budget.reserve()
-            self.assertEqual(budget.read()["status"], "blocked")
-            self.advance(DAY)
+        with Budget(self.path, self.source, self.target) as budget:
+            state = budget.read()
+            state["status"] = "blocked"
+            state["stage"] = "BLOCKED"
+            budget._write(state)
             with self.assertRaisesRegex(ValueError, "BUDGET_BLOCKED"):
                 budget.reserve()
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            self.assertEqual(budget.read()["total"], 3)
-            self.assertEqual(budget.read()["status"], "blocked")
 
-    def test_rolling_week_and_exact_day_boundary(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
+    def test_transient_errors_use_persisted_exponential_backoff_without_quotas(self):
+        with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
-            for attempt in range(8):
-                budget.reserve()
-                budget.finish_retryable("live")
-                self.advance(20 * 3600 if attempt < 7 else 1801)
-            with self.assertRaisesRegex(ValueError, "BUDGET_EXHAUSTED"):
-                budget.reserve()
-            self.assertEqual(budget.read()["total"], 8)
+            for attempt in range(1, 13):
+                self.assertEqual(budget.reserve(), attempt)
+                budget.finish_retryable("video" if attempt % 2 else "live")
+                if attempt < 12:
+                    self.advance(retry_delay(attempt))
+            state = budget.read()
+            self.assertEqual((state["total"], state["status"], state["streak"]), (12, "ready", 12))
+        self.assertEqual([retry_delay(n) for n in range(1, 7)], [5, 15, 60, 300, 900, 900])
 
-    def test_older_than_seven_days_expires_without_resetting_total(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
+    def test_backoff_wait_and_stable_stream_reset_only_retry_streak(self):
+        with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
             budget.reserve()
-            budget.finish_retryable("live")
-            self.advance(WEEK)
-            self.assertEqual(budget.reserve(), 2)
-            self.assertEqual(len(budget.read()["attempts"]), 1)
-            self.assertEqual(budget.read()["last_reconnect"], self.wall)
-
-    def test_concurrent_lock_crash_and_restart_fail_closed(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            budget.initialize()
-            with self.assertRaises(BlockingIOError):
-                with RollingBudget(self.path, self.source, self.target):
-                    pass
-            budget.reserve()
-            budget.stage("AUTHENTICATING")
-        with RollingBudget(self.path, self.source, self.target) as budget, \
-             patch("netvue_bridge.continuous.wait_for_rtsp") as network:
-            self.assertEqual(budget.read()["stage"], "AUTHENTICATING")
-            self.assertEqual(supervise_continuous(budget, self.rtsp), 1)
-            network.assert_not_called()
-
-    def test_synthetic_attested_interruption_preserves_history_and_quota(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            budget.initialize()
+            budget.finish_retryable("connect")
+            with self.assertRaisesRegex(ValueError, "backoff"):
+                budget.reserve()
+            self.advance(5)
             budget.reserve()
             budget.stage("STREAMING")
-            original = budget.read()
-            # This models a separately verified clean stop, not an ambiguous crash.
-            with patch("netvue_bridge.continuous.reconnect_delay", return_value=30):
-                budget.finish_retryable("live")
+            budget.mark_stable()
+            self.assertEqual((budget.read()["total"], budget.read()["streak"]), (2, 0))
+
+    def test_reboot_or_clock_ambiguity_fails_before_network(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+        self.boot_id = "other-boot"
+        with Budget(self.path, self.source, self.target) as budget, \
+             patch("netvue_bridge.continuous.wait_for_rtsp") as network:
+            with self.assertRaisesRegex(ValueError, "CLOCK_AMBIGUOUS"):
+                supervise(budget, self.rtsp)
+            network.assert_not_called()
+
+    def test_v2_migration_audits_and_preserves_ambiguous_state_as_blocked(self):
+        legacy = {"version": 2, "source": self.source, "target": self.target,
+                  "limit": 4, "used": 2, "status": "ready"}
+        (self.path / "budget.json").write_text(json.dumps(legacy), encoding="utf-8")
+        with Budget(self.path, self.source, self.target) as budget:
+            with self.assertRaisesRegex(ValueError, "version"):
+                budget.read()
+            audit = budget.migrate_legacy()
             state = budget.read()
-            self.assertEqual(state["attempts"], original["attempts"])
-            self.assertEqual(state["total"], 1)
-            self.assertEqual((state["status"], state["stage"]), ("ready", "RECONNECT_WAIT"))
-            with self.assertRaisesRegex(ValueError, "backoff"):
-                budget.reserve()
-            self.advance(30)
-            budget.reserve()
-            budget.finish_retryable("live")
-            self.advance(1801)
-            budget.reserve()
-            budget.finish_retryable("live")
-            self.advance(1801)
-            with self.assertRaisesRegex(ValueError, "BUDGET_EXHAUSTED"):
-                budget.reserve()
-            self.assertEqual(budget.read()["total"], 3)
+            self.assertEqual((state["version"], state["status"], state["total"]), (4, "blocked", 2))
+        record = json.loads(audit.read_text(encoding="utf-8"))
+        self.assertEqual(json.loads(record["original_json"]), legacy)
+        self.assertEqual(record["after"]["status"], "blocked")
 
-    def test_blocked_budget_has_no_existing_reconciliation(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            budget.initialize()
-            budget.reserve()
-            budget.block()
-            with self.assertRaisesRegex(ValueError, "No attempt in progress"):
-                budget.finish_retryable("live")
-            with self.assertRaisesRegex(ValueError, "BUDGET_BLOCKED"):
-                budget.reserve()
-            self.assertEqual(budget.read()["total"], 1)
+    def test_v3_migration_is_explicit_and_drops_quotas_but_keeps_backoff(self):
+        legacy = {"version": 3, "source": self.source, "target": self.target,
+                  "status": "ready", "stage": "RECONNECT_WAIT",
+                  "attempts": [self.boot - 60] * 8, "streak": 2, "total": 8,
+                  "last_reconnect": self.wall - 60, "last_error": "live",
+                  "wait_until": self.boot + 5, "wall": self.wall - 60,
+                  "boot": self.boot - 60, "boot_id": self.boot_id}
+        (self.path / "budget.json").write_text(json.dumps(legacy), encoding="utf-8")
+        with Budget(self.path, self.source, self.target) as budget:
+            with self.assertRaisesRegex(ValueError, "version"):
+                budget.read()
+            budget.migrate_legacy()
+            self.assertEqual(budget.read()["status"], "ready")
+            self.advance(5)
+            self.assertEqual(budget.reserve(), 9)
 
-    def test_clock_change_and_reboot_block_before_network(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            budget.initialize()
-            budget.reserve()
-            budget.finish_retryable("live")
-        for kind in ("clock", "boot"):
-            with self.subTest(kind=kind), RollingBudget(self.path, self.source, self.target) as budget:
-                old_wall, old_id = self.wall, self.boot_id
-                if kind == "clock":
-                    self.wall += DAY
-                else:
-                    self.boot_id = "other-boot"
-                with patch("netvue_bridge.continuous.wait_for_rtsp") as network:
-                    with self.assertRaisesRegex(ValueError, "CLOCK_AMBIGUOUS"):
-                        supervise_continuous(budget, self.rtsp)
-                    network.assert_not_called()
-                self.wall, self.boot_id = old_wall, old_id
+    def test_migration_write_failure_keeps_original_state(self):
+        legacy = {"version": 2, "source": self.source, "target": self.target,
+                  "limit": 4, "used": 1, "status": "ready"}
+        original = json.dumps(legacy).encode()
+        (self.path / "budget.json").write_bytes(original)
+        with Budget(self.path, self.source, self.target) as budget, \
+             patch.object(budget, "_write", side_effect=OSError("interrupted")):
+            with self.assertRaisesRegex(OSError, "interrupted"):
+                budget.migrate_legacy()
+            self.assertEqual(budget.path.read_bytes(), original)
+            self.assertEqual(len(list(self.path.glob("migration-*.json"))), 1)
 
-    def test_backoff_persists_and_retry_is_reserved_before_worker(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
+    def test_v3_in_progress_migration_remains_blocked(self):
+        legacy = {"version": 3, "source": self.source, "target": self.target,
+                  "status": "in_progress", "stage": "STREAMING",
+                  "attempts": [self.boot], "streak": 0, "total": 1,
+                  "last_reconnect": None, "last_error": None,
+                  "wait_until": self.boot, "wall": self.wall,
+                  "boot": self.boot, "boot_id": self.boot_id}
+        (self.path / "budget.json").write_text(json.dumps(legacy), encoding="utf-8")
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.migrate_legacy()
+            self.assertEqual((budget.read()["status"], budget.read()["stage"]),
+                             ("blocked", "BLOCKED"))
+
+    def test_migration_rejects_malformed_v3_without_touching_source(self):
+        legacy = {"version": 3, "source": self.source, "target": self.target,
+                  "status": "ready", "stage": [], "attempts": [], "streak": 0,
+                  "total": 0, "last_reconnect": None, "last_error": None,
+                  "wait_until": self.boot, "wall": self.wall, "boot": self.boot,
+                  "boot_id": self.boot_id}
+        original = json.dumps(legacy).encode()
+        (self.path / "budget.json").write_bytes(original)
+        with Budget(self.path, self.source, self.target) as budget:
+            with self.assertRaisesRegex(ValueError, "invalid"):
+                budget.migrate_legacy()
+            self.assertEqual(budget.path.read_bytes(), original)
+            self.assertEqual(list(self.path.glob("migration-*.json")), [])
+
+    def test_supervisor_retries_video_failures_and_bounded_attempts_stop(self):
+        with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
-            budget.reserve()
-            with patch("netvue_bridge.continuous.reconnect_delay", return_value=30):
-                budget.finish_retryable("live")
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            with self.assertRaisesRegex(ValueError, "backoff"):
-                budget.reserve()
-            self.advance(30)
+
+            def wait(seconds):
+                self.advance(seconds)
+
             with patch("netvue_bridge.continuous.wait_for_rtsp", return_value=True), \
-                 patch("netvue_bridge.continuous.run_worker", return_value="blocked") as run:
-                self.assertEqual(supervise_continuous(budget, self.rtsp), 1)
-                self.assertEqual(run.call_count, 1)
-                self.assertEqual(budget.read()["total"], 2)
-                self.assertEqual(budget.read()["status"], "blocked")
+                 patch("netvue_bridge.continuous.run_worker",
+                       side_effect=["video", "connect", "live"]) as worker, \
+                 patch("netvue_bridge.continuous.time.sleep", side_effect=wait), \
+                 patch("builtins.print"):
+                self.assertEqual(supervise(budget, self.rtsp, max_attempts=3), 0)
+                self.assertEqual(worker.call_count, 3)
+            self.assertEqual(budget.read()["total"], 3)
+            self.assertEqual(budget.read()["status"], "ready")
 
-    def test_backoff_minima_and_cap(self):
-        for count, minimum in ((1, 30), (2, 120), (3, 300), (4, 600), (10, 1800)):
-            for _ in range(20):
-                self.assertGreaterEqual(reconnect_delay(count), minimum)
-                self.assertLessEqual(reconnect_delay(count), min(1800, minimum * 1.2))
+    def test_security_failure_blocks_and_does_not_retry(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            with patch("netvue_bridge.continuous.wait_for_rtsp", return_value=True), \
+                 patch("netvue_bridge.continuous.run_worker", return_value="blocked") as worker, \
+                 patch("builtins.print"):
+                self.assertEqual(supervise(budget, self.rtsp), 1)
+                worker.assert_called_once()
+            self.assertEqual(budget.read()["status"], "blocked")
 
-    def test_resource_snapshot_requires_finite_cgroup_memory(self):
+    def test_test_cli_requires_both_bounds_and_uses_watchdog(self):
+        args = ["continuous", "test", "--source", self.source, "--target", self.target,
+                "--state-dir", str(self.path)]
+        with patch("sys.argv", args), patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                main()
+        with patch("sys.argv", args + ["--max-duration", "2", "--max-attempts", "1"]), \
+             patch("netvue_bridge.continuous.run_bounded", return_value=124) as watchdog:
+            self.assertEqual(main(), 124)
+            watchdog.assert_called_once()
+
+    def test_bounded_cli_stops_preflight_without_reserving_an_attempt(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            rtsp = f"rtsp://127.0.0.1:{listener.getsockname()[1]}/netvue2"
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "netvue_bridge.continuous", "test",
+             "--source", self.source, "--target", self.target,
+             "--state-dir", str(self.path), "--rtsp", rtsp,
+             "--max-duration", "1", "--max-attempts", "1"],
+            capture_output=True, text=True, timeout=4,
+        )
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        with Budget(self.path, self.source, self.target) as budget:
+            self.assertEqual((budget.read()["total"], budget.read()["status"]), (0, "ready"))
+
+    def test_watchdog_stops_child_at_deadline_and_preserves_exit_code(self):
+        with patch("builtins.print"):
+            result = run_bounded([sys.executable, "-c", "import time; time.sleep(20)"], 1.2)
+        self.assertEqual(result, 124)
+        self.assertEqual(run_bounded([sys.executable, "-c", "raise SystemExit(7)"], 2), 7)
+
+    def test_resource_snapshot_requires_finite_cgroup_limit(self):
         (self.path / "memory.current").write_text("123\n", encoding="ascii")
         (self.path / "memory.max").write_text("1000\n", encoding="ascii")
         (self.path / "cpu.stat").write_text("usage_usec 456\n", encoding="ascii")
@@ -181,147 +238,39 @@ class ContinuousTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "finite cgroup memory limit"):
                 resource_snapshot()
 
-    def test_unavailable_rtsp_and_bad_budget_never_connect(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            budget.initialize()
-            with patch("netvue_bridge.continuous.wait_for_rtsp", return_value=False), \
-                 patch("netvue_bridge.continuous.run_worker") as worker:
-                self.assertEqual(supervise_continuous(budget, self.rtsp), 1)
-                worker.assert_not_called()
-                self.assertEqual(budget.read()["total"], 0)
-        (self.path / "budget.json").write_text("{}", encoding="utf-8")
-        with RollingBudget(self.path, self.source, self.target) as budget, \
-             patch("netvue_bridge.continuous.wait_for_rtsp") as wait:
-            with self.assertRaises(ValueError):
-                supervise_continuous(budget, self.rtsp)
-            wait.assert_not_called()
-
-    def test_inconsistent_ready_state_cannot_reconnect(self):
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            budget.initialize()
-            budget.reserve()
-            state = budget.read()
-            state["status"] = "ready"
-            budget._write(state)
-            with patch("netvue_bridge.continuous.wait_for_rtsp") as network:
-                with self.assertRaisesRegex(ValueError, "invalid"):
-                    supervise_continuous(budget, self.rtsp)
-                network.assert_not_called()
-
-    def test_video_without_reader_and_then_video_stall(self):
-        publisher = MagicMock()
-        publisher.published_frames = 0
-
-        def push(data, timestamp):
-            publisher.published_frames += 1
-
-        publisher.push.side_effect = push
-        left, right = socket.socketpair()
-        try:
-            right.sendall(command_packet([{"A": 3, "V": 2, "C": 0}]))
-            body = b"\x10" + (1).to_bytes(4, "little") + b"fake"
-            right.sendall(struct.pack("<IIIHH", len(body), 0, 0, 0, 201) + body)
-            received = []
-            started = time.monotonic()
-            with self.assertRaises(StreamInterrupted):
-                receive_stream(left, publisher, 8, received.append)
-            self.assertEqual(len(received), 1)
-            self.assertEqual(publisher.published_frames, 1)
-            self.assertGreaterEqual(time.monotonic() - started, 2.9)
-        finally:
-            left.close()
-            right.close()
-
-    def test_worker_crash_and_unresponsive_worker_remain_ambiguous(self):
+    def test_worker_stops_at_memory_threshold_and_on_video_stall(self):
         original_popen = subprocess.Popen
         children = []
-        with RollingBudget(self.path, self.source, self.target) as budget:
+        with Budget(self.path, self.source, self.target) as budget:
             budget.initialize()
-            budget.reserve()
-            for script in ("raise SystemExit(1)", "import time; time.sleep(20)"):
-                def launch(command, **kwargs):
-                    child = original_popen([sys.executable, "-c", script], **kwargs)
-                    children.append(child)
-                    return child
+            for metrics, result in (
+                ({"memory_bytes": 95, "memory_limit_bytes": 100, "cpu_usec": 1}, "ambiguous"),
+                ({"memory_bytes": 1, "memory_limit_bytes": 100, "cpu_usec": 1}, "live"),
+            ):
+                with tempfile.TemporaryDirectory() as state_dir, \
+                     Budget(Path(state_dir), self.source, self.target) as attempt_budget:
+                    attempt_budget.initialize()
+                    attempt_budget.reserve()
 
-                with patch("netvue_bridge.continuous.subprocess.Popen", side_effect=launch), \
-                     patch("netvue_bridge.continuous.HEARTBEAT_TIMEOUT", 0.1), \
-                     patch("netvue_bridge.continuous.resource_snapshot",
-                           return_value={"memory_bytes": 1, "memory_limit_bytes": 100,
-                                         "cpu_usec": 1}):
-                    self.assertEqual(run_worker(budget, self.rtsp), "ambiguous")
-                self.assertIsNotNone(children[-1].poll())
-                self.assertEqual(budget.read()["status"], "in_progress")
+                    def launch(command, **kwargs):
+                        fd = command[command.index("--event-fd") + 1]
+                        if result == "live":
+                            script = ("import os,sys,time; "
+                                      "os.write(int(sys.argv[1]), "
+                                      "b'{\"event\":\"stage\",\"stage\":\"live\"}\\n'); "
+                                      "time.sleep(20)")
+                        else:
+                            script = "import time; time.sleep(20)"
+                        child = original_popen([sys.executable, "-c", script, fd], **kwargs)
+                        children.append(child)
+                        return child
 
-    def test_worker_explicit_refusal_and_memory_limit(self):
-        original_popen = subprocess.Popen
-        with RollingBudget(self.path, self.source, self.target) as budget:
-            budget.initialize()
-            budget.reserve()
-
-            def refusal(command, **kwargs):
-                fd = command[command.index("--event-fd") + 1]
-                script = "import os,sys; os.write(int(sys.argv[1]), b'{\"event\":\"blocked\"}\\n'); sys.exit(1)"
-                return original_popen([sys.executable, "-c", script, fd], **kwargs)
-
-            with patch("netvue_bridge.continuous.subprocess.Popen", side_effect=refusal), \
-                 patch("netvue_bridge.continuous.resource_snapshot",
-                       return_value={"memory_bytes": 1, "memory_limit_bytes": 100, "cpu_usec": 1}):
-                self.assertEqual(run_worker(budget, self.rtsp), "blocked")
-
-            def stalled(command, **kwargs):
-                return original_popen([sys.executable, "-c", "import time; time.sleep(20)"], **kwargs)
-
-            with patch("netvue_bridge.continuous.subprocess.Popen", side_effect=stalled), \
-                 patch("netvue_bridge.continuous.resource_snapshot",
-                       return_value={"memory_bytes": 95, "memory_limit_bytes": 100, "cpu_usec": 1}):
-                self.assertEqual(run_worker(budget, self.rtsp), "ambiguous")
-            self.assertEqual(budget.read()["status"], "in_progress")
-
-    def test_sigterm_stops_child_and_keeps_attempt_in_progress(self):
-        target = f"127.254.{(os.getpid() >> 8) % 256}.{os.getpid() % 256}"
-        with patch("netvue_bridge.continuous.clock_sample", new=clock_sample), \
-             socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as camera, \
-             socket.socket() as rtsp:
-            camera.bind((target, 36868))
-            camera.settimeout(8)
-            rtsp.bind(("127.0.0.1", 0))
-            rtsp.listen(1)
-            with RollingBudget(self.path, "127.0.0.1", target) as budget:
-                budget.initialize()
-            script = ("from netvue_bridge import continuous; "
-                      "continuous.resource_snapshot=lambda: "
-                      "{'memory_bytes':1,'memory_limit_bytes':100,'cpu_usec':1}; "
-                      "raise SystemExit(continuous.main())")
-            process = subprocess.Popen(
-                [sys.executable, "-B", "-c", script, "run",
-                 "--source", "127.0.0.1", "--target", target,
-                 "--state-dir", str(self.path),
-                 "--rtsp", f"rtsp://127.0.0.1:{rtsp.getsockname()[1]}/netvue2"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
-            try:
-                try:
-                    camera.recvfrom(65535)
-                except socket.timeout:
-                    if process.poll() is not None:
-                        stdout, stderr = process.communicate(timeout=8)
-                        self.fail(f"Supervisor exited before discovery: {stdout}\n{stderr}")
-                    raise
-                children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
-                self.assertEqual(len(children), 1)
-                process.send_signal(signal.SIGTERM)
-                stdout, stderr = process.communicate(timeout=8)
-                self.assertEqual(process.returncode, 130, stderr)
-                self.assertIn("STOPPED", stdout)
-                self.assertFalse(Path("/proc").joinpath(children[0]).exists())
-                with RollingBudget(self.path, "127.0.0.1", target) as budget:
-                    self.assertEqual(budget.read()["status"], "in_progress")
-                    self.assertEqual(budget.read()["total"], 1)
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                process.communicate(timeout=8)
+                    with patch("netvue_bridge.continuous.subprocess.Popen", side_effect=launch), \
+                         patch("netvue_bridge.continuous.HEARTBEAT_TIMEOUT", 0.1), \
+                         patch("netvue_bridge.continuous.resource_snapshot", return_value=metrics):
+                        self.assertEqual(run_worker(attempt_budget, self.rtsp, 0.1), result)
+                    self.assertIsNotNone(children[-1].poll())
+                    self.assertEqual(attempt_budget.read()["status"], "in_progress")
 
 
 if __name__ == "__main__":

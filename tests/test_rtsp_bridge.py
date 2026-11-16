@@ -19,7 +19,9 @@ from netvue_bridge.check_rtsp import (
     validate_frame_probe, validate_home_assistant_probe, validate_local_readers,
 )
 from netvue_bridge.discovery import DiscoveredCamera
-from netvue_bridge.protocol import ConnectionClosed, ProtocolError, command_packet, read_packet
+from netvue_bridge.protocol import (
+    ConnectionClosed, ProtocolError, RecoverableVideoError, command_packet, read_packet,
+)
 from netvue_bridge.rtsp import H264Publisher, TimestampClock, annexb_nals, validate_local_rtsp_url
 from netvue_bridge.stream import StreamInterrupted, receive_stream, run_sessions
 
@@ -473,6 +475,31 @@ class RtspTests(unittest.TestCase):
             self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
                                           10, on_retryable=callback), 1)
             callback.assert_called_once_with("live")
+
+    def test_recoverable_video_is_distinct_from_critical_protocol_error(self):
+        camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")
+        publisher = MagicMock()
+        publisher.safe_metrics.return_value = {}
+        video = MagicMock()
+        network = MagicMock()
+        with patch("netvue_bridge.stream.discover", return_value=camera), \
+             patch("netvue_bridge.stream.connect", return_value=MagicMock()), \
+             patch("netvue_bridge.stream.authenticate", return_value=0), \
+             patch("netvue_bridge.stream.H264Publisher", return_value=publisher), \
+             patch("netvue_bridge.stream.receive_stream",
+                   side_effect=[RecoverableVideoError("duplicate"), ProtocolError("invalid")]), \
+             patch("builtins.print"):
+            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                          10, on_retryable=network,
+                                          on_recoverable_video=video), 1)
+            video.assert_called_once_with()
+            network.assert_not_called()
+            video.reset_mock()
+            self.assertEqual(run_sessions("source", "target", "rtsp://127.0.0.1:8554/netvue2",
+                                          10, on_retryable=network,
+                                          on_recoverable_video=video), 1)
+            video.assert_not_called()
+            network.assert_not_called()
 
     def test_interruption_closes_socket_and_publisher(self):
         camera = DiscoveredCamera("192.0.2.1", 5555, "fake-key")

@@ -10,12 +10,18 @@ try:
 except ModuleNotFoundError:
     av = None
 
-from netvue_bridge.protocol import ProtocolError
-from netvue_bridge.h264 import interpolate_duplicate_timestamps
+from netvue_bridge.protocol import ProtocolError, RecoverableVideoError
+from netvue_bridge.h264 import TimestampClock, interpolate_duplicate_timestamps
 from netvue_bridge.rtsp import H264Publisher, annexb_nals
 
 
 class TimestampInterpolationTests(unittest.TestCase):
+    def test_clock_duplicate_is_a_recoverable_session_error(self):
+        clock = TimestampClock()
+        clock.update(100)
+        with self.assertRaisesRegex(RecoverableVideoError, "Duplicate video timestamp"):
+            clock.update(100)
+
     def test_interpolation_preserves_cadence_across_wrap(self):
         intervals = deque([100, 100, 100])
         self.assertEqual(interpolate_duplicate_timestamps(300, 600, 2, intervals), [400, 500])

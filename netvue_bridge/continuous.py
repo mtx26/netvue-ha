@@ -1,40 +1,24 @@
-"""Fail-closed continuous supervisor with a persistent rolling connection budget."""
+"""Unified Netvue session supervisor with a persistent, retry-only budget."""
 
 import argparse
 import ctypes
 import json
 import math
 import os
-import random
 import select
 import signal
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .budget import Budget, DEFAULT_RETRY_DELAYS, parse_retry_delays, retry_delay
 from .rtsp import validate_local_rtsp_url
 from .stream import run_sessions
-from .supervisor import Budget, wait_for_rtsp
 
-DAY = 86400
-WEEK = 7 * DAY
 HEARTBEAT_TIMEOUT = 30
-
-
-def clock_sample() -> tuple[float, float, str]:
-    return (time.time(), time.clock_gettime(time.CLOCK_BOOTTIME),
-            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip())
-
-
-def reconnect_delay(streak: int) -> float:
-    if streak < 1:
-        raise ValueError("Invalid reconnect streak")
-    base = (30, 120, 300)[min(streak, 3) - 1]
-    if streak > 3:
-        base = min(1800, 300 * 2 ** min(streak - 3, 3))
-    return min(1800, base * random.SystemRandom().uniform(1, 1.2))
 
 
 def resource_snapshot() -> dict[str, int]:
@@ -51,124 +35,74 @@ def resource_snapshot() -> dict[str, int]:
     return {"memory_bytes": current, "memory_limit_bytes": maximum, "cpu_usec": cpu_usec}
 
 
-class RollingBudget(Budget):
-    def initialize(self) -> None:
-        if self.lock_file is None:
-            raise RuntimeError("Budget lock is required")
-        wall, boot, boot_id = clock_sample()
-        state = {"version": 3, "source": self.source, "target": self.target,
-                 "status": "ready", "stage": "READY", "attempts": [],
-                 "streak": 0, "total": 0, "last_reconnect": None, "last_error": None,
-                 "wait_until": 0.0, "wall": wall, "boot": boot, "boot_id": boot_id}
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump(state, file)
-            file.flush()
-            os.fsync(file.fileno())
-        self._sync_directory()
-
-    def read(self) -> dict:
-        if self.lock_file is None:
-            raise RuntimeError("Budget lock is required")
-        fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as file:
-            raw = file.read(4097)
-        if len(raw) > 4096:
-            raise ValueError("Rolling budget file is too large")
+def wait_for_rtsp(port: int, timeout: float = 15) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
         try:
-            state = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise ValueError("Rolling budget file is invalid") from exc
-        keys = {"version", "source", "target", "status", "stage", "attempts",
-                "streak", "total", "last_reconnect", "last_error",
-                "wait_until", "wall", "boot", "boot_id"}
-        number = lambda value: type(value) in (int, float) and math.isfinite(value) and value >= 0
-        if (not isinstance(state, dict) or set(state) != keys
-                or type(state["version"]) is not int or state["version"] != 3
-                or state["source"] != self.source or state["target"] != self.target
-                or state["status"] not in ("ready", "in_progress", "blocked")
-                or state["stage"] not in ("READY", "CONNECTING", "AUTHENTICATING",
-                                          "WAITING_VIDEO", "STREAMING", "RECONNECT_WAIT", "BLOCKED")
-                or not isinstance(state["attempts"], list) or len(state["attempts"]) > 8
-                or not all(number(value) for value in state["attempts"])
-                or state["attempts"] != sorted(state["attempts"])
-                or type(state["streak"]) is not int or not 0 <= state["streak"] <= 1000000
-                or type(state["total"]) is not int or state["total"] < len(state["attempts"])
-                or (state["last_reconnect"] is not None and not number(state["last_reconnect"]))
-                or state["last_error"] not in (None, "discovery", "connect", "live")
-                or not all(number(state[key]) for key in ("wait_until", "wall", "boot"))
-                or state["wait_until"] > state["boot"] + 1800
-                or not isinstance(state["boot_id"], str) or not state["boot_id"]
-                or (state["status"] == "in_progress" and not state["attempts"])
-                or (state["status"] == "in_progress" and state["stage"] not in
-                    ("CONNECTING", "AUTHENTICATING", "WAITING_VIDEO", "STREAMING"))
-                or (state["status"] == "blocked" and state["stage"] != "BLOCKED")
-                or (state["status"] == "ready" and state["stage"] not in
-                    ("READY", "RECONNECT_WAIT"))
-                or (state["stage"] == "READY" and
-                    (state["total"] != 0 or state["attempts"] or state["streak"] != 0))
-                or (state["stage"] == "RECONNECT_WAIT" and
-                    (state["total"] == 0 or state["streak"] == 0
-                     or state["last_error"] is None))
-                or any(value > state["boot"] for value in state["attempts"])):
-            raise ValueError("Rolling budget state or endpoint is invalid")
-        return state
-
-    def checked(self) -> tuple[dict, float, float]:
-        state = self.read()
-        wall, boot, boot_id = clock_sample()
-        if (boot_id != state["boot_id"] or boot < state["boot"]
-                or abs((wall - state["wall"]) - (boot - state["boot"])) > 5):
-            raise ValueError("CLOCK_AMBIGUOUS; manual review required")
-        return state, wall, boot
-
-    def reserve(self) -> int:
-        state, wall, boot = self.checked()
-        if state["status"] != "ready":
-            raise ValueError("BUDGET_" + state["status"].upper())
-        if boot < state["wait_until"]:
-            raise ValueError("Reconnect backoff has not elapsed")
-        recent = [item for item in state["attempts"] if boot - item < WEEK]
-        if sum(boot - item < DAY for item in recent) >= 3 or len(recent) >= 8:
-            state.update(status="blocked", stage="BLOCKED", wall=wall, boot=boot)
-            self._write(state)
-            raise ValueError("BUDGET_EXHAUSTED; manual review required")
-        recent.append(boot)
-        total = state["total"] + 1
-        state.update(attempts=recent, status="in_progress", stage="CONNECTING", total=total,
-                     last_reconnect=wall if total > 1 else None,
-                     wall=wall, boot=boot)
-        self._write(state)
-        return total
-
-    def stage(self, stage: str) -> None:
-        state, wall, boot = self.checked()
-        if state["status"] != "in_progress":
-            raise ValueError("No attempt in progress")
-        if stage not in ("CONNECTING", "AUTHENTICATING", "WAITING_VIDEO", "STREAMING"):
-            raise ValueError("Invalid session stage")
-        state.update(stage=stage, wall=wall, boot=boot)
-        self._write(state)
-
-    def finish_retryable(self, stage: str) -> None:
-        state, wall, boot = self.checked()
-        if state["status"] != "in_progress":
-            raise ValueError("No attempt in progress")
-        if stage not in ("discovery", "connect", "live"):
-            raise ValueError("Invalid retryable stage")
-        streak = state["streak"] + 1
-        state.update(status="ready", stage="RECONNECT_WAIT", streak=streak,
-                     last_error=stage, wait_until=boot + reconnect_delay(streak),
-                     wall=wall, boot=boot)
-        self._write(state)
-
-    def block(self) -> None:
-        state, wall, boot = self.checked()
-        state.update(status="blocked", stage="BLOCKED", wall=wall, boot=boot)
-        self._write(state)
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print("supervisor: RTSP listener unavailable", flush=True)
+                return False
+            time.sleep(min(0.5, remaining))
 
 
-def worker(source: str, target: str, rtsp: str, fd: int, parent: int) -> int:
+def run_bounded(command: list[str], duration: float) -> int:
+    if not math.isfinite(duration) or not 0 < duration <= 604800:
+        raise ValueError("Maximum duration must be between 0 and 604800 seconds")
+    deadline = time.monotonic() + duration
+    grace = min(5.0, duration / 4)
+    received_signal = None
+
+    def request_stop(signum, frame) -> None:
+        nonlocal received_signal
+        received_signal = signum
+
+    previous = {sig: signal.signal(sig, request_stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    child = None
+    try:
+        child = subprocess.Popen(command)
+        while child.poll() is None:
+            remaining = deadline - grace - time.monotonic()
+            if received_signal is not None or remaining <= 0:
+                timed_out = received_signal is None
+                stop_code = 124 if received_signal is None else 128 + received_signal
+                print("watchdog: duration limit reached" if timed_out
+                      else "watchdog: stop requested", flush=True)
+                try:
+                    child.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.wait(timeout=grace)
+                except subprocess.TimeoutExpired:
+                    print("watchdog: forcing project worker to stop", flush=True)
+                    try:
+                        child.kill()
+                    except ProcessLookupError:
+                        pass
+                    child.wait()
+                return stop_code
+            try:
+                child.wait(timeout=min(remaining, 0.1))
+            except subprocess.TimeoutExpired:
+                pass
+        return child.returncode if child.returncode >= 0 else 128 - child.returncode
+    finally:
+        if child is not None and child.poll() is None:
+            try:
+                child.kill()
+            except ProcessLookupError:
+                pass
+            child.wait()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def worker(source: str, target: str, rtsp: str, fd: int, parent: int,
+           video_timeout: float = 30) -> int:
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "Cannot configure parent death signal")
@@ -198,9 +132,14 @@ def worker(source: str, target: str, rtsp: str, fd: int, parent: int) -> int:
 
     try:
         retryable = []
+        video_failure = []
         result = run_sessions(source, target, rtsp, float("inf"), max_attempts=1,
-                              on_stage=stage, on_video=video, on_retryable=retryable.append)
-        if result == 1 and retryable:
+                              on_stage=stage, on_video=video, on_retryable=retryable.append,
+                              on_recoverable_video=lambda: video_failure.append(True),
+                              video_timeout=video_timeout)
+        if result == 1 and video_failure:
+            send({"event": "retryable", "stage": "video"})
+        elif result == 1 and retryable:
             send({"event": "retryable", "stage": retryable[-1]})
         elif result == 1:
             send({"event": "blocked"})
@@ -209,11 +148,16 @@ def worker(source: str, target: str, rtsp: str, fd: int, parent: int) -> int:
         os.close(fd)
 
 
-def run_worker(budget: RollingBudget, rtsp: str) -> str:
+def run_worker(budget: Budget, rtsp: str, video_timeout: float | None = None) -> str:
+    if video_timeout is None:
+        video_timeout = HEARTBEAT_TIMEOUT
+    if not math.isfinite(video_timeout) or video_timeout <= 0:
+        raise ValueError("Video timeout must be positive and finite")
     read_fd, write_fd = os.pipe()
     command = [sys.executable, "-B", "-m", "netvue_bridge.continuous", "_session",
                "--source", budget.source, "--target", budget.target, "--rtsp", rtsp,
-               "--event-fd", str(write_fd), "--parent-pid", str(os.getpid())]
+               "--event-fd", str(write_fd), "--parent-pid", str(os.getpid()),
+               "--video-timeout", str(video_timeout)]
     process = None
     try:
         process = subprocess.Popen(command, pass_fds=(write_fd,))
@@ -229,6 +173,8 @@ def run_worker(budget: RollingBudget, rtsp: str) -> str:
         last_published = 0
         last_publication = last_progress
         streaming = False
+        waiting_video = False
+        stable = False
         while process.poll() is None:
             ready, _, _ = select.select([read_fd], [], [], 1)
             if ready:
@@ -244,6 +190,8 @@ def run_worker(budget: RollingBudget, rtsp: str) -> str:
                             stages = {"discovery": "CONNECTING", "connect": "CONNECTING",
                                       "authentication": "AUTHENTICATING", "live": "WAITING_VIDEO"}
                             budget.stage(stages[event["stage"]])
+                            if event["stage"] == "live":
+                                waiting_video = True
                             print("continuous: state=" + stages[event["stage"]], flush=True)
                         elif event["event"] == "video":
                             metrics = event["metrics"]
@@ -255,6 +203,11 @@ def run_worker(budget: RollingBudget, rtsp: str) -> str:
                                     budget.stage("STREAMING")
                                     streaming = True
                                     print("continuous: state=STREAMING", flush=True)
+                                if not stable and metrics.get("session_seconds", 0) >= 300:
+                                    budget.mark_stable()
+                                    stable = True
+                                    print("continuous: stable session; retry streak cleared",
+                                          flush=True)
                         elif event["event"] == "retryable":
                             outcome = event["stage"]
                         elif event["event"] == "blocked":
@@ -269,13 +222,14 @@ def run_worker(budget: RollingBudget, rtsp: str) -> str:
                 if resources["memory_bytes"] * 100 >= resources["memory_limit_bytes"] * 95:
                     print("continuous: MEMORY_LIMIT_NEAR; manual review required", flush=True)
                     return "ambiguous"
-            if now - last_progress > HEARTBEAT_TIMEOUT:
-                print("continuous: WATCHDOG_TIMEOUT; worker stalled, manual review required",
-                      flush=True)
-                return "ambiguous"
-            if metrics and now - last_publication > HEARTBEAT_TIMEOUT:
-                print("continuous: PUBLICATION_STALLED; manual review required", flush=True)
-                return "ambiguous"
+            if now - last_progress > (video_timeout if waiting_video else HEARTBEAT_TIMEOUT):
+                print("continuous: WATCHDOG_TIMEOUT; " +
+                      ("video stalled, stopping worker" if waiting_video
+                       else "worker stalled, manual review required"), flush=True)
+                return "live" if waiting_video else "ambiguous"
+            if metrics and now - last_publication > video_timeout:
+                print("continuous: PUBLICATION_STALLED; stopping worker", flush=True)
+                return "live"
             if now - last_report >= 30:
                 state = budget.read()
                 print("continuous_health: " + json.dumps({
@@ -300,7 +254,7 @@ def run_worker(budget: RollingBudget, rtsp: str) -> str:
                 outcome = event["stage"]
             elif event["event"] == "blocked":
                 outcome = "blocked"
-        if process.returncode == 1 and outcome in ("discovery", "connect", "live"):
+        if process.returncode == 1 and outcome in ("discovery", "connect", "live", "video"):
             print("continuous: retryable interruption at " + outcome, flush=True)
             return outcome
         if process.returncode == 1 and outcome == "blocked":
@@ -310,7 +264,10 @@ def run_worker(budget: RollingBudget, rtsp: str) -> str:
         return "ambiguous"
     finally:
         if process is not None and process.poll() is None:
-            process.terminate()
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -322,35 +279,44 @@ def run_worker(budget: RollingBudget, rtsp: str) -> str:
             os.close(write_fd)
 
 
-def supervise_continuous(budget: RollingBudget, rtsp: str) -> int:
+def supervise(budget: Budget, rtsp: str, video_timeout: float = 30,
+              max_attempts: int | None = None) -> int:
+    if not math.isfinite(video_timeout) or video_timeout <= 0:
+        raise ValueError("Video timeout must be positive and finite")
+    if max_attempts is not None and (type(max_attempts) is not int or max_attempts < 1):
+        raise ValueError("Maximum attempts must be positive")
     validate_local_rtsp_url(rtsp)
     port = urlsplit(rtsp).port
     if port is None:
         raise ValueError("RTSP port required")
+    attempts = 0
     while True:
         state, wall, boot = budget.checked()
         if state["status"] != "ready":
             print("continuous: BUDGET_" + state["status"].upper(), flush=True)
             return 1
-        recent = [item for item in state["attempts"] if boot - item < WEEK]
-        if len(recent) >= 8 or sum(boot - item < DAY for item in recent) >= 3:
-            budget.block()
-            print("continuous: BUDGET_EXHAUSTED; manual review required", flush=True)
-            return 1
         remaining = state["wait_until"] - boot
         if remaining > 0:
+            if max_attempts is not None and attempts >= max_attempts:
+                return 0
             print(f"continuous: state=RECONNECT_WAIT remaining={remaining:.1f}s", flush=True)
             time.sleep(remaining)
             continue
         if not wait_for_rtsp(port):
-            print("continuous: RTSP_UNAVAILABLE; stopped", flush=True)
-            return 1
+            delay = reconnect_delay(max(1, state["streak"] + 1),
+                                    budget.retry_delays, budget.retry_jitter)
+            print(f"continuous: RTSP_UNAVAILABLE; retry in {delay:.1f}s", flush=True)
+            time.sleep(delay)
+            continue
         count = budget.reserve()
+        attempts += 1
         print(f"continuous: reserved attempt {count}; "
               f"reconnections={max(0, count - 1)}", flush=True)
-        result = run_worker(budget, rtsp)
-        if result in ("discovery", "connect", "live"):
+        result = run_worker(budget, rtsp, video_timeout)
+        if result in ("discovery", "connect", "live", "video"):
             budget.finish_retryable(result)
+            if max_attempts is not None and attempts >= max_attempts:
+                return 0
         elif result == "blocked":
             budget.block()
             return 1
@@ -359,30 +325,68 @@ def supervise_continuous(budget: RollingBudget, rtsp: str) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Persistent continuous Netvue supervisor")
-    parser.add_argument("action", choices=("init", "run", "_session"))
+    parser = argparse.ArgumentParser(description="Unified Netvue session supervisor")
+    parser.add_argument("action", choices=("init", "run", "test", "migrate", "_run", "_session"))
     parser.add_argument("--source", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--state-dir", type=Path, default=Path("/state"))
     parser.add_argument("--rtsp", default="rtsp://127.0.0.1:8554/netvue2")
     parser.add_argument("--event-fd", type=int)
     parser.add_argument("--parent-pid", type=int)
+    parser.add_argument("--retry-delays", type=parse_retry_delays, default=DEFAULT_RETRY_DELAYS)
+    parser.add_argument("--retry-jitter", type=float, default=0.1)
+    parser.add_argument("--video-timeout", type=float, default=30)
+    parser.add_argument("--max-duration", type=float)
+    parser.add_argument("--max-attempts", type=int)
     args = parser.parse_args()
     if args.action == "_session":
         if args.event_fd is None or args.parent_pid is None:
             parser.error("internal session requires parent and event pipe")
     elif args.event_fd is not None or args.parent_pid is not None:
         parser.error("event pipe is only accepted for internal sessions")
+    if not math.isfinite(args.retry_jitter) or not 0 <= args.retry_jitter <= 0.2:
+        parser.error("--retry-jitter must be between 0 and 0.2")
+    if not math.isfinite(args.video_timeout) or not 1 <= args.video_timeout <= 300:
+        parser.error("--video-timeout must be between 1 and 300 seconds")
+    if args.action == "test":
+        if (args.max_duration is None or not math.isfinite(args.max_duration)
+                or not 0 < args.max_duration <= 604800 or args.max_attempts is None
+                or args.max_attempts < 1):
+            parser.error("test requires --max-duration (1..604800) and --max-attempts")
+    elif args.action == "run":
+        if args.max_duration is not None or args.max_attempts is not None:
+            parser.error("run is continuous; use test for bounded execution")
+    elif args.action == "_run":
+        if args.max_duration is not None or args.max_attempts is None or args.max_attempts < 1:
+            parser.error("internal bounded run requires --max-attempts")
+    elif args.max_duration is not None or args.max_attempts is not None:
+        parser.error("--max-duration and --max-attempts are only accepted for test")
     signal.signal(signal.SIGTERM, lambda signum, frame: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         if args.action == "_session":
-            return worker(args.source, args.target, args.rtsp, args.event_fd, args.parent_pid)
-        with RollingBudget(args.state_dir, args.source, args.target) as budget:
+            return worker(args.source, args.target, args.rtsp, args.event_fd, args.parent_pid,
+                          args.video_timeout)
+        if args.action == "test":
+            command = [sys.executable, "-B", "-m", "netvue_bridge.continuous", "_run",
+                       "--source", args.source, "--target", args.target,
+                       "--state-dir", str(args.state_dir), "--rtsp", args.rtsp,
+                       "--retry-delays", ",".join(map(str, args.retry_delays)),
+                       "--retry-jitter", str(args.retry_jitter),
+                       "--video-timeout", str(args.video_timeout),
+                       "--max-attempts", str(args.max_attempts)]
+            return run_bounded(command, args.max_duration)
+        with Budget(args.state_dir, args.source, args.target,
+                    args.retry_delays, args.retry_jitter) as budget:
             if args.action == "init":
                 budget.initialize()
-                print("continuous: budget initialized", flush=True)
+                print("supervisor: state initialized", flush=True)
                 return 0
-            return supervise_continuous(budget, args.rtsp)
+            if args.action == "migrate":
+                audit = budget.migrate_legacy()
+                print(f"supervisor: migration audited in {audit.name}", flush=True)
+                return 0
+            return supervise(budget, args.rtsp, args.video_timeout,
+                             args.max_attempts if args.action == "_run" else None)
     except KeyboardInterrupt:
         print("continuous: STOPPED; active attempt remains in_progress", flush=True)
         return 130

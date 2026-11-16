@@ -9,5 +9,5 @@ RUN python -m pip install --no-cache-dir -r /app/requirements.txt av==16.1.0 \
 COPY netvue_bridge/ /app/netvue_bridge/
 
 USER 10001:10001
-ENTRYPOINT ["python", "-m", "netvue_bridge.supervisor"]
+ENTRYPOINT ["python", "-m", "netvue_bridge.continuous"]
 CMD ["run"]

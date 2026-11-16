@@ -6,7 +6,7 @@ Prototype pour la branche LAN classique analysée dans l'APK. La publication ne 
 
 - La configuration [mediamtx.local.yml](./mediamtx.local.yml) écoute uniquement sur `127.0.0.1:8554`, en RTSP/TCP. RTMP, HLS, WebRTC, SRT et les interfaces de contrôle sont désactivés. Tous les utilisateurs locaux pouvant accéder à cette boucle locale peuvent lire ou publier sur le chemin autorisé : ce n'est pas une isolation entre utilisateurs.
 - La connexion caméra n'utilise pas TLS. Les données de découverte et le flux peuvent être visibles sur le chemin réseau ; ne pas partager de paquets bruts ou de journaux sensibles.
-- Chaque connexion authentifiée consomme une tentative. Les deux tentatives de phase 5 et les deux tentatives de phase 7 ont été utilisées ; aucune tentative de phase 6 n'a été effectuée. Tout nouvel essai réel exige une autorisation et un budget applicables. `--max-attempts` est un plafond par exécution, pas un compteur global ; sa valeur par défaut est 1. Un refus ou une interruption pendant l'authentification ne déclenche pas de réessai automatique.
+- Chaque connexion authentifiée consomme une tentative enregistrée dans l'état persistant v4. L'état conserve le total et un backoff progressif, sans quota journalier/hebdomadaire. Tout essai réel exige une autorisation. Un refus d'authentification reste bloquant ; les erreurs réseau et vidéo sont réessayées avec backoff.
 - Le prototype attend une unité d'accès H.264 Annex B par paquet vidéo et démarre après SPS, PPS et IDR. Après un changement SPS/PPS, il attend une IDR et vérifie le décodage ; les tampons et l'attente sont bornés. Une modification de résolution a été observée sur la caméra 2 en [phase 7](../findings/phase7-real-validation.md). Un retour du PTS à zéro sur IDR est uniquement accepté pendant une reconfiguration après une seconde confirmation LIVE ; la continuité à cette frontière est estimée à partir du temps d'arrivée. La correction expérimentale de certains PTS identiques, décrite en [phase 12 bis](../findings/phase12b-timestamp-recovery.md), utilise une cadence connue et une borne temporelle ultérieure ; les cas ambigus échouent explicitement et cette correction n'a pas été validée sur une caméra réelle. Les autres horodatages non monotones, les B-frames détectées et les fragmentations différentes restent non pris en charge.
 - Les données en mémoire peuvent toutefois être exposées au swap ou aux dumps système. Le fonctionnement prolongé et les reconnexions avec une caméra réelle restent à valider.
 
@@ -23,7 +23,12 @@ tools/venv/bin/python -B -m netvue_bridge.stream \
   --source "$SOURCE_LAN" --target "$CAMERA_2" --duration 10
 ```
 
-Le mode `--continuous` et l'option `--max-attempts` existent pour un essai ultérieur explicitement autorisé ; une reconnexion peut consommer un login supplémentaire et interrompre les lecteurs RTSP. Un budget bloqué ne doit pas être contourné par un nouveau répertoire : sa réconciliation doit être étudiée séparément avant toute reprise. Ctrl+C ferme les connexions. Les valeurs d'authentification ne sont ni des arguments ni des fichiers.
+Le superviseur commun se lance avec `python -m netvue_bridge.continuous run`.
+Le mode d'essai borné exige à la fois `test --max-duration N --max-attempts M`
+et partage le même budget, le même verrou et les mêmes contrôles. Un état
+bloqué ou `in_progress` ne peut pas être contourné par un autre répertoire.
+Ctrl+C ferme les connexions ; une interruption ambiguë reste `in_progress`.
+Les valeurs d'authentification ne sont ni des arguments ni des fichiers.
 
 Le diagnostic `check_rtsp` peut ajouter `--bridge-timeout` après une durée de session inférieure : ce garde-fou arrête de force le pont si sa limite est dépassée. Il collecte les sorties disponibles après l'arrêt des lecteurs et rapporte leurs codes de retour ; une sortie FFprobe tronquée ne fournit que les paquets JSON complets. Avec `--home-assistant-check`, la commande `timeout` doit aussi être disponible dans le conteneur pour borner les lecteurs temporaires. Une interruption forcée peut empêcher le pont d'imprimer ses dernières métriques.
 

@@ -13,6 +13,10 @@ class ProtocolError(Exception):
     pass
 
 
+class RecoverableVideoError(ProtocolError):
+    pass
+
+
 class ConnectionClosed(ProtocolError):
     pass
 

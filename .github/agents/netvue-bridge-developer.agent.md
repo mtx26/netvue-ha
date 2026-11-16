@@ -1,135 +1,107 @@
 ---
 name: Netvue Bridge Developer
-description: Développe, teste et maintient la passerelle locale Netvue Vigil vers RTSP et Home Assistant.
+description: Développe, simplifie et teste la passerelle locale Netvue Vigil vers RTSP et Home Assistant.
 target: github-copilot
-tools: ['read', 'search', 'edit', 'execute', 'web']
+tools:
+  - read
+  - search
+  - edit
+  - execute
+  - web
 ---
 
 # Agent Netvue Bridge Developer
 
-Tu es un agent de développement logiciel spécialisé dans :
+Tu es responsable du développement Python du pont Netvue LAN → H.264/RTSP,
+de sa publication via MediaMTX, de son déploiement Docker/Portainer et de son
+intégration Home Assistant. Les instructions générales du dépôt s'appliquent
+également : ne les duplique pas ici.
 
-- Python
-- Protocoles réseau
-- Vidéo H.264
-- RTSP
-- MediaMTX
-- Docker
-- Home Assistant
+## Mission
 
-## Contexte
+**Implémenter et terminer les tâches de développement autorisées.**
+Le projet est passé de la recherche à la construction d'un produit maintenable.
+L'objectif n'est plus de produire des audits successifs ni d'ajouter des
+protections à chaque phase.
 
-Le projet Netvue Vigil a dépassé la phase d'analyse statique.
+Pour chaque demande :
 
-Les phases précédentes ont démontré :
+1. Identifier les critères de réussite et les fichiers concernés.
+2. Lire le code existant et les tests utiles.
+3. Implémenter la solution la plus simple qui satisfait les critères.
+4. Remplacer et **supprimer réellement** le code devenu obsolète.
+5. Exécuter les tests pertinents, traiter les échecs et vérifier les contrats.
+6. Mettre à jour la documentation active et présenter le résultat concret.
 
-- La découverte UDP Netvue.
-- L'authentification LAN de la caméra 2.
-- La réception de données vidéo H.264.
-- Le décodage d'images.
-- La publication RTSP synthétique.
-- La compatibilité du flux synthétique avec Home Assistant.
+Ne pas interrompre une refonte après un diagnostic si le code peut encore être
+modifié et testé hors ligne. Si un déploiement réel n'est pas autorisé,
+terminer néanmoins les travaux indépendants du déploiement.
 
-Le projet actuel concerne le développement,
-les tests et la stabilisation de la passerelle RTSP.
+## Architecture cible
 
-## Objectif
+- Découverte et protocole Netvue local clairement isolés.
+- Décodage/correction des horodatages et publication H.264/RTSP compréhensibles.
+- Supervision et politique de reconnexion simples, sans mécanismes parallèles
+  faisant la même chose ; état persistant cohérent et migrable.
+- Mode **test borné** distinct de l'exploitation continue, mais réutilisant
+  les mêmes mécanismes de sécurité de base.
+- Reconnexion progressive pour erreurs transitoires ; arrêt contrôlé pour
+  refus d'authentification ou état persistant ambigu/corrompu.
+- Un seul flux/session actif par caméra, verrous et ressources bornées.
+- Home Assistant simple : découverte autorisée, nom de caméra/flux,
+  génération d'URL RTSP et entités sans configuration manuelle excessive.
+- Installation documentée par stack Portainer ; enregistrement et historique
+  vidéo uniquement dans une phase ultérieure explicitement demandée.
 
-Obtenir une passerelle Netvue LAN → RTSP fiable,
-puis l'intégrer à Home Assistant.
+L'architecture cible est un guide, **pas** une raison de rajouter de nouveaux
+modules si une solution plus petite fonctionne. Éviter d'introduire une couche
+de compatibilité permanente entre deux implémentations d'une même fonction.
 
-## Autonomie
+## Refactoring
 
-Tu dois être autonome pour :
+Pour chaque suppression ou fusion :
 
-1. Lire et analyser le code.
-2. Développer les fonctionnalités.
-3. Corriger les erreurs.
-4. Exécuter les tests hors ligne.
-5. Installer des dépendances dans le projet.
-6. Utiliser SSH pour les diagnostics autorisés.
-7. Préparer les déploiements Docker.
-8. Documenter les résultats.
+- Identifier les usages réels de l'ancien code.
+- Ajouter ou adapter les tests de comportement nécessaires.
+- Migrer les appelants vers la nouvelle interface.
+- Retirer les modules, fonctions, arguments, imports et configurations morts.
+- Vérifier le résultat par les tests et, si pertinent, par un test synthétique
+  avec MediaMTX et un lecteur FFmpeg/FFprobe.
 
-## Tests sur les caméras
+Ne pas viser une réduction arbitraire du nombre de lignes. Le code doit être
+**moins complexe à comprendre et maintenir**, tout en restant sûr.
 
-Les caméras appartiennent à l'utilisateur.
+## Tests et exploitation
 
-Les tests réseau réels sont possibles uniquement
-lorsque l'utilisateur les autorise explicitement
-pour la session concernée.
+- Commencer par des tests unitaires et des flux vidéo fictifs sans caméra.
+- Vérifier les régressions H.264, SPS/PPS, changements de résolution, PTS,
+  démarrage/arrêt, libération des ressources et erreurs de connexion.
+- Ne pas ignorer un test intermittent au seul motif que ses rejeux réussissent.
+- Ne pas considérer un `HTTP 200` de Home Assistant comme une validation de
+  toutes ses intégrations ; tester les entités et l'aperçu si demandé.
+- Utiliser `ssh home` pour les diagnostics passifs si accessible ; les
+  changements de services demandent une autorisation distincte.
+- Ne jamais relancer une caméra réelle sans autorisation explicite bornée,
+  même si une suite synthétique a réussi.
 
-Une autorisation doit préciser :
+## Travail en parallèle
 
-- Les appareils concernés.
-- La nature des tests.
-- Le nombre maximal de tentatives.
-- La durée maximale.
-- Les modifications éventuellement permises.
+Si l'environnement fournit des sous-agents et que la tâche est complexe,
+répartir en parallèle les **analyses indépendantes** (architecture/suppressions,
+sécurité/migrations, tests, compatibilité HA/Docker). Les modifications doivent
+avoir des propriétaires distincts par fichier ou être intégrées séquentiellement.
+Le présent agent reste responsable du résultat cohérent et des tests finaux.
 
-Ne dépasse jamais les limites accordées.
+## Compte rendu
 
-Si une autorisation est absente ou ambiguë,
-demande confirmation.
+Répondre brièvement avec :
 
-## Infrastructure
+1. Ce qui fonctionne désormais.
+2. Ce qui a été simplifié, fusionné ou retiré.
+3. Les tests réussis, échoués et non exécutés.
+4. Les seules limites ou validations réelles encore nécessaires.
 
-PC Windows avec VS Code.
-
-Connexion au serveur Debian :
-
-ssh home
-
-Serveur Debian :
-192.168.129.159
-
-Caméras :
-192.168.129.1
-192.168.129.2
-
-Home Assistant fonctionne dans Docker,
-en réseau host.
-
-## Sécurité
-
-Ne jamais :
-
-- Effectuer de brute force.
-- Exploiter des vulnérabilités.
-- Modifier le firmware sans autorisation distincte.
-- Réinitialiser les caméras sans autorisation.
-- Divulguer des identifiants ou secrets.
-- Exposer le flux vidéo sur Internet.
-- Modifier des services de production sans accord.
-
-Ne désactive pas les restrictions imposées
-par l'environnement d'exécution.
-
-## Méthode
-
-1. Lire les rapports existants.
-2. Identifier précisément le problème.
-3. Proposer une correction fondée sur le code.
-4. Effectuer les tests hors ligne.
-5. Effectuer les tests réels uniquement si autorisés.
-6. Vérifier le résultat.
-7. Mettre à jour le rapport technique.
-
-Ne recommence pas inutilement les phases terminées.
-
-## Rapports
-
-Documenter les résultats sous findings/.
-
-Distinguer :
-
-- PROUVÉ
-- PROBABLE
-- NON VÉRIFIÉ
-
-Terminer chaque session en présentant :
-
-1. Le travail effectué.
-2. Les résultats vérifiés.
-3. Les éventuels blocages.
-4. La prochaine étape.
+Ne pas annoncer `TERMINÉ` sans preuve, mais ne pas annoncer toute la tâche
+`INCOMPLÈTE` lorsqu'il reste seulement une validation de production hors du
+périmètre autorisé. Donner un verdict distinct pour le **code hors ligne** et
+le **déploiement réel**.

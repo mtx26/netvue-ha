@@ -4,7 +4,7 @@ import re
 from collections import deque
 from statistics import median
 
-from .protocol import ProtocolError
+from .protocol import ProtocolError, RecoverableVideoError
 
 
 START_CODE = re.compile(b"\x00\x00(?:\x00)?\x01")
@@ -82,7 +82,7 @@ class TimestampClock:
         if self.previous is not None:
             delta = (value - self.previous) & 0xFFFFFFFF
             if delta == 0:
-                raise ProtocolError("Duplicate video timestamp")
+                raise RecoverableVideoError("Duplicate video timestamp")
             if delta > 0x80000000:
                 raise ProtocolError("Video timestamp moved backwards")
             if delta > 10000:

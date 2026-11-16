@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import socket
 import time
 from collections.abc import Callable
@@ -7,7 +8,7 @@ from collections.abc import Callable
 from .authentication import authenticate
 from .connection import connect
 from .discovery import discover
-from .protocol import ConnectionClosed, ProtocolError, parse_units, read_packet
+from .protocol import ConnectionClosed, ProtocolError, RecoverableVideoError, parse_units, read_packet
 from .rtsp import H264Publisher, validate_local_rtsp_url
 from .video import live_packet
 
@@ -17,9 +18,10 @@ class StreamInterrupted(ProtocolError):
 
 
 def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: float,
-                   on_video: Callable[[H264Publisher], None] | None = None) -> None:
-    if duration <= 0:
-        raise ValueError("Duration must be positive")
+                   on_video: Callable[[H264Publisher], None] | None = None,
+                   video_timeout: float = 3) -> None:
+    if duration <= 0 or not math.isfinite(video_timeout) or video_timeout <= 0:
+        raise ValueError("Duration and video timeout must be positive")
     sock.settimeout(2)
     print("live: sending one request", flush=True)
     sock.sendall(live_packet(int(time.time())))
@@ -28,7 +30,7 @@ def receive_stream(sock: socket.socket, publisher: H264Publisher, duration: floa
     channel_ok = False
     while time.monotonic() < deadline:
         try:
-            kind, body = read_packet(sock, min(deadline, last_video + 3))
+            kind, body = read_packet(sock, min(deadline, last_video + video_timeout))
         except (socket.timeout, TimeoutError):
             if time.monotonic() >= deadline:
                 break
@@ -82,8 +84,11 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
                  max_attempts: int = 1, retry_delay: float = 1.0,
                  on_retryable: Callable[[str], None] | None = None,
                  on_stage: Callable[[str], None] | None = None,
-                 on_video: Callable[[H264Publisher], None] | None = None) -> int:
-    if max_attempts < 1 or duration <= 0 or retry_delay < 0:
+                 on_video: Callable[[H264Publisher], None] | None = None,
+                 on_recoverable_video: Callable[[], None] | None = None,
+                 video_timeout: float = 3) -> int:
+    if (max_attempts < 1 or duration <= 0 or retry_delay < 0
+            or not math.isfinite(video_timeout) or video_timeout <= 0):
         raise ValueError("Invalid session limits")
     session_started = time.monotonic()
     deadline = session_started + duration
@@ -125,7 +130,7 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
                 if remaining <= 0:
                     raise TimeoutError("Session deadline expired before LIVE")
                 publisher = H264Publisher(rtsp)
-                receive_stream(sock, publisher, remaining, on_video)
+                receive_stream(sock, publisher, remaining, on_video, video_timeout)
                 print(f"live: published_frames={publisher.published_frames} "
                       f"key_frames={publisher.key_frames} "
                       f"parameter_updates={publisher.parameter_updates}", flush=True)
@@ -137,6 +142,11 @@ def run_sessions(source: str, target: str, rtsp: str, duration: float,
             if (stage == "authentication" or attempt == max_attempts
                     or time.monotonic() + retry_delay >= deadline):
                 return 1
+        except RecoverableVideoError as exc:
+            print(f"{stage}: video_error={exc}", flush=True)
+            if stage == "live" and on_recoverable_video is not None:
+                on_recoverable_video()
+            return 1
         except ProtocolError as exc:
             print(f"{stage}: error={exc}", flush=True)
             return 1

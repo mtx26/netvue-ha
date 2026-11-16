@@ -46,8 +46,6 @@ services:
       - ${NETVUE_TARGET:?set the authorized camera}
       - --state-dir
       - /state
-      - --max-duration
-      - ${NETVUE_MAX_DURATION:?set the authorized maximum duration in seconds}
     volumes:
       - type: bind
         source: ${NETVUE_STATE_DIR:?set an absolute persistent budget directory}
