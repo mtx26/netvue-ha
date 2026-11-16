@@ -72,13 +72,10 @@ Le workflow utilise son `GITHUB_TOKEN` avec `packages: write` ; il ne démarre
 aucun service et ne contacte aucune caméra. Le tag `phase17` est conservé
 pour compatibilité et ne doit pas servir de référence immuable.
 
-Le dépôt source reste privé. Le package GHCR est encore privé : sa visibilité
-doit être modifiée séparément dans ses paramètres GitHub et le pull anonyme
-vérifié avant de considérer l'image publique. Le changement de visibilité
-expose aussi les anciennes versions du package. Jusque-là,
-Portainer doit utiliser une registry GHCR privée configurée avec
-`read:packages`. Ne placez pas de token dans le YAML ou dans une variable de
-stack. Le contenu Python inclus dans une image publique sera téléchargeable.
+Le dépôt source reste privé et le package GHCR est public ; le pull anonyme
+de l'image publiée par digest a été vérifié. Le package public expose aussi
+ses anciennes versions et le code Python contenu dans ses images. Aucun token
+ne doit être placé dans le YAML ou dans une variable de stack.
 
 ## Installation depuis Portainer
 

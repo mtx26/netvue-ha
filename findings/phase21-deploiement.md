@@ -70,10 +70,10 @@ scénarios isolés avant de proposer un basculement réversible.
   correspondent aux blobs Git de ce commit et au code local normalisé.
   Les fichiers HA et la configuration de stack ne sont pas dans l'image ; ils
   doivent être installés séparément lors d'un basculement autorisé.
-- Le package est toujours privé. Son passage en public s'effectue dans
-  **Package settings → Change visibility**, séparément du dépôt privé.
-  Il expose les versions historiques ; vérifier ensuite le pull anonyme
-  avant d'utiliser l'image dans Portainer sans registre authentifié.
+- Le package est désormais public, tandis que le dépôt reste privé. Un pull
+  Docker anonyme de l'image par digest réussit avec une configuration Docker
+  vierge ; les couches étaient déjà présentes dans le cache local. Les
+  versions historiques du package sont également publiques.
 - [mediamtx.yml](../deployment/mediamtx.yml) utilise `all_others` : MediaMTX
   accepte les chemins attribués par le gestionnaire, notamment les noms
   `netvue_<adresse>`, ainsi que `netvue2` pour les tests bornés. L'écoute reste
@@ -108,8 +108,10 @@ scénarios isolés avant de proposer un basculement réversible.
   jeton personnel. L'image téléchargée démarre. La première comparaison
   directe des octets avec Windows signalait 13 différences dues aux fins de
   ligne CRLF locales ; la comparaison des blobs Git normalisés montre
-  **13 fichiers identiques sur 13**. Aucun pull anonyme n'a réussi : le
-  package est encore privé.
+  **13 fichiers identiques sur 13**. Après publication du package, le pull
+  anonyme par digest réussit avec une configuration Docker sans identifiants
+  et réutilise le cache ; le téléchargement authentifié complet avait réussi
+  auparavant.
 - Suite Linux du pont et tests vidéo synthétiques : **79 réussis, 1 ignoré**
   sur 80, le test borné exigeant des fichiers cgroup v2 absents. Déconnexions
   et reconnexions, budgets v2/v3 conservés, H.264, timestamps et changement de
@@ -159,10 +161,10 @@ Le résultat ne révèle ni adresses ni identifiants ; il ne suffit pas à lui
 seul à valider l'identité et la cohérence complètes du budget. Toute
 réconciliation reste une opération séparée.
 
-L'image correspondant au code validé a été publiée et téléchargée. La
-visibilité publique du seul package GHCR et le pull anonyme restent à
-vérifier ; le dépôt source reste privé. L'image publique contient le code du
-pont. Ne pas utiliser le tag ancien comme image à jour.
+L'image correspondant au code validé a été publiée et téléchargée. Le package
+GHCR est public et le pull anonyme par digest a réussi ; le dépôt source
+reste privé. L'image publique contient le code du pont. Ne pas utiliser le
+tag ancien comme image à jour.
 
 Après inventaire et autorisation expresse du basculement :
 
@@ -205,12 +207,11 @@ après vérification de compatibilité de ses entrées.
 
 ## ÉTAT FINAL ET PROCHAINE ÉTAPE
 
-La correction locale, les tests synthétiques et la publication GHCR sont
-terminés ; le package est encore privé. La validation Swarm réelle, la
-transition et la validation HA réelle ne sont pas effectuées. Les prochaines
-étapes sont le passage du package en public avec vérification du pull anonyme,
-et une lecture légitime des budgets réels. Après cet inventaire, présenter
-le basculement précis et obtenir son autorisation avant toute intervention.
+La correction locale, les tests synthétiques et la publication GHCR publique
+sont terminés. La validation Swarm réelle, la transition et la validation HA
+réelle ne sont pas effectuées. La prochaine étape est une lecture légitime
+des budgets réels. Après cet inventaire, présenter le basculement précis et
+obtenir son autorisation avant toute intervention.
 
 Le premier essai caméra 2 exigera une autorisation séparée indiquant le nombre
 maximal de tentatives, la durée et les opérations permises : découverte,
