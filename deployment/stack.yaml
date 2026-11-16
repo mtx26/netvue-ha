@@ -33,7 +33,7 @@ services:
         order: stop-first
 
   bridge:
-    image: ${NETVUE_BRIDGE_IMAGE:?set the published Phase 17 image tag}
+    image: ${NETVUE_BRIDGE_IMAGE:?set the published immutable bridge image reference}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]

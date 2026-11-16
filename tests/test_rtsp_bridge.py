@@ -43,7 +43,7 @@ class RtspTests(unittest.TestCase):
         self.assertIn("${NETVUE_MEDIAMTX_CONFIG:?set the existing MediaMTX config volume path}", stack)
         self.assertIn("${NETVUE_STATE_DIR:?set the existing persistent state volume path}", stack)
         self.assertIn(
-            "${NETVUE_BRIDGE_IMAGE:?set the published Phase 17 image tag}",
+            "${NETVUE_BRIDGE_IMAGE:?set the published immutable bridge image reference}",
             stack,
         )
         self.assertNotIn("condition: none", stack)
@@ -77,7 +77,10 @@ class RtspTests(unittest.TestCase):
         self.assertIn('--tag "$IMAGE:sha-${GITHUB_SHA}"', workflow)
         self.assertIn("--push .", workflow)
         stack = (root / "deployment/stack.yaml").read_text(encoding="utf-8")
-        self.assertIn("${NETVUE_BRIDGE_IMAGE:?set the published Phase 17 image tag}", stack)
+        self.assertIn(
+            "${NETVUE_BRIDGE_IMAGE:?set the published immutable bridge image reference}",
+            stack,
+        )
 
     def test_check_rtsp_help_keeps_cli_options(self):
         result = subprocess.run([sys.executable, "-B", "-m", "netvue_bridge.check_rtsp", "--help"],

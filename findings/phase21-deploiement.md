@@ -47,7 +47,9 @@ scénarios isolés avant de proposer un basculement réversible.
 - Home Assistant est réellement en version **2026.7.1**, en réseau host sur
   le même nœud. L'intégration installée est en version 0.1.0 ; ses fichiers
   diffèrent de l'intégration locale 0.2.0, notamment pour le gestionnaire et
-  les flux. Les entrées HA réelles n'ont pas été modifiées ni validées.
+  les flux. L'unique entrée existante contient `host`, `name` et `stream_url`
+  mais pas `stream_name` : le composant actuel la refuserait explicitement.
+  Aucun champ sensible n'a été affiché ; l'entrée n'a pas été modifiée.
 - Le Dockerfile copie désormais uniquement les modules Python et les
   dépendances déclarées ; le contexte exclut les autres fichiers. L'ancienne
   image locale contenait notamment des fichiers `__pycache__`, éliminés de
@@ -59,6 +61,19 @@ scénarios isolés avant de proposer un basculement réversible.
   recherche de motifs de secrets n'a rien signalé. Les deux autres versions
   GHCR non taguées sont les manifestes enfant de cette image. La mise en
   public exposerait aussi ces versions historiques.
+- Le commit `cbea1534c512371cdab3598e50654a7e3991a331`, comprenant les
+  changements des phases 20 et 21, a été poussé sur le dépôt privé. Le
+  workflow existant a publié avec succès l'image
+  `ghcr.io/mtx26/netvue-ha@sha256:3fbdc5c514d697db3dab279c165600aa9878c3fc88d24b44a3d77a80fb8eb63d`,
+  également taguée `sha-cbea1534c512371cdab3598e50654a7e3991a331`. Son
+  téléchargement authentifié a réussi ; les 13 fichiers applicatifs
+  correspondent aux blobs Git de ce commit et au code local normalisé.
+  Les fichiers HA et la configuration de stack ne sont pas dans l'image ; ils
+  doivent être installés séparément lors d'un basculement autorisé.
+- Le package est toujours privé. Son passage en public s'effectue dans
+  **Package settings → Change visibility**, séparément du dépôt privé.
+  Il expose les versions historiques ; vérifier ensuite le pull anonyme
+  avant d'utiliser l'image dans Portainer sans registre authentifié.
 - [mediamtx.yml](../deployment/mediamtx.yml) utilise `all_others` : MediaMTX
   accepte les chemins attribués par le gestionnaire, notamment les noms
   `netvue_<adresse>`, ainsi que `netvue2` pour les tests bornés. L'écoute reste
@@ -86,8 +101,15 @@ scénarios isolés avant de proposer un basculement réversible.
 ## TESTS
 
 - Rendu de [stack.yaml](../deployment/stack.yaml) avec `docker stack config`
-  et des variables fictives : réussi. Cela ne valide ni déploiement Swarm,
-  bind mounts, redémarrages de services, ni réseau host réel.
+  et des variables fictives, puis avec le digest GHCR publié : réussi. Cela
+  ne valide ni déploiement Swarm, bind mounts, redémarrages de services, ni
+  réseau host réel. Les trois tests ciblés de configuration passent.
+- Workflow GitHub Actions exécuté avec `GITHUB_TOKEN` : succès, sans nouveau
+  jeton personnel. L'image téléchargée démarre. La première comparaison
+  directe des octets avec Windows signalait 13 différences dues aux fins de
+  ligne CRLF locales ; la comparaison des blobs Git normalisés montre
+  **13 fichiers identiques sur 13**. Aucun pull anonyme n'a réussi : le
+  package est encore privé.
 - Suite Linux du pont et tests vidéo synthétiques : **79 réussis, 1 ignoré**
   sur 80, le test borné exigeant des fichiers cgroup v2 absents. Déconnexions
   et reconnexions, budgets v2/v3 conservés, H.264, timestamps et changement de
@@ -123,16 +145,24 @@ scénarios isolés avant de proposer un basculement réversible.
 
 L'inventaire passif a identifié les services et chemins ci-dessus. Il reste
 à examiner, avec des droits de lecture légitimes, la version et l'état des
-budgets réels ainsi que les entrées HA et les variables Portainer nécessaires.
-Ne pas afficher ni publier les secrets ou les budgets complets.
+budgets réels ainsi que les variables Portainer nécessaires. Ne pas afficher
+ni publier les secrets ou les budgets complets. Un administrateur disposant
+des droits peut relever uniquement la version et l'état du budget actif,
+sans modifier le fichier :
 
-Publier d'abord une image correspondant exactement au code validé : les
-modifications locales doivent être enregistrées et transmises au dépôt privé
-avant l'utilisation du workflow, ou une autre méthode de build traçable doit
-être convenue. La visibilité publique du seul package GHCR et le pull anonyme
-doivent être vérifiés ; le dépôt source reste privé. L'image publique contient
-le code du pont. Les droits GitHub actuels ne permettent pas cette publication
-directe. Ne pas utiliser le tag ancien comme image à jour.
+```sh
+sudo python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k:d.get(k) for k in ("version","status","stage")})' \
+  /home/mtx26/netvue-phase12-179f7438/real-state/budget.json
+```
+
+Le résultat ne révèle ni adresses ni identifiants ; il ne suffit pas à lui
+seul à valider l'identité et la cohérence complètes du budget. Toute
+réconciliation reste une opération séparée.
+
+L'image correspondant au code validé a été publiée et téléchargée. La
+visibilité publique du seul package GHCR et le pull anonyme restent à
+vérifier ; le dépôt source reste privé. L'image publique contient le code du
+pont. Ne pas utiliser le tag ancien comme image à jour.
 
 Après inventaire et autorisation expresse du basculement :
 
@@ -155,11 +185,12 @@ Après inventaire et autorisation expresse du basculement :
    Vérifier limites, permissions, écoute loopback et absence de ports exposés.
    Vérifier préalablement que HA partage le réseau host du même nœud.
 5. Pour HA, sauvegarder l'intégration existante et examiner les entrées :
-   les anciennes URL personnalisées ou entrées sans nom géré sont refusées,
-   non migrées automatiquement. Toute copie du composant, modification de HA
-   et tout redémarrage attendent une autorisation explicite. Aucun ajout
-   d'appareil ni découverte ne doit déclencher une connexion caméra avant
-   l'autorisation distincte pour celle-ci.
+   l'entrée effectivement observée est refusée par le nouveau composant et
+   n'est pas migrée automatiquement. La suppression et le réajout nécessitent
+   une décision explicite ; le réajout demande immédiatement une session au
+   pont et ne doit donc pas être effectué sans autorisation caméra bornée.
+   Toute copie du composant, modification de HA et tout redémarrage attendent
+   une autorisation explicite distincte.
 
 ### Retour arrière
 
@@ -174,13 +205,12 @@ après vérification de compatibilité de ses entrées.
 
 ## ÉTAT FINAL ET PROCHAINE ÉTAPE
 
-La correction locale et les tests synthétiques décrits sont terminés ; la
-publication GHCR, la validation Swarm réelle, la transition et la validation
-HA réelle ne sont pas effectuées. Le workflow dispose de `packages: write`
-via `GITHUB_TOKEN` ; son accès effectif au package doit être vérifié par son
-exécution, sans demander un nouveau jeton personnel. Le package existant est
-toujours privé et doit être rendu public séparément du dépôt privé. La lecture
-des budgets réels reste un préalable bloquant au basculement.
+La correction locale, les tests synthétiques et la publication GHCR sont
+terminés ; le package est encore privé. La validation Swarm réelle, la
+transition et la validation HA réelle ne sont pas effectuées. Les prochaines
+étapes sont le passage du package en public avec vérification du pull anonyme,
+et une lecture légitime des budgets réels. Après cet inventaire, présenter
+le basculement précis et obtenir son autorisation avant toute intervention.
 
 Le premier essai caméra 2 exigera une autorisation séparée indiquant le nombre
 maximal de tentatives, la durée et les opérations permises : découverte,

@@ -65,15 +65,17 @@ Portainer/Swarm ne construit pas le Dockerfile. Le workflow
 [publish-bridge-image.yml](../.github/workflows/publish-bridge-image.yml)
 construit l'image Linux amd64 et la publie dans
 `ghcr.io/mtx26/netvue-ha:phase17` et `sha-<commit>`. Le Dockerfile épingle
-l'image Python de base et PyAV 16.1.0. Pour publier la version de Phase 17,
-il faut d'abord fusionner le code, puis lancer
+l'image Python de base et PyAV 16.1.0. Pour publier une nouvelle version,
+il faut d'abord enregistrer le code dans le dépôt privé, puis lancer
 **Actions → Publish Netvue Bridge image → Run workflow** sur le dépôt GitHub.
-Le workflow ne démarre aucun service et ne contacte aucune caméra.
+Le workflow utilise son `GITHUB_TOKEN` avec `packages: write` ; il ne démarre
+aucun service et ne contacte aucune caméra. Le tag `phase17` est conservé
+pour compatibilité et ne doit pas servir de référence immuable.
 
-Le dépôt source doit rester privé. La mise en public du seul package GHCR est
-autorisée, mais n'a pas encore été appliquée : l'accès GitHub disponible ne
-possède pas `write:packages`. La visibilité du package et le pull anonyme
-doivent être vérifiés avant de considérer l'image publique. Jusque-là,
+Le dépôt source reste privé. Le package GHCR est encore privé : sa visibilité
+doit être modifiée séparément dans ses paramètres GitHub et le pull anonyme
+vérifié avant de considérer l'image publique. Le changement de visibilité
+expose aussi les anciennes versions du package. Jusque-là,
 Portainer doit utiliser une registry GHCR privée configurée avec
 `read:packages`. Ne placez pas de token dans le YAML ou dans une variable de
 stack. Le contenu Python inclus dans une image publique sera téléchargeable.
@@ -87,7 +89,7 @@ variables suivantes :
 | Variable | Obligatoire | Valeur |
 |---|---:|---|
 | `NETVUE_NODE` | oui | Nom exact du nœud Swarm partageant le réseau avec Home Assistant |
-| `NETVUE_BRIDGE_IMAGE` | oui | Tag SHA immuable du build Phase 17 publié |
+| `NETVUE_BRIDGE_IMAGE` | oui | Image publiée épinglée par digest |
 | `NETVUE_SOURCE` | oui | IPv4 de l'interface hôte qui rejoint le LAN caméra |
 | `NETVUE_MEDIAMTX_CONFIG` | oui | Chemin hôte du fichier MediaMTX monté en lecture seule |
 | `NETVUE_STATE_DIR` | oui | Chemin hôte du volume persistant des budgets v4 |
@@ -107,7 +109,7 @@ sous-répertoire d'une nouvelle caméra ajoutée depuis Home Assistant.
 
 1. Dans **Stacks → Add stack → Upload**, chargez [stack.yaml](./stack.yaml).
 2. Saisissez les variables obligatoires, notamment `NETVUE_BRIDGE_IMAGE` avec
-   le tag SHA Phase 17 publié.
+   le digest de l'image publiée.
 3. Vérifiez le nom du nœud, les adresses LAN, les chemins de volumes et le tag
    de l'image.
 
@@ -166,8 +168,8 @@ validation isolée.
 
 Publiez une nouvelle image depuis **Actions → Publish Netvue Bridge image**
 après avoir fusionné le code choisi. Le workflow ajoute les tags `phase17` et
-`sha-<commit>`. Le tag SHA par défaut de la stack est immuable ; pour mettre à
-jour, remplacez `NETVUE_BRIDGE_IMAGE` par le nouveau tag SHA, puis redéployez.
+`sha-<commit>`. Pour mettre à jour, vérifiez l'image publiée et remplacez
+`NETVUE_BRIDGE_IMAGE` par sa référence épinglée par digest, puis redéployez.
 
 Ne changez ni le chemin d'état ni l'identité source/caméra sans plan de
 migration. Conservez l'ancien tag jusqu'à validation, pour permettre un retour
