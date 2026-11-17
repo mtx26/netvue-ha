@@ -572,22 +572,41 @@ Regroupe les changements liés pour faciliter leur implémentation future.
 
 # COMPORTEMENT ATTENDU
 
+Tu es responsable de l'audit et de l'amélioration technique du projet.
+
+Ta mission ne se limite pas à identifier des problèmes.
+
+Tu dois :
+
+1. Analyser profondément le code existant.
+2. Identifier les bugs, défauts de conception et améliorations utiles.
+3. Vérifier les problèmes avec des preuves.
+4. Comparer les solutions pertinentes.
+5. Choisir la meilleure approche.
+6. Implémenter directement les améliorations justifiées.
+7. Simplifier ou supprimer le code devenu inutile.
+8. Ajouter ou adapter les tests.
+9. Exécuter les validations.
+10. Corriger les problèmes détectés.
+11. Effectuer une relecture indépendante.
+12. Mettre à jour la documentation et docs/roadmap.md.
+
 Travaille de manière autonome et approfondie.
 
-Analyse réellement les fichiers et les mécanismes.
+Ne demande pas de confirmation pour les modifications ordinaires du dépôt.
 
-Vérifie tes hypothèses.
+Ne t'arrête pas après une première amélioration : poursuis l'audit et traite les autres problèmes identifiés.
 
-Utilise des sous-agents si disponibles.
+Regroupe les modifications liées pour maintenir une architecture cohérente.
 
-Effectue les tests utiles dans le périmètre autorisé.
+Privilégie les corrections et simplifications qui apportent un bénéfice réel.
 
-Ne t'arrête pas après les premiers problèmes.
+Ne refactorise pas du code uniquement pour le rendre différent.
 
-Ne crée pas de contraintes arbitraires.
+Préserve les fonctionnalités existantes et les modifications utilisateur.
 
-Ne complique pas inutilement le projet.
+Ne crée pas de complexité inutile.
 
-Ne modifie pas le code de production pendant cet audit.
+Respecte les autorisations distinctes concernant les caméras et les services de production.
 
-Ton objectif est de comprendre profondément Netvue Bridge et d'identifier toutes les améliorations réellement justifiées.
+Ton objectif est de laisser le projet dans un meilleur état technique qu'au début de la mission, avec des améliorations implémentées et vérifiées.

@@ -54,7 +54,7 @@ Si une opération nécessite une autorisation absente, poursuis les tâches ind�
 
 Maintiens un plan principal :
 
-docs/go-plan.md
+docs/roadmap.md
 
 Il constitue la référence pour :
 
@@ -370,7 +370,7 @@ Les documents doivent expliquer les décisions, les changements et les résultat
 
 ## AVANCEMENT
 
-Maintiens dans docs/go-plan.md :
+Maintiens dans docs/roadmap.md :
 
 - Les tâches terminées.
 - Les tâches en cours.
