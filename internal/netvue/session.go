@@ -17,6 +17,7 @@ const (
 
 var (
 	ErrStreamInterrupted      = errors.New("Netvue video stream interrupted")
+	ErrLiveResponseVersion    = errors.New("unsupported LIVE response version")
 	errSessionDurationElapsed = errors.New("Netvue session duration elapsed")
 )
 
@@ -238,8 +239,8 @@ func receiveLiveWithTimeouts(
 				if !actionOK || action != 3 {
 					continue
 				}
-				if !versionOK || version != 2 {
-					return fmt.Errorf("%w: unsupported LIVE response version", ErrProtocol)
+				if !versionOK || (version != 1 && version != 2) {
+					return fmt.Errorf("%w: %w (present=%t, value=%d)", ErrProtocol, ErrLiveResponseVersion, versionOK, version)
 				}
 				result, resultOK := unitInt(unit, "C")
 				if !resultOK {

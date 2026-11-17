@@ -302,6 +302,7 @@ func TestSessionErrorDiagnosticsDoNotExposeUnderlyingErrors(t *testing.T) {
 		want string
 	}{
 		{fmt.Errorf("%w: secret", netvue.ErrAuthenticationRejected), "Camera authentication rejected"},
+		{fmt.Errorf("%w: secret", netvue.ErrLiveResponseVersion), "Unsupported Netvue LIVE response version"},
 		{fmt.Errorf("%w: secret", netvue.ErrProtocol), "Invalid Netvue protocol or video data"},
 		{fmt.Errorf("%w: secret", netvue.ErrMediaFrame), "Invalid Netvue protocol or video data"},
 		{fmt.Errorf("%w: secret", netvue.ErrVideoFatal), "Video publication failed"},

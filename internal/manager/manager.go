@@ -335,6 +335,8 @@ func sessionError(err error) string {
 	switch {
 	case errors.Is(err, netvue.ErrAuthenticationRejected):
 		return "Camera authentication rejected"
+	case errors.Is(err, netvue.ErrLiveResponseVersion):
+		return "Unsupported Netvue LIVE response version"
 	case errors.Is(err, netvue.ErrProtocol), errors.Is(err, netvue.ErrMediaFrame):
 		return "Invalid Netvue protocol or video data"
 	case errors.Is(err, netvue.ErrVideoFatal):

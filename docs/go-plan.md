@@ -55,6 +55,10 @@ dans [architecture.md](./architecture.md) et [bridge.md](./bridge.md).
   interruptions, changements de résolution et isolation des sessions.
 - **Chaîne synthétique vérifiée :** HA réel, gestionnaire Go, caméra fictive,
   MediaMTX et JPEG HA ; voir [development.md](./development.md).
+- **Caméra 2 :** confirmation LIVE version 1 observée et prise en charge.
+  Un essai réel borné de 15 s du binaire corrigé a publié vers MediaMTX ;
+  FFmpeg dans HA a terminé sans erreur. La stack installée reste à mettre
+  à jour avec la correction.
 - **Tests et documentation simplifiés :** scénarios Go conservés ; tests Go,
   détecteur de courses, `go vet` et intégrations MediaMTX/FFmpeg réussis.
 - **Installation préparée :** stack Portainer avec deux variables obligatoires ;

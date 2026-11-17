@@ -20,6 +20,9 @@ historiques locales peuvent rester dans `findings/` (ignoré par Git).
 - Lors d'essais antérieurs explicitement autorisés sur la caméra 2, le login
   et la demande LIVE ont réussi ; du H.264 a été reçu et une publication
   RTSP/TCP décodée.
+- La caméra 2 a répondu à une demande LIVE version 2 avec une confirmation
+  de version 1. Le pont accepte les confirmations versions 1 et 2, avec
+  résultat explicite égal à zéro.
 
 ## Probable ou limité
 
