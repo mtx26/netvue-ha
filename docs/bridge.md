@@ -1,9 +1,10 @@
 # Netvue Bridge en Go
 
-Cette implémentation est un nouveau programme séparé de la passerelle Python.
 Le programme Go gère plusieurs caméras dans une seule instance ; l'intégration
 Python `netvue_local` reste l'interface Home Assistant. Pour préparer le
 déploiement, voir le [guide Docker/Portainer](../deployment/go-portainer.md).
+Le guide distingue la construction locale pour un nœud unique et la publication
+manuelle d'une image GHCR épinglée par digest pour Portainer/Swarm.
 
 ## Prérequis
 
@@ -17,7 +18,7 @@ déploiement, voir le [guide Docker/Portainer](../deployment/go-portainer.md).
 
 ## Compiler et tester
 
-Depuis `netvue-go/` :
+Depuis la racine du dépôt :
 
 ```text
 go test ./...
@@ -140,5 +141,5 @@ loopback. Ne publiez ni le port 8765 ni le flux RTSP. Des processus locaux
 pouvant joindre loopback peuvent appeler l'API ; Home Assistant et le pont
 doivent partager le réseau host du nœud.
 
-Voir le [plan Go](../docs/go-plan.md), la [synthèse du protocole](../docs/netvue-protocol.md)
+Voir le [plan Go](./go-plan.md), la [synthèse du protocole](./netvue-protocol.md)
 et le [bilan de phase 26](../findings/phase26-multicamera-go.md).

@@ -25,11 +25,8 @@ Tu disposes de compétences avancées en :
 
 Concevoir et développer une nouvelle passerelle Netvue LAN → RTSP → Home Assistant.
 
-Le projet repart sur une architecture nouvelle.
-
-L'ancien code Python est une référence technique.
-
-Ne reproduis pas automatiquement son architecture.
+Le projet utilise la passerelle Go comme implémentation principale.
+L'ancienne architecture Python est archivée hors du code actif.
 
 Le résultat doit être simple, performant, fiable et facile à maintenir.
 
@@ -196,7 +193,7 @@ Corrige les problèmes de conception importants avant de développer.
 
 Lorsque les décisions fondamentales sont suffisamment établies, commence le développement Go.
 
-Crée une nouvelle implémentation sans écraser l'ancien projet Python.
+Développe la passerelle Go existante et conserve l'intégration Home Assistant en Python.
 
 Privilégie un développement progressif.
 

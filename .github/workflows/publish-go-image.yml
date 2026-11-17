@@ -1,0 +1,57 @@
+name: Test and publish Netvue Go bridge image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Run Go tests and vet
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            golang:1.26.1-bookworm@sha256:09fb8a652cf7a990b714c46a9f0f5fd2d5bc2222d995166b91907c1c05b7d0e8 \
+            sh -ec 'go test ./... && go test -race ./... && go vet ./...'
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and publish immutable image
+        env:
+          IMAGE: ghcr.io/mtx26/netvue-bridge-go
+        run: |
+          metadata_file="$(mktemp)"
+          trap 'rm -f "$metadata_file"' EXIT
+          docker buildx build \
+            --platform linux/amd64 \
+            --file Dockerfile \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$IMAGE:sha-$GITHUB_SHA" \
+            --metadata-file "$metadata_file" \
+            --push .
+
+          digest="$(jq -er '."containerimage.digest"' "$metadata_file")"
+          echo "Published \`$IMAGE@$digest\` from commit \`$GITHUB_SHA\`." \
+            >> "$GITHUB_STEP_SUMMARY"

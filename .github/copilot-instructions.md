@@ -4,9 +4,8 @@
 
 Le projet développe une passerelle locale Netvue Vigil vers RTSP et Home Assistant.
 
-La nouvelle version est développée principalement en Go.
-
-L'ancien projet Python est conservé comme référence technique.
+La passerelle principale est en Go. Python est conservé pour l'intégration
+Home Assistant ; l'ancienne passerelle est isolée dans `archive/python-bridge/`.
 
 Le but est d'obtenir un logiciel :
 

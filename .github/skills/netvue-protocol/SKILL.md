@@ -13,7 +13,7 @@ Ne pas reproduire automatiquement l'architecture de l'ancienne passerelle Python
 
 ## Sources
 
-Examiner les rapports existants dans findings/ et le code historique de netvue_bridge/.
+Examiner les rapports existants dans findings/, docs/netvue-protocol.md et le code actif dans internal/netvue/.
 
 Utiliser les résultats des tests et les captures autorisées disponibles.
 

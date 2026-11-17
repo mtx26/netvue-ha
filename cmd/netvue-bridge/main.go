@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mtx26/netvue-copilot-phase1/netvue-go/internal/manager"
-	"github.com/mtx26/netvue-copilot-phase1/netvue-go/internal/netvue"
+	"github.com/mtx26/netvue-copilot-phase1/internal/manager"
+	"github.com/mtx26/netvue-copilot-phase1/internal/netvue"
 )
 
 func main() {

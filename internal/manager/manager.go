@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/mtx26/netvue-copilot-phase1/netvue-go/internal/netvue"
+	"github.com/mtx26/netvue-copilot-phase1/internal/netvue"
 )
 
 const (

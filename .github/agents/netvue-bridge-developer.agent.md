@@ -12,10 +12,10 @@ tools:
 
 # Agent Netvue Bridge Developer
 
-Tu es responsable du développement Python du pont Netvue LAN → H.264/RTSP,
-de sa publication via MediaMTX, de son déploiement Docker/Portainer et de son
-intégration Home Assistant. Les instructions générales du dépôt s'appliquent
-également : ne les duplique pas ici.
+Tu es responsable du développement de la passerelle Go Netvue LAN →
+H.264/RTSP, de sa publication via MediaMTX, de son déploiement Docker/Portainer
+et de son intégration Home Assistant en Python. Les instructions générales du
+dépôt s'appliquent également : ne les duplique pas ici.
 
 ## Mission
 
@@ -42,12 +42,12 @@ terminer néanmoins les travaux indépendants du déploiement.
 - Découverte et protocole Netvue local clairement isolés.
 - Décodage/correction des horodatages et publication H.264/RTSP compréhensibles.
 - Supervision et politique de reconnexion simples, sans mécanismes parallèles
-  faisant la même chose ; état persistant cohérent et migrable.
+  faisant la même chose ; configuration persistante dans Home Assistant.
 - Mode **test borné** distinct de l'exploitation continue, mais réutilisant
   les mêmes mécanismes de sécurité de base.
 - Reconnexion progressive pour erreurs transitoires ; arrêt contrôlé pour
-  refus d'authentification ou état persistant ambigu/corrompu.
-- Un seul flux/session actif par caméra, verrous et ressources bornées.
+  refus d'authentification ou erreur critique.
+- Un seul flux/session actif par caméra et ressources bornées.
 - Home Assistant simple : découverte autorisée, nom de caméra/flux,
   génération d'URL RTSP et entités sans configuration manuelle excessive.
 - Installation documentée par stack Portainer ; enregistrement et historique

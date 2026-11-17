@@ -13,8 +13,9 @@ l'authentification LAN ; cette tâche reste au pont.
   externe.
 - Le réseau autorisé de `NETVUE_SOURCE` couvre les caméras à ajouter.
 
-Voir le [guide Portainer](../../deployment/README.md) pour la stack. Le code
-de cette intégration est le dossier `custom_components/netvue_local`.
+Voir le [guide Go Docker/Portainer](../../deployment/go-portainer.md) pour la
+stack actuelle. Le code de cette intégration est le dossier
+`custom_components/netvue_local`.
 Copiez-le sous `<config Home Assistant>/custom_components/netvue_local/`,
 puis redémarrez Home Assistant.
 

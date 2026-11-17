@@ -1,63 +1,55 @@
-# Netvue Vigil → Home Assistant — Phase 1
+# Netvue Bridge
 
-> **Architecture actuelle, phase 26 :** une passerelle Go gère dynamiquement
-> plusieurs caméras avec un superviseur indépendant par caméra ; Home
-> Assistant conserve la configuration et utilise une intégration Python légère.
-> Voir le [plan Go](docs/go-plan.md), le [guide du programme Go](netvue-go/README.md),
-> l'[architecture](docs/architecture.md), le [guide Go Portainer](deployment/go-portainer.md)
-> et le [guide Home Assistant](custom_components/netvue_local/README.md).
-> `netvue_bridge/` et le reste de cette page décrivent l'ancienne référence
-> Python / la phase 1, pas la stack Go actuelle.
+Passerelle locale **Netvue LAN → H.264/RTSP → Home Assistant**. Une seule
+application Go gère plusieurs caméras, avec une session supervisée indépendante
+par caméra et un serveur MediaMTX partagé. L'intégration Home Assistant reste
+en Python ; elle conserve les entrées de configuration et communique avec
+l'API locale du pont.
 
-La liste des caméras est persistée par les config entries Home Assistant ; le
-gestionnaire Go conserve seulement l'état runtime et ne crée aucun budget
-persistant. Les tests hors ligne n'établissent ni la compatibilité de chaque
-caméra, ni la stabilité prolongée, ni le déploiement en production.
+## Installation
 
-Espace de travail prêt à ouvrir dans **VS Code avec GitHub Copilot (harness « Copilot »)**. La première phase est exclusivement consacrée à l'analyse statique de l'application Android Netvue et aux recherches documentaires. Aucun accès à un compte Netvue n'est nécessaire.
+Suivre le [guide Docker/Portainer](deployment/go-portainer.md), puis le
+[guide Home Assistant](custom_components/netvue_local/README.md). La stack
+utilise le réseau host sur le même nœud que Home Assistant et ne publie aucun
+port. L'ajout d'une caméra déclenche immédiatement une connexion réelle et
+nécessite une autorisation préalable.
 
-## Ce qui est inclus
+## Développement
 
-- `.github/copilot-instructions.md` : règles permanentes du projet.
-- `.github/agents/netvue-apk-research.agent.md` : agent GitHub Copilot spécialisé.
-- `.github/skills/netvue-apk-analysis/SKILL.md` : procédure d'analyse réutilisable.
-- `scripts/apk_inventory.py` : inventaire local, sans dépendance Python ni exécution de l'APK.
-- `docs/observations.md` : observations confirmées et limites.
-- `docs/phase1-checklist.md` : livrables et points de contrôle.
-- `COPILOT_PROMPT.md` : premier message à envoyer à l'agent.
+Prérequis : Go 1.26 ou supérieur. Depuis la racine :
 
-## Installation de l'agent
-
-1. Décompresser cette archive puis ouvrir **le dossier `netvue-copilot-phase1`** dans VS Code (pas seulement un fichier).
-2. Vérifier que GitHub Copilot est connecté, et sélectionner **Copilot** comme *agent harness* dans le panneau Chat.
-3. `Ctrl+Shift+P` → **Chat: Open Customizations** → **Agents** : vérifier que `Netvue APK Researcher` apparaît. Le sélectionner dans la liste des agents du Chat.
-4. Dans **Skills**, vérifier `netvue-apk-analysis`. Ne pas sélectionner l'ancien harness « Local » pour cette configuration.
-5. Copier le texte de `COPILOT_PROMPT.md` dans une nouvelle conversation avec cet agent.
-
-L'agent n'impose pas de modèle payant spécifique : choisir dans Copilot un modèle disposant d'un bon raisonnement et de l'accès aux outils de fichiers et au terminal.
-
-## Ajouter un APK à analyser
-
-1. Consulter la [page de distribution Android hébergée par Netvue](https://resource.netvue.com/android/netvue/release.html) et sélectionner une version de l'application qui prend en charge la Vigil première génération. Une page ancienne ne garantit pas qu'il s'agit de la dernière version.
-2. Vérifier que l'URL de téléchargement est bien associée à Netvue et ne pas utiliser de miroir inconnu.
-3. Créer le dossier `input` puis placer le fichier sous `input/netvue.apk`. **Ne pas lancer ni installer l'APK sur le serveur.**
-4. Exécuter l'inventaire :
-
-```bash
-python3 scripts/apk_inventory.py input/netvue.apk --output findings/apk-inventory.json
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+go build ./cmd/netvue-bridge
 ```
 
-Si aucune application n'est disponible, commencer par la recherche documentaire avec l'agent. Son premier rapport doit alors indiquer clairement « APK non fourni ».
+Le [guide du pont](docs/bridge.md) décrit les commandes et les limites ;
+le [guide de développement](docs/development.md) explique les tests Go,
+Docker et Home Assistant. Voir aussi l'[architecture](docs/architecture.md),
+le [plan](docs/go-plan.md) et les [faits sur le protocole](docs/netvue-protocol.md).
 
-Le rapport d'inventaire peut contenir des domaines observés dans le binaire. Il ne prouve pas qu'ils sont utilisés pendant la lecture vidéo.
+## Organisation
 
-## Précautions
+- `cmd/netvue-bridge/` : interface de commande.
+- `internal/netvue/` : protocole, sessions, vidéo et supervision.
+- `internal/manager/` : gestion multi-caméra et API HTTP locale.
+- `custom_components/netvue_local/` : intégration Home Assistant en Python.
+- `deployment/` : stack Portainer et configuration MediaMTX.
+- `tests/` : tests et scénario synthétique Home Assistant.
+- `docs/` : architecture, développement et plan.
+- `archive/python-bridge/` : ancien pont Python et ses fichiers historiques,
+  hors du fonctionnement et des workflows actifs.
 
-- `input/`, `findings/` et `captures/` sont exclus de Git : ils peuvent contenir des informations privées.
-- Ne jamais enregistrer d'identifiants, de mots de passe, de jetons, de clés, de flux privés ou de captures réseau brutes dans une réponse publique.
-- Ne pas exécuter de code extrait de l'application, ni modifier les caméras ou le serveur de production pendant cette phase.
-- Ne pas installer de logiciels, ouvrir de ports, désactiver la sécurité ou envoyer de commandes au port 5555 sans accord préalable.
+Les rapports historiques conservent les connaissances utiles. Les dossiers
+`findings/`, `input/`, `tools/` et les captures peuvent contenir des données
+privées et sont ignorés par Git.
 
-## Objectif du premier rapport
+## Limites et sécurité
 
-L'agent doit produire `findings/phase1-report.md` avec une traçabilité : preuves réelles, hypothèses, niveau de confiance, fichiers analysés et prochaine expérience sans risque. Un protocole H.264, WebRTC, MQTT ou P2P ne doit jamais être présenté comme confirmé sans preuve liée à Netvue Vigil.
+Les tests synthétiques ne démontrent ni la compatibilité de toutes les
+caméras ni la stabilité prolongée. L'API HTTP et RTSP sont limités au loopback,
+mais restent accessibles aux processus qui partagent cet espace réseau.
+Le protocole Netvue observé ne chiffre pas le login : utiliser un LAN de
+confiance. Ne jamais publier de secrets ni exposer les flux sur Internet.

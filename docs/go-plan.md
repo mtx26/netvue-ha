@@ -3,9 +3,10 @@
 ## Cahier des charges
 
 Construire une passerelle locale maintenable qui reçoit un flux Netvue autorisé
-sur le LAN et le publie en H.264/RTSP pour Home Assistant. Le nouveau programme
-est isolé sous `netvue-go/`; l'implémentation Python demeure une référence et
-n'est ni remplacée ni supprimée pendant cette reprise.
+sur le LAN et le publie en H.264/RTSP pour Home Assistant. Le module Go réside
+à la racine du dépôt. Le pont Python historique est isolé sous
+`archive/python-bridge/` et ne fait pas partie du code actif ; l'intégration
+Home Assistant reste en Python.
 
 ### Exigences communes
 
@@ -86,7 +87,7 @@ base de données ou API supplémentaire au MVP.
 **Décision MVP :** publier directement en Go avec `gortsplib/v5` et utiliser
 `mediacommon/v2` pour analyser les unités Annex B. Les versions initialement
 évaluées sont `gortsplib v5.7.0` et `mediacommon v2.10.0` ; elles sont
-épinglées dans `netvue-go/go.mod`. Le module gortsplib v5 exige Go 1.26.0 ;
+épinglées dans `go.mod`. Le module gortsplib v5 exige Go 1.26.0 ;
 l'environnement de développement observé est Go 1.26.1. FFmpeg ne sera pas
 une dépendance obligatoire du binaire, mais restera un lecteur/décodeur
 indépendant des tests vidéo. MediaMTX reste un processus distinct.
@@ -140,8 +141,8 @@ Python reste l'interface Home Assistant (config entries, entités, probe RTSP),
 Go porte les sessions, l'authentification Netvue, H.264, RTSP et la supervision.
 L'ajout HA garde la saisie manuelle de l'adresse ; chaque session Go effectue
 sa découverte unicast. La découverte de candidats par diffusion LAN n'est pas
-implémentée. `netvue_bridge/` reste une référence historique et ne doit pas
-tourner en parallèle du nouveau service. La stack dynamique contient un seul
+implémentée. Le pont Python historique est archivé hors de l'arbre actif.
+La stack dynamique contient un seul
 service Go et un MediaMTX. Les détails sont dans `deployment/go-portainer.md`.
 
 ## Avancement et décisions ouvertes
@@ -186,8 +187,24 @@ service Go et un MediaMTX. Les détails sont dans `deployment/go-portainer.md`.
   se construit localement, démarre en UID 10001 sur Linux/amd64 et affiche
   l'aide de `serve` ; `docker stack config` valide la stack rendue. Aucune
   caméra réelle ni production n'a été contactée.
-- **Ensuite :** déployer la stack uniquement après autorisation et effectuer
-  des essais caméra/production uniquement après autorisation distincte.
+- **Phase 27 — préparation de l'installation Go terminée hors production :**
+  le Dockerfile conserve une compilation reproductible Linux/amd64, ajoute le
+  label OCI du dépôt et livre uniquement le binaire dans `scratch`. Le nouveau
+  workflow manuel distinct de l'ancien workflow Python exécute
+  `go test ./...`, `go test -race ./...` et `go vet ./...`, puis peut publier
+  une image GHCR Go par tag de commit et afficher son digest ; il n'a pas été
+  déclenché. Le guide Portainer décrit la construction locale mono-nœud,
+  l'option registre par digest, l'accès GHCR privé/public, l'architecture
+  amd64 et les limites du réseau host. Le README HA pointe désormais vers le
+  guide Go et identifie le guide Python comme historique. Lors de cette phase,
+  les tests Go, la construction et le démarrage d'aide de l'image, ainsi que
+  `docker stack config` ont réussi ; aucune publication ni aucun déploiement
+  n'a été effectué.
+- **Prochaine étape :** vérifier la disponibilité et la visibilité souhaitée
+  du package GHCR, puis déclencher manuellement sa publication uniquement
+  après autorisation. La stack sur le nœud cible reste à valider avant tout
+  déploiement ; aucun essai caméra ou production n'est autorisé par cette
+  phase.
 - **Ouvert :** disponibilité du flux sans cloud, protocole réellement utilisé
   par la caméra 1, gestion générique des images B et fragments, stabilité
   continue et stabilité sous charge.

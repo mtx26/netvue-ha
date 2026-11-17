@@ -31,10 +31,8 @@ async def main():
     port = 8554
     api_port = _free_port()
     config = root / "mediamtx.yml"
-    config_text = template.read_text(encoding="utf-8")
     stream_name = "netvue_192_168_10_2"
-    config_text = config_text.replace("netvue2:", f"{stream_name}:")
-    config.write_text(config_text, encoding="utf-8")
+    shutil.copyfile(template, config)
     url = f"rtsp://127.0.0.1:{port}/{stream_name}"
     server = subprocess.Popen([str(mediamtx), str(config)], stdout=subprocess.DEVNULL,
                               stderr=subprocess.PIPE)

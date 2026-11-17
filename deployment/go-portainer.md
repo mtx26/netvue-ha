@@ -38,31 +38,48 @@ superviseur caméra Go.
 
 ## Image Go
 
-Depuis la racine du dépôt, après avoir installé Docker avec BuildKit :
+Depuis la racine du dépôt, après avoir installé Docker avec BuildKit, une image
+locale pour un nœud Linux/amd64 peut être construite ainsi :
 
 ```sh
-docker build -f netvue-go/Dockerfile -t netvue-bridge-go:phase26 netvue-go
+docker buildx build --platform linux/amd64 --load \
+  -t netvue-bridge-go:local \
+  .
 ```
 
 Le Dockerfile épingle l'image de compilation Go 1.26.1 Linux/amd64 par digest,
 compile avec `CGO_ENABLED=0`, et copie uniquement le binaire dans une image
 `scratch`. L'image d'exécution n'inclut ni Python, ni FFmpeg, ni shell, ni
 secret. Elle s'exécute en UID 10001, avec système de fichiers en lecture seule
-et capacités supprimées. Le processus traite SIGTERM et dispose de 30 secondes
-pour fermer ses connexions.
+et capacités supprimées. Le label OCI relie l'image au dépôt source. Le
+processus traite SIGTERM et dispose de 30 secondes pour fermer ses connexions.
 
-Portainer/Swarm ne construit pas le Dockerfile d'une stack. `NETVUE_BRIDGE_IMAGE`
-doit désigner une image déjà accessible au nœud choisi. Pour un Swarm
-multi-nœud, utilisez une référence de registre accessible aux nœuds ; ne
-supposez pas qu'une image présente uniquement dans le cache d'un worker sera
-disponible ailleurs. Aucune image n'est publiée par cette phase.
+Portainer/Swarm ne construit pas le Dockerfile d'une stack.
+`NETVUE_BRIDGE_IMAGE` doit désigner une image déjà accessible au nœud choisi.
+Pour une installation mono-nœud, l'image peut être construite directement sur
+ce nœud. Pour un Swarm multi-nœud, utilisez le registre et une référence par
+digest accessible aux nœuds ; ne supposez pas qu'une image présente dans le
+cache d'un worker sera disponible ailleurs.
+
+Le workflow manuel
+[publish-go-image.yml](../.github/workflows/publish-go-image.yml) exécute les
+tests Go et publie une image distincte de l'ancienne image Python :
+`ghcr.io/mtx26/netvue-bridge-go`. Il ne s'exécute pas automatiquement. Après
+publication autorisée, l'étape GitHub Actions affiche une référence immuable
+`ghcr.io/mtx26/netvue-bridge-go@sha256:...` à utiliser comme
+`NETVUE_BRIDGE_IMAGE`. Le workflow n'a pas été déclenché par cette phase. Le
+package GHCR doit être rendu accessible au nœud Portainer ; s'il reste privé,
+configurez l'accès au registre dans Portainer. La visibilité du package n'est
+pas modifiée par le workflow.
 
 ## Préparer Portainer
 
-1. Utilisez un nœud Linux Docker qui partage le LAN avec les caméras et le
+1. Utilisez un nœud Linux/amd64 Docker qui partage le LAN avec les caméras et le
    réseau host avec Home Assistant. En Swarm, relevez son nom exact et placez
-   les deux services sur ce nœud.
-2. Construisez ou rendez accessible l'image Go avant de créer la stack.
+   les deux services sur ce nœud. Vérifiez l'architecture avec
+   `docker info --format '{{.OSType}}/{{.Architecture}}'`.
+2. Construisez l'image sur ce nœud pour une installation mono-nœud, ou rendez
+   accessible l'image publiée par digest avant de créer la stack.
 3. Copiez [mediamtx.yml](./mediamtx.yml) vers un chemin absolu local au nœud.
    La configuration garde RTSP sur `127.0.0.1:8554`, désactive les protocoles
    inutilisés et n'enregistre pas de vidéo.
@@ -75,6 +92,11 @@ disponible ailleurs. Aucune image n'est publiée par cette phase.
 | `NETVUE_BRIDGE_IMAGE` | Image Go déjà accessible, idéalement épinglée par digest |
 | `NETVUE_SOURCE` | IPv4 LAN locale de l'hôte utilisée pour joindre les caméras |
 | `NETVUE_MEDIAMTX_CONFIG` | Chemin absolu du fichier MediaMTX sur ce nœud |
+
+Pour un essai d'installation sans registre, définissez
+`NETVUE_BRIDGE_IMAGE=netvue-bridge-go:local` après avoir construit l'image sur
+le nœud Swarm choisi. Pour un registre, utilisez la référence `@sha256:...`
+produite par le workflow, pas un tag mutable.
 
 L'image Go et le YAML ne contiennent aucun identifiant Netvue ni mot de passe
 RTSP. Les adresses des caméras sont fournies par les entrées HA, pas par la
