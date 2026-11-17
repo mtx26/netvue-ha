@@ -8,11 +8,13 @@ l'API locale du pont.
 
 ## Installation
 
-Suivre le [guide Docker/Portainer](deployment/go-portainer.md), puis le
-[guide Home Assistant](custom_components/netvue_local/README.md). La stack
-utilise le réseau host sur le même nœud que Home Assistant et ne publie aucun
-port. L'ajout d'une caméra déclenche immédiatement une connexion réelle et
-nécessite une autorisation préalable.
+Le [guide Docker/Portainer](deployment/go-portainer.md) décrit la stack avec
+deux variables obligatoires et l'installation de l'intégration HA associée.
+L'image est privée : Portainer doit pouvoir accéder à GHCR. La publication
+automatique préparée localement ne prendra effet qu'après transmission sur
+`main` et réussite du workflow. La stack partage le réseau host de HA et ne
+publie aucun port. L'ajout d'une caméra déclenche immédiatement une connexion
+réelle : lire d'abord les préconditions de transition du guide.
 
 ## Développement
 

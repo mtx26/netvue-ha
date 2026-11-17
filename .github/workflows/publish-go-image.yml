@@ -1,10 +1,16 @@
 name: Test and publish Netvue Go bridge image
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: netvue-go-image-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -21,8 +27,18 @@ jobs:
             golang:1.26.1-bookworm@sha256:09fb8a652cf7a990b714c46a9f0f5fd2d5bc2222d995166b91907c1c05b7d0e8 \
             sh -ec 'go test ./... && go test -race ./... && go vet ./...'
 
+      - name: Run Home Assistant integration tests
+        run: |
+          docker run --rm --network none \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --workdir /workspace --env PYTHONPATH=/workspace \
+            --entrypoint python \
+            ghcr.io/home-assistant/home-assistant:2026.11.2@sha256:493a07e8f6530fc640223f4a0a5248f20a61ca2f718bb1d31efbf08a2c5ea28f \
+            -B -m unittest discover -s tests -p 'test_*.py' -v
+
   publish:
     needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,7 +54,7 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io \
             --username "$GITHUB_ACTOR" --password-stdin
 
-      - name: Build and publish immutable image
+      - name: Build and publish image
         env:
           IMAGE: ghcr.io/mtx26/netvue-bridge-go
         run: |
@@ -47,11 +63,23 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --file Dockerfile \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --tag "$IMAGE:sha-$GITHUB_SHA" \
+            --tag "$IMAGE:latest" \
             --metadata-file "$metadata_file" \
             --push .
 
           digest="$(jq -er '."containerimage.digest"' "$metadata_file")"
           echo "Published \`$IMAGE@$digest\` from commit \`$GITHUB_SHA\`." \
             >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package matching Home Assistant integration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: netvue-local-${{ github.sha }}
+          path: |
+            custom_components/netvue_local/
+            !custom_components/netvue_local/**/__pycache__/**
+            !custom_components/netvue_local/**/*.pyc
+          if-no-files-found: error

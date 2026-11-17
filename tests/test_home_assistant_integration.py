@@ -1,6 +1,7 @@
 """Offline tests for the pinned Home Assistant integration environment."""
 
 import asyncio
+import gc
 import json
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ from custom_components.netvue_local.rtsp import (
 )
 from custom_components.netvue_local.sensor import NetvueSessionSensor
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.const import Platform
 class ConfigurationTests(unittest.TestCase):
     def test_urls_and_addresses(self):
         self.assertEqual(validate_host("192.168.10.2"), "192.168.10.2")
@@ -159,7 +161,7 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
                                 data={"host": "192.168.10.2", "stream_name": "a",
                                       "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
         entries = SimpleNamespace(async_forward_entry_setups=unittest.mock.AsyncMock(),
-                                  async_unload_platforms=unittest.mock.AsyncMock(return_value=True))
+                                  async_forward_entry_unload=unittest.mock.AsyncMock(return_value=True))
         hass = SimpleNamespace(config_entries=entries)
         coordinator = SimpleNamespace(data=CameraData(SessionStatus("supervising", None), True),
                                       last_update_success=True,
@@ -183,7 +185,7 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
                    new=unittest.mock.AsyncMock()) as stop:
             self.assertTrue(await async_unload_entry(hass, entry))
         stop.assert_awaited_once_with(hass, "192.168.10.2")
-        entries.async_unload_platforms.assert_awaited_once()
+        self.assertEqual(entries.async_forward_entry_unload.await_count, 4)
 
     async def test_session_diagnostic_and_explicit_restart(self):
         entry = SimpleNamespace(entry_id="1", title="Fake")
@@ -228,7 +230,8 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             options={},
         )
         entries = SimpleNamespace(
-            async_unload_platforms=unittest.mock.AsyncMock(return_value=True)
+            async_forward_entry_unload=unittest.mock.AsyncMock(return_value=True),
+            async_forward_entry_setups=unittest.mock.AsyncMock(),
         )
         hass = SimpleNamespace(config_entries=entries)
         with patch(
@@ -237,7 +240,9 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         ) as stop:
             self.assertFalse(await async_unload_entry(hass, entry))
         stop.assert_awaited_once_with(hass, "192.168.10.2")
-        entries.async_unload_platforms.assert_not_awaited()
+        entries.async_forward_entry_setups.assert_awaited_once_with(
+            entry, [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON]
+        )
 
     async def test_setup_rejects_entry_without_managed_stream_name(self):
         entry = SimpleNamespace(data={"host": "192.168.10.2",
@@ -403,19 +408,80 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(BridgeError, "HTTP 500"):
             await async_stop_camera(self.hass, self.host)
 
-    async def test_failed_delete_does_not_disable_future_reconciliation(self):
+    async def test_failed_delete_does_not_recreate_missing_session(self):
         await self.camera.async_reconcile()
         self.status["DELETE"] = 500
         with self.assertRaisesRegex(BridgeError, "HTTP 500"):
             await async_stop_camera(self.hass, self.host)
 
         self.status.clear()
+        self.assertEqual(await self.camera.async_reconcile(), SessionStatus("supervising", None))
         self.current = None
-        await self.camera.async_reconcile()
+        with self.assertRaisesRegex(BridgeError, "deletion outcome is uncertain"):
+            await self.camera.async_reconcile()
         self.assertEqual(
             [method for method, _ in self.requests],
-            ["GET", "POST", "DELETE", "GET", "POST"],
+            ["GET", "POST", "DELETE", "GET", "GET"],
         )
+        await async_stop_camera(self.hass, self.host)
+        replacement = ManagedCamera(self.hass, self.host, self.name)
+        await replacement.async_reconcile()
+        self.assertEqual(self.current["state"], "supervising")
+
+    async def test_uncertain_delete_survives_without_a_coordinator(self):
+        hass = SimpleNamespace(data={})
+        self.status["DELETE"] = 500
+        with self.assertRaisesRegex(BridgeError, "HTTP 500"):
+            await async_stop_camera(hass, self.host)
+        gc.collect()
+        self.status.clear()
+        camera = ManagedCamera(hass, self.host, self.name)
+        with self.assertRaisesRegex(BridgeError, "deletion outcome is uncertain"):
+            await camera.async_reconcile()
+        self.assertEqual([method for method, _ in self.requests], ["DELETE", "GET"])
+
+    async def test_timed_out_create_cannot_be_followed_by_delete(self):
+        self.delay_post = True
+        with patch("custom_components.netvue_local.bridge_api.REQUEST_TIMEOUT", 1.5):
+            with self.assertRaisesRegex(BridgeError, "Cannot reach"):
+                await self.camera.async_reconcile()
+        self.assertTrue(self.post_started.is_set())
+        with self.assertRaisesRegex(BridgeError, "creation outcome is uncertain"):
+            await async_stop_camera(self.hass, self.host)
+        with self.assertRaisesRegex(BridgeError, "creation outcome is uncertain"):
+            await self.camera.async_reconcile()
+        with self.assertRaisesRegex(BridgeError, "operation outcome is uncertain"):
+            await self.camera.async_start()
+        self.post_continue.set()
+        for _ in range(100):
+            if self.current is not None:
+                break
+            await asyncio.sleep(0.01)
+        self.assertIsNotNone(self.current)
+        self.assertEqual([method for method, _ in self.requests], ["GET", "POST"])
+
+    async def test_failed_platform_unload_keeps_failed_session_and_coordinator(self):
+        self.current = {
+            **self.record, "state": "failed", "error": "Camera authentication rejected",
+        }
+        self.hass.config_entries = SimpleNamespace(
+            async_forward_entry_unload=unittest.mock.AsyncMock(side_effect=[True, False]),
+            async_forward_entry_setups=unittest.mock.AsyncMock(),
+        )
+        entry = SimpleNamespace(data={
+            "host": self.host, "stream_name": self.name,
+            "stream_url": self.record["rtsp_url"],
+        }, options={})
+
+        self.assertFalse(await async_unload_entry(self.hass, entry))
+        self.hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+            entry, [Platform.CAMERA]
+        )
+        self.assertEqual(await self.camera.async_reconcile(),
+                         SessionStatus("failed", "Camera authentication rejected"))
+        self.assertEqual([method for method, _ in self.requests], ["GET"])
+        await self.camera.async_start()
+        self.assertEqual(self.current["state"], "supervising")
 
     async def test_invalid_url_or_state_does_not_trigger_post(self):
         for field, value in (("rtsp_url", "rtsp://127.0.0.1:8554/other"),

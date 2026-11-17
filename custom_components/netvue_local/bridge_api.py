@@ -29,6 +29,8 @@ class _CameraState:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.generation = 0
+        self.delete_uncertain = False
+        self.add_uncertain = False
 
 
 def _camera_state(hass: HomeAssistant, host: str) -> _CameraState:
@@ -37,6 +39,14 @@ def _camera_state(hass: HomeAssistant, host: str) -> _CameraState:
     if state is None:
         state = states[host] = _CameraState()
     return state
+
+
+def _retain_uncertain_state(hass: HomeAssistant, host: str, state: _CameraState) -> None:
+    uncertain = hass.data.setdefault(f"{DOMAIN}_uncertain_camera_states", {})
+    if state.add_uncertain or state.delete_uncertain:
+        uncertain[host] = state
+    else:
+        uncertain.pop(host, None)
 
 
 async def _camera_response(response, host: str, stream_name: str) -> SessionStatus:
@@ -69,6 +79,8 @@ class ManagedCamera:
         async with state.lock:
             if self._generation != state.generation:
                 return
+            if state.add_uncertain:
+                raise BridgeError("Camera creation outcome is uncertain; manual recovery required")
             session = async_get_clientsession(self.hass)
             try:
                 async with asyncio.timeout(REQUEST_TIMEOUT):
@@ -79,13 +91,19 @@ class ManagedCamera:
                             return await _camera_response(response, self.host, self.stream_name)
                         if response.status != 404:
                             raise BridgeError(f"Bridge returned HTTP {response.status}")
+                    if state.delete_uncertain:
+                        raise BridgeError("Camera deletion outcome is uncertain; retry removal")
                     # A newer coordinator may replace this entry while GET is in flight.
                     if self._generation != state.generation:
                         return
+                    state.add_uncertain = True
+                    _retain_uncertain_state(self.hass, self.host, state)
                     async with session.post(
                         f"{API_URL}/cameras",
                         json={"host": self.host, "stream_name": self.stream_name},
                     ) as response:
+                        state.add_uncertain = False
+                        _retain_uncertain_state(self.hass, self.host, state)
                         if response.status not in (200, 202):
                             raise BridgeError(f"Bridge returned HTTP {response.status}")
                         return await _camera_response(response, self.host, self.stream_name)
@@ -97,6 +115,8 @@ class ManagedCamera:
         async with state.lock:
             if self._generation != state.generation:
                 raise BridgeError("Camera entry has been removed or replaced")
+            if state.add_uncertain or state.delete_uncertain:
+                raise BridgeError("Camera operation outcome is uncertain; manual recovery required")
             session = async_get_clientsession(self.hass)
             try:
                 async with asyncio.timeout(REQUEST_TIMEOUT):
@@ -113,6 +133,10 @@ class ManagedCamera:
 async def async_stop_camera(hass: HomeAssistant, host: str) -> None:
     state = _camera_state(hass, host)
     async with state.lock:
+        if state.add_uncertain:
+            raise BridgeError("Camera creation outcome is uncertain; manual recovery required")
+        state.delete_uncertain = True
+        _retain_uncertain_state(hass, host, state)
         session = async_get_clientsession(hass)
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
@@ -123,4 +147,6 @@ async def async_stop_camera(hass: HomeAssistant, host: str) -> None:
                         raise BridgeError(f"Bridge returned HTTP {response.status}")
         except (ClientError, TimeoutError) as exc:
             raise BridgeError("Cannot reach the local bridge manager") from exc
+        state.delete_uncertain = False
+        _retain_uncertain_state(hass, host, state)
         state.generation += 1

@@ -48,9 +48,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     camera = _managed_camera(entry)
+    unloaded = []
+    for platform in PLATFORMS:
+        if not await hass.config_entries.async_forward_entry_unload(entry, platform):
+            if unloaded:
+                await hass.config_entries.async_forward_entry_setups(entry, unloaded)
+            _LOGGER.warning("Unable to unload all Netvue platforms; the bridge session was retained")
+            return False
+        unloaded.append(platform)
     try:
         await async_stop_camera(hass, camera[0])
     except BridgeError as exc:
+        await hass.config_entries.async_forward_entry_setups(entry, unloaded)
         _LOGGER.warning("Unable to stop the bridge session while unloading the entry: %s", exc)
         return False
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    return True

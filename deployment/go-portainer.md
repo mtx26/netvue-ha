@@ -1,5 +1,39 @@
 # Netvue Bridge Go — Docker et Portainer
 
+## Avant tout essai réel
+
+**Ne démarrez pas encore la caméra 2 avec cette version.** Un état historique
+v3 a été rapporté bloqué sur le serveur ; son état actuel et son association
+exacte à l'appareil restent à vérifier. Le pont Go ne lit pas cet état. Créer
+un nouveau répertoire ou utiliser Go pour éviter ce blocage le contournerait.
+Il faut d'abord identifier l'état canonique et tous les producteurs, préparer
+et tester hors ligne une réconciliation conservant l'historique, puis obtenir
+une autorisation distincte avant toute modification des données réelles.
+
+Le parcours HA avec `serve` supervise et peut reconnecter sans borne globale
+de temps ni de nombre de tentatives. Le `max_attempts` Swarm ne borne que les
+redémarrages de tâche. La commande Go `test` effectue une session bornée sans
+boucle de reconnexion, mais ne consulte pas le budget historique et ne pilote
+pas les entités HA. Elle ne doit pas servir à contourner l'état bloqué. Un
+premier essai complet HA doit donc attendre une méthode vérifiée qui respecte
+à la fois l'état historique, les limites acceptées et l'absence de producteurs
+concurrents. Ne choisissez ni durée ni nombre de tentatives sans confirmation.
+
+Les étapes ci-dessous préparent l'installation ; leur exécution sur le
+serveur, tout redémarrage HA et tout contact caméra exigent chacun les
+autorisations nécessaires. Une entrée HA existante peut recréer une session
+dès qu'un gestionnaire répond : ne supposez pas que le démarrage de `serve`
+est sans contact tant que les clients existants ne sont pas neutralisés.
+
+Lors du contrôle passif du 17 novembre 2026, le serveur présentait déjà les
+services `netvue_bridge` (ancien pont Python) et `netvue_mediamtx` actifs,
+ainsi que les ports 8554 et 8765 occupés. HA utilisait le réseau host et son
+répertoire `/config` correspondait à `/home/mtx26/homeassistant` ; une
+intégration `custom_components/netvue_local` y existait déjà. Ces faits
+peuvent évoluer : les revérifier avant toute opération. Ne pas déployer une
+seconde stack concurrente, écraser l'intégration existante ni arrêter les
+services sans autorisation et plan de transition.
+
 ## Architecture
 
 La stack exécute deux services sur un même nœud Linux :
@@ -38,15 +72,6 @@ superviseur caméra Go.
 
 ## Image Go
 
-Depuis la racine du dépôt, après avoir installé Docker avec BuildKit, une image
-locale pour un nœud Linux/amd64 peut être construite ainsi :
-
-```sh
-docker buildx build --platform linux/amd64 --load \
-  -t netvue-bridge-go:local \
-  .
-```
-
 Le Dockerfile épingle l'image de compilation Go 1.26.1 Linux/amd64 par digest,
 compile avec `CGO_ENABLED=0`, et copie uniquement le binaire dans une image
 `scratch`. L'image d'exécution n'inclut ni Python, ni FFmpeg, ni shell, ni
@@ -54,58 +79,96 @@ secret. Elle s'exécute en UID 10001, avec système de fichiers en lecture seule
 et capacités supprimées. Le label OCI relie l'image au dépôt source. Le
 processus traite SIGTERM et dispose de 30 secondes pour fermer ses connexions.
 
-Portainer/Swarm ne construit pas le Dockerfile d'une stack.
-`NETVUE_BRIDGE_IMAGE` doit désigner une image déjà accessible au nœud choisi.
-Pour une installation mono-nœud, l'image peut être construite directement sur
-ce nœud. Pour un Swarm multi-nœud, utilisez le registre et une référence par
-digest accessible aux nœuds ; ne supposez pas qu'une image présente dans le
-cache d'un worker sera disponible ailleurs.
+Le workflow [publish-go-image.yml](../.github/workflows/publish-go-image.yml)
+est préparé pour tester Go et HA puis publier, à chaque push sur `main`,
+`ghcr.io/mtx26/netvue-bridge-go:latest` et un tag `sha-<commit>`. Un lancement
+manuel est aussi possible ; seule la branche `main` publie. Le même lancement
+fournit l'artefact HA `netvue-local-<commit>` à télécharger depuis GitHub
+Actions. Son résumé affiche le digest immuable de l'image. Le workflow ne
+publie pas l'ancienne image Python.
 
-Le workflow manuel
-[publish-go-image.yml](../.github/workflows/publish-go-image.yml) exécute les
-tests Go et publie une image distincte de l'ancienne image Python :
-`ghcr.io/mtx26/netvue-bridge-go`. Il ne s'exécute pas automatiquement. Après
-publication autorisée, l'étape GitHub Actions affiche une référence immuable
-`ghcr.io/mtx26/netvue-bridge-go@sha256:...` à utiliser comme
-`NETVUE_BRIDGE_IMAGE`. Le workflow n'a pas été déclenché par cette phase. Le
-package GHCR doit être rendu accessible au nœud Portainer ; s'il reste privé,
-configurez l'accès au registre dans Portainer. La visibilité du package n'est
-pas modifiée par le workflow.
+**Ces changements sont locaux : la publication automatique et l'artefact ne
+seront disponibles qu'après transmission autorisée des changements sur `main`
+et réussite de GitHub Actions.** La version `latest` évolue à chaque publication ;
+une stack déjà déployée ne se met pas automatiquement à jour. Pour figer une
+version et retrouver l'intégration correspondante, utilisez le digest du
+résumé du même lancement et l'artefact associé.
+
+Le package GHCR existant est privé. Pour le télécharger depuis Portainer sans
+changer sa visibilité, un compte GitHub ayant accès au package doit créer un
+jeton personnel **classic** avec `read:packages`. Dans **Registries → Add
+registry → Custom registry**, renseignez l'URL `ghcr.io`, activez
+**Authentication** et indiquez le nom GitHub et ce jeton comme mot de passe.
+Sélectionnez ce registre lors du déploiement si Portainer le propose. Ne mettez
+pas le jeton dans le YAML, les variables de stack ou les journaux. Consultez
+[GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+et [Portainer](https://docs.portainer.io/admin/registries/add/custom).
 
 ## Préparer Portainer
 
-1. Utilisez un nœud Linux/amd64 Docker qui partage le LAN avec les caméras et le
-   réseau host avec Home Assistant. En Swarm, relevez son nom exact et placez
-   les deux services sur ce nœud. Vérifiez l'architecture avec
-   `docker info --format '{{.OSType}}/{{.Architecture}}'`.
-2. Construisez l'image sur ce nœud pour une installation mono-nœud, ou rendez
-   accessible l'image publiée par digest avant de créer la stack.
-3. Copiez [mediamtx.yml](./mediamtx.yml) vers un chemin absolu local au nœud.
-   La configuration garde RTSP sur `127.0.0.1:8554`, désactive les protocoles
-   inutilisés et n'enregistre pas de vidéo.
-4. Dans Portainer, ajoutez une stack depuis le contenu de
-   [go-stack.yaml](./go-stack.yaml) puis définissez :
+Sur un Swarm Linux/amd64 partageant le réseau host avec HA, ouvrez **Stacks →
+Add stack → Web editor**, collez [go-stack.yaml](./go-stack.yaml) et renseignez :
 
 | Variable | Valeur |
 |---|---|
 | `NETVUE_NODE` | Nom exact du nœud Linux choisi |
-| `NETVUE_BRIDGE_IMAGE` | Image Go déjà accessible, idéalement épinglée par digest |
 | `NETVUE_SOURCE` | IPv4 LAN locale de l'hôte utilisée pour joindre les caméras |
-| `NETVUE_MEDIAMTX_CONFIG` | Chemin absolu du fichier MediaMTX sur ce nœud |
+| `NETVUE_BRIDGE_IMAGE` | Facultatif : digest ou tag Go à la place de `latest` |
 
-Pour un essai d'installation sans registre, définissez
-`NETVUE_BRIDGE_IMAGE=netvue-bridge-go:local` après avoir construit l'image sur
-le nœud Swarm choisi. Pour un registre, utilisez la référence `@sha256:...`
-produite par le workflow, pas un tag mutable.
+Le YAML contient les réglages MediaMTX : aucun fichier n'est à copier sur le
+serveur. Il garde RTSP sur loopback, désactive les autres protocoles et
+l'enregistrement, et refuse le remplacement d'un publieur. Le fichier
+[mediamtx.yml](./mediamtx.yml) reste la référence utilisée par les tests.
 
 L'image Go et le YAML ne contiennent aucun identifiant Netvue ni mot de passe
 RTSP. Les adresses des caméras sont fournies par les entrées HA, pas par la
 stack.
 
-Le démarrage du service `serve` ouvre l'API locale, sans contacter de caméra.
-L'ajout d'une entrée depuis Home Assistant lance la session de la caméra
-correspondante ; cette opération reste soumise à l'autorisation de contact.
-Ce guide prépare la stack et ne déploie aucun service.
+Le service `serve` ouvre l'API locale sans session initiale. Un client HA
+existant peut cependant créer immédiatement une session par réconciliation ;
+l'ajout d'une entrée lance également la session de la caméra correspondante.
+Ces contacts restent soumis à autorisation. Ce guide prépare la stack et ne
+déploie aucun service.
+
+### Séquence opérateur préparée
+
+Après autorisation de modification du serveur, et avant tout déploiement :
+
+1. Depuis le nœud manager Swarm, relever les faits sans contacter de caméra :
+   `docker node ls`, `docker info --format '{{.OSType}}/{{.Architecture}}'`,
+   `docker service ls`, `ip -4 address` et `ss -lnt`. Confirmer le nœud
+   Linux/amd64, son IPv4 LAN, les ports `8554` et `8765`, les services ou
+   clients existants et le partage effectif du réseau host avec HA. Une VM ou
+   un conteneur HA sur un autre réseau ne partage pas automatiquement loopback.
+2. Identifier et préserver les états et verrous Netvue historiques. Ne pas
+   réinitialiser, déplacer, écraser ou recréer un budget pour éviter un
+   blocage. Établir la réconciliation et les exclusivités avant tout essai.
+3. Vérifier que le lancement GitHub Actions de la version voulue a réussi ;
+   configurer l'accès GHCR privé dans Portainer comme indiqué ci-dessus.
+4. Dans Portainer, choisir **Swarm → Stacks → Add stack → Web editor**,
+   coller le YAML et renseigner les deux variables obligatoires du tableau.
+   Ne pas ajouter de ports publiés. Ne cliquer sur **Deploy the stack**
+   qu'après autorisation et neutralisation autorisée des entrées HA et autres
+   producteurs susceptibles de démarrer une caméra.
+5. Pour HA, sauvegarder la configuration et l'intégration existante.
+   Dans GitHub **Actions → Test and publish Netvue Go bridge image → lancement
+   réussi → Artifacts**, télécharger `netvue-local-<commit>` du même
+   lancement que l'image. Extraire son contenu dans le dossier
+   `<config HA>/custom_components/netvue_local/` ; `manifest.json` doit se
+   trouver directement dans ce dossier. Remplacer l'intégration existante
+   uniquement après sauvegarde et autorisation. Redémarrer HA uniquement après
+   autorisation et vérification qu'aucune entrée existante ne peut relancer
+   une caméra.
+
+Après résolution du blocage et validation d'un dispositif borné, le parcours
+prévu est **Paramètres → Appareils et services → Ajouter une intégration →
+Netvue Local**, nom puis IPv4 de la caméra 2. Cet ajout lance immédiatement
+la supervision : **ne pas l'effectuer pour l'instant**. Une fois l'essai
+autorisé et borné par un mécanisme adéquat, contrôler l'image caméra, le
+capteur de disponibilité RTSP, le capteur d'état de session et, uniquement
+dans les limites autorisées, le bouton de reprise. Une reprise est une
+nouvelle tentative, pas une simple consultation. Consulter les journaux
+localement et les expurger avant partage.
 
 ## Home Assistant
 
@@ -131,12 +194,10 @@ sans créer de service :
 
 ```sh
 NETVUE_NODE=validation-node \
-NETVUE_BRIDGE_IMAGE=netvue-bridge-go:validation \
 NETVUE_SOURCE=192.0.2.10 \
-NETVUE_MEDIAMTX_CONFIG=/tmp/mediamtx.yml \
 docker stack config -c deployment/go-stack.yaml
 ```
 
-Cette vérification ne contacte aucune caméra et ne valide pas les fichiers
-bind, l'image, les permissions du serveur ni le démarrage effectif. Ne lancez
+Cette vérification ne contacte aucune caméra et ne valide pas l'accès au
+registre, les permissions du serveur ni le démarrage effectif. Ne lancez
 pas `docker stack deploy` dans le cadre d'une validation locale.

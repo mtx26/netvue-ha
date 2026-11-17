@@ -220,15 +220,32 @@ service Go et un MediaMTX. Les détails sont dans `deployment/go-portainer.md`.
   23 tests HA en conteneur réussissent. Un scénario HA réel isolé avec faux
   gestionnaire, deux caméras fictives et MediaMTX vérifie notamment diagnostic,
   échec de reprise, reprise ciblée et panne du gestionnaire. Les erreurs
-  transitoires réessayées ne sont pas exposées. La relecture a également
-  relevé un cas préexistant : si la suppression de session réussit mais que
-  le déchargement des plateformes HA échoue, l'ancien coordinator ne réconcilie
-  plus la session ; une reprise sûre de ce cycle reste à concevoir.
-- **Prochaine étape :** vérifier la disponibilité et la visibilité souhaitée
-  du package GHCR, puis déclencher manuellement sa publication uniquement
-  après autorisation. La stack sur le nœud cible reste à valider avant tout
-  déploiement ; aucun essai caméra ou production n'est autorisé par cette
-  phase.
+  transitoires réessayées ne sont pas exposées. Le cas préexistant de
+  suppression de session avant un déchargement HA échoué est corrigé en
+  phase 30 : la session est conservée lorsque le déchargement des plateformes
+  échoue.
+- **Phase 30 — préparation du premier essai réel :** un scénario Docker
+  isolé relie HA, le véritable gestionnaire Go, une caméra fictive et
+  MediaMTX jusqu'à une image JPEG ; il vérifie aussi le diagnostic et la
+  reprise après refus simulé d'authentification. Un état historique v3 bloqué
+  est rapporté sur le serveur ; son état actuel et son association exacte à
+  la caméra doivent être vérifiés. Le Go ne consulte pas cet état et le mode
+  HA ne borne ni la durée ni les tentatives : aucun essai réel ne doit être
+  lancé avant réconciliation sûre, contrôle des producteurs et mécanisme
+  borné validé, puis autorisations distinctes. Une lecture SSH passive a aussi
+  observé l'ancien pont Python et MediaMTX actifs ainsi que les ports 8554 et
+  8765 occupés ; les opérations de transition restent à autoriser. Les étapes Portainer préparées
+  et leurs préconditions figurent dans `deployment/go-portainer.md`.
+  La publication automatique Go sur `main` est préparée localement après
+  tests Go et HA, avec `latest`, tag de commit et artefact HA correspondant ;
+  la stack n'exige plus de fichier MediaMTX et n'a que deux variables
+  obligatoires. Le package existant est privé. Le workflow modifié n'a pas
+  été exécuté sur GitHub et exige la transmission autorisée des changements.
+- **Prochaine étape :** préparer et tester hors ligne la réconciliation de
+  l'état historique et un dispositif d'essai borné, puis vérifier l'état
+  canonique et les producteurs avec les autorisations requises. Une éventuelle
+  publication GHCR et le déploiement Portainer exigent leurs propres
+  autorisations ; aucun essai caméra ou production n'est autorisé ici.
 - **Ouvert :** disponibilité du flux sans cloud, protocole réellement utilisé
   par la caméra 1, gestion générique des images B et fragments, stabilité
   continue et stabilité sous charge.

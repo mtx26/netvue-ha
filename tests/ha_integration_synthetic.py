@@ -9,9 +9,12 @@ import socket
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from homeassistant import bootstrap, core, loader
 from homeassistant.components import camera
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import Platform
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
@@ -263,12 +266,43 @@ async def main():
         await hass.async_block_till_done()
         if hass.states.get(sensors[0]).state != "off" or hass.states.get(cameras[0]).state != "unavailable":
             raise RuntimeError("Stopped synthetic stream did not become unavailable")
-        if not await hass.config_entries.async_unload(entry.entry_id):
-            raise RuntimeError("Synthetic entry failed to unload")
-        if not await hass.config_entries.async_unload(second_entry.entry_id):
-            raise RuntimeError("Second synthetic entry failed to unload")
+        manager_cameras["192.168.10.2"].update(
+            state="failed", error="Camera authentication rejected"
+        )
+        original_unload = type(hass.config_entries).async_forward_entry_unload
+
+        async def fail_one_platform(entries, config_entry, platform):
+            if platform == Platform.BINARY_SENSOR:
+                return False
+            return await original_unload(entries, config_entry, platform)
+
+        with patch.object(type(hass.config_entries), "async_forward_entry_unload",
+                          new=fail_one_platform):
+            if await hass.config_entries.async_unload(entry.entry_id):
+                raise RuntimeError("Partially failed platform unload was reported as successful")
+        await entry.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+        if (manager_cameras["192.168.10.2"]["state"] != "failed"
+                or entry.state != ConfigEntryState.FAILED_UNLOAD
+                or any(hass.states.get(entity_id(entry, domain)) is None
+                       for domain in ("camera", "binary_sensor", "sensor", "button"))
+                or hass.states.get(session_sensor).state != "failed"
+                or start_requests != ["192.168.10.2", "192.168.10.2"]):
+            raise RuntimeError("Partial unload lost the failed session or camera entity")
+
+        from custom_components.netvue_local.bridge_api import BridgeError
+        with patch("custom_components.netvue_local.async_stop_camera",
+                   side_effect=BridgeError("synthetic manager failure")):
+            if await hass.config_entries.async_unload(second_entry.entry_id):
+                raise RuntimeError("Failed session delete was reported as successful")
+        await hass.async_block_till_done()
+        if (manager_cameras["192.168.10.3"] != second_before
+                or second_entry.state != ConfigEntryState.FAILED_UNLOAD
+                or any(hass.states.get(entity_id(second_entry, domain)) is None
+                       for domain in ("camera", "binary_sensor", "sensor", "button"))):
+            raise RuntimeError("Failed delete lost the session or restored entities")
         print("Isolated HA: config and options flows, entities, RTSP availability, Stream JPEG, "
-              "failed-session diagnosis, isolated restart, offline transition and unload verified",
+              "failed-session diagnosis, isolated restart, offline transition and failed unload recovery verified",
               flush=True)
     finally:
         if hass is not None:

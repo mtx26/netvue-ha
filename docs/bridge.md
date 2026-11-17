@@ -3,8 +3,8 @@
 Le programme Go gère plusieurs caméras dans une seule instance ; l'intégration
 Python `netvue_local` reste l'interface Home Assistant. Pour préparer le
 déploiement, voir le [guide Docker/Portainer](../deployment/go-portainer.md).
-Le guide distingue la construction locale pour un nœud unique et la publication
-manuelle d'une image GHCR épinglée par digest pour Portainer/Swarm.
+Le guide décrit l'image GHCR Go, l'installation Portainer et l'option d'un
+digest immuable pour Portainer/Swarm.
 
 ## Prérequis
 

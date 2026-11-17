@@ -8,11 +8,25 @@ services:
     read_only: true
     cap_drop: [ALL]
     networks: [host]
-    volumes:
-      - type: bind
-        source: ${NETVUE_MEDIAMTX_CONFIG:?set the host MediaMTX configuration path}
-        target: /mediamtx.yml
-        read_only: true
+    environment:
+      MTX_LOGLEVEL: "warn"
+      MTX_LOGDESTINATIONS: "stdout"
+      MTX_DUMPPACKETS: "false"
+      MTX_RTSP: "true"
+      MTX_RTSPADDRESS: "127.0.0.1:8554"
+      MTX_RTSPTRANSPORTS: "tcp"
+      MTX_RTSPENCRYPTION: "no"
+      MTX_RTMP: "false"
+      MTX_HLS: "false"
+      MTX_WEBRTC: "false"
+      MTX_SRT: "false"
+      MTX_MOQ: "false"
+      MTX_API: "false"
+      MTX_METRICS: "false"
+      MTX_PPROF: "false"
+      MTX_PLAYBACK: "false"
+      MTX_PATHDEFAULTS_RECORD: "false"
+      MTX_PATHDEFAULTS_OVERRIDEPUBLISHER: "false"
     stop_grace_period: 15s
     deploy:
       replicas: 1
@@ -34,7 +48,7 @@ services:
         order: stop-first
 
   netvue-bridge:
-    image: ${NETVUE_BRIDGE_IMAGE:?set the built Go bridge image}
+    image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-bridge-go:latest}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]

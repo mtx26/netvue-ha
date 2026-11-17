@@ -14,10 +14,11 @@ l'authentification LAN ; cette tâche reste au pont.
 - Le réseau autorisé de `NETVUE_SOURCE` couvre les caméras à ajouter.
 
 Voir le [guide Go Docker/Portainer](../../deployment/go-portainer.md) pour la
-stack actuelle. Le code de cette intégration est le dossier
-`custom_components/netvue_local`.
-Copiez-le sous `<config Home Assistant>/custom_components/netvue_local/`,
-puis redémarrez Home Assistant.
+stack, le téléchargement de l'artefact HA correspondant à l'image et les
+précautions avant installation et redémarrage. Extraire son contenu sous
+`<config Home Assistant>/custom_components/netvue_local/` : `manifest.json`
+doit être directement dans ce dossier. Sauvegarder l'intégration existante
+avant remplacement.
 
 ## Ajouter une caméra
 
@@ -76,9 +77,20 @@ n'est ni convertie ni réécrite automatiquement.
 - L'API du pont n'a pas d'authentification distincte et n'écoute que sur
   loopback. Les processus partageant le réseau hôte peuvent l'appeler ; ne
   publiez pas son port et gardez les services locaux dignes de confiance.
-- Si la suppression de la session échoue pendant le déchargement, l'intégration
-  conserve l'entrée chargée et signale l'erreur au lieu de laisser une session
-  orpheline sans configuration HA.
+- Au déchargement, les plateformes HA sont d'abord retirées. Si cela échoue,
+  le pont conserve la session et son état ; l'intégration tente de rétablir les
+  plateformes déjà retirées. Si la suppression de session échoue ensuite, elle tente
+  également de rétablir les plateformes et HA signale l'échec. Un redémarrage
+  HA peut être nécessaire pour sortir de l'état d'échec de déchargement.
+  Si la réponse à la suppression est incertaine, le coordinator ne recrée pas
+  automatiquement une session manquante pendant cette exécution de HA ; il
+  faut confirmer la suppression avant toute nouvelle configuration. Cette
+  protection en mémoire ne constitue pas un budget persistant.
+- Si la création d'une session n'a pas reçu de réponse, l'intégration refuse
+  les nouvelles créations, reprises et suppressions de cette caméra pendant cette
+  exécution : une ancienne requête pourrait encore aboutir. Une intervention
+  manuelle est nécessaire pour vérifier les producteurs et la session avant
+  toute reprise. Ne redémarrez pas HA ou le pont pour contourner ce doute.
 - La compatibilité des autres modèles Netvue et la disponibilité prolongée
   doivent être validées séparément. Les tests synthétiques n'utilisent aucune
   caméra réelle.

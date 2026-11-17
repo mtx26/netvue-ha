@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 FROM scratch
 COPY --from=build /out/netvue-bridge /netvue-bridge
-LABEL org.opencontainers.image.source="https://github.com/mtx26/netvue-copilot-phase1"
+LABEL org.opencontainers.image.source="https://github.com/mtx26/netvue-ha"
 USER 10001:10001
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/netvue-bridge"]

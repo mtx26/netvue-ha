@@ -1,7 +1,7 @@
 {
   "domain": "netvue_local",
   "name": "Netvue Local",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "documentation": "https://github.com/mtx26/netvue-ha",
   "codeowners": [],
   "config_flow": true,
