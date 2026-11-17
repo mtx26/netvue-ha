@@ -258,8 +258,12 @@ async def main():
                         return (await response.json())["login_count"]
 
             failed = await wait_state(session_sensor, "failed")
-            if failed.attributes.get("error") != "Camera authentication rejected":
-                raise RuntimeError("Home Assistant did not show the Go manager diagnostic")
+            expected_error = "Camera authentication rejected [authentication]"
+            actual_error = failed.attributes.get("error")
+            if actual_error != expected_error:
+                raise RuntimeError(
+                    f"Home Assistant diagnostic: expected {expected_error!r}, got {actual_error!r}"
+                )
             if await synthetic_login_count() != 1:
                 raise RuntimeError("A failed session was retried without an explicit request")
             await hass.services.async_call("button", "press", {"entity_id": restart}, blocking=True)
