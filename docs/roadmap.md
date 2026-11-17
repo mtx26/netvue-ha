@@ -23,8 +23,9 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Home Assistant | Intégration complète |
 | 🧪 | Découverte LAN | E2E broadcast synthétique confirmé en CI ; réseau et caméra réels non vérifiés |
 | ✅ | CI multi-composants | Go/race/vet, 39 tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) |
-| ⬜ | Stabilité 24 h/24 | Validation prolongée |
-| ⬜ | Optimisation | CPU, RAM et latence |
+| ✅ | Endurance synthétique | Multi-caméra, caméra défaillante, churn, annulation et libération de goroutines testés dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) |
+| 🧪 | Stabilité réelle 24 h/24 | Protocole préparé dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) ; aucune validation réelle effectuée |
+| 🧪 | Performances de référence | Benchmarks et profils CPU/heap du gestionnaire ; aucune optimisation justifiée |
 
 ## 2. Audio
 

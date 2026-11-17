@@ -1,6 +1,7 @@
 # Les analyses restent privées ; le rapport de phase révisé est explicitement suivi.
 input/
 findings/*
+!findings/phase35-fiabilite-prolongee-et-performances.md
 captures/
 firmware/
 tools/
