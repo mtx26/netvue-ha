@@ -266,38 +266,25 @@ func TestManagerFatalSessionCanBeRestartedExplicitly(t *testing.T) {
 	if _, _, err := manager.AddCamera("192.168.10.21", "second_camera"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-secondStarted:
-	case <-time.After(time.Second):
-		t.Fatal("second camera session did not start")
-	}
+	waitForSignal(t, secondStarted, "second camera session")
 	waitForState(t, manager, "192.168.10.20", stateFailed)
 	failed, found := manager.Camera("192.168.10.20")
 	if !found || failed.Error != "Camera authentication rejected" {
 		t.Fatalf("failed camera diagnostic = %+v, found %v", failed, found)
 	}
-	get := httptest.NewRecorder()
-	manager.Handler().ServeHTTP(get, newRequest(http.MethodGet, "/api/v1/cameras/192.168.10.20", ""))
+	get := request(t, manager.Handler(), http.MethodGet, "/api/v1/cameras/192.168.10.20", "", http.StatusOK)
 	if strings.Contains(get.Body.String(), "sensitive detail") {
 		t.Fatalf("camera response contains sensitive detail: %s", get.Body.String())
 	}
 	if _, added, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil || added {
 		t.Fatalf("duplicate add restarted failed camera: added %v, error %v", added, err)
 	}
-	start := httptest.NewRecorder()
-	manager.Handler().ServeHTTP(start, newRequest(http.MethodPost, "/api/v1/cameras/192.168.10.20/start", ""))
+	start := request(t, manager.Handler(), http.MethodPost, "/api/v1/cameras/192.168.10.20/start", "", http.StatusAccepted)
 	var camera Camera
-	if start.Code != http.StatusAccepted {
-		t.Fatalf("restart status = %d, body = %s", start.Code, start.Body.String())
-	}
 	if err := json.Unmarshal(start.Body.Bytes(), &camera); err != nil || camera.Error != "" || camera.State != stateSupervising {
 		t.Fatalf("restart response = %+v, error %v", camera, err)
 	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("explicit restart did not start a new session")
-	}
+	waitForSignal(t, started, "explicit restart")
 	other, found := manager.Camera("192.168.10.21")
 	if !found || other.State != stateSupervising {
 		t.Fatalf("other camera after restart = %+v, found %v", other, found)
@@ -398,12 +385,7 @@ func TestManagerHTTPRoutesReconcileAndDeleteCameras(t *testing.T) {
 	handler := manager.Handler()
 	requestBody := `{"host":"192.168.10.20","stream_name":"living_room"}`
 
-	add := newRequest(http.MethodPost, "/api/v1/cameras", requestBody)
-	addResult := httptest.NewRecorder()
-	handler.ServeHTTP(addResult, add)
-	if addResult.Code != http.StatusAccepted {
-		t.Fatalf("first POST status = %d, body = %s", addResult.Code, addResult.Body.String())
-	}
+	addResult := request(t, handler, http.MethodPost, "/api/v1/cameras", requestBody, http.StatusAccepted)
 	var response Camera
 	if err := json.Unmarshal(addResult.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
@@ -411,45 +393,21 @@ func TestManagerHTTPRoutesReconcileAndDeleteCameras(t *testing.T) {
 	if response.RTSPURL != "rtsp://127.0.0.1:8554/living_room" || response.Host != "192.168.10.20" {
 		t.Fatalf("POST camera response = %+v", response)
 	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("camera session did not start")
+	waitForSignal(t, started, "camera session")
+
+	request(t, handler, http.MethodPost, "/api/v1/cameras", requestBody, http.StatusOK)
+	if starts.Load() != 1 {
+		t.Fatalf("duplicate POST session starts = %d", starts.Load())
 	}
 
-	duplicate := newRequest(http.MethodPost, "/api/v1/cameras", requestBody)
-	duplicateResult := httptest.NewRecorder()
-	handler.ServeHTTP(duplicateResult, duplicate)
-	if duplicateResult.Code != http.StatusOK || starts.Load() != 1 {
-		t.Fatalf("duplicate POST status = %d, session starts = %d", duplicateResult.Code, starts.Load())
+	request(t, handler, http.MethodGet, "/api/v1/cameras/192.168.10.20", "", http.StatusOK)
+	status := request(t, handler, http.MethodGet, "/api/v1/status", "", http.StatusOK)
+	if !strings.Contains(status.Body.String(), "living_room") {
+		t.Fatalf("status response = %s", status.Body.String())
 	}
 
-	get := newRequest(http.MethodGet, "/api/v1/cameras/192.168.10.20", "")
-	getResult := httptest.NewRecorder()
-	handler.ServeHTTP(getResult, get)
-	if getResult.Code != http.StatusOK {
-		t.Fatalf("GET status = %d, body = %s", getResult.Code, getResult.Body.String())
-	}
-
-	status := newRequest(http.MethodGet, "/api/v1/status", "")
-	statusResult := httptest.NewRecorder()
-	handler.ServeHTTP(statusResult, status)
-	if statusResult.Code != http.StatusOK || !strings.Contains(statusResult.Body.String(), "living_room") {
-		t.Fatalf("status response = %d, %s", statusResult.Code, statusResult.Body.String())
-	}
-
-	deleteRequest := newRequest(http.MethodDelete, "/api/v1/cameras/192.168.10.20", "")
-	deleteResult := httptest.NewRecorder()
-	handler.ServeHTTP(deleteResult, deleteRequest)
-	if deleteResult.Code != http.StatusOK {
-		t.Fatalf("DELETE status = %d, body = %s", deleteResult.Code, deleteResult.Body.String())
-	}
-	missing := newRequest(http.MethodGet, "/api/v1/cameras/192.168.10.20", "")
-	missingResult := httptest.NewRecorder()
-	handler.ServeHTTP(missingResult, missing)
-	if missingResult.Code != http.StatusNotFound {
-		t.Fatalf("GET removed camera status = %d", missingResult.Code)
-	}
+	request(t, handler, http.MethodDelete, "/api/v1/cameras/192.168.10.20", "", http.StatusOK)
+	request(t, handler, http.MethodGet, "/api/v1/cameras/192.168.10.20", "", http.StatusNotFound)
 }
 
 func TestManagerHTTPRejectsInvalidRequestsAndReportsMissingDelete(t *testing.T) {
@@ -458,24 +416,19 @@ func TestManagerHTTPRejectsInvalidRequestsAndReportsMissingDelete(t *testing.T) 
 		return nil
 	})
 	handler := manager.Handler()
-	for _, body := range []string{
-		`{"host":"192.168.10.20","stream_name":"../invalid"}`,
-		`{"host":"192.168.10.20","stream_name":"valid","extra":true}`,
-		`{"host":"192.168.10.20","stream_name":"valid"} {"extra":true}`,
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{"invalid stream", `{"host":"192.168.10.20","stream_name":"../invalid"}`},
+		{"unknown field", `{"host":"192.168.10.20","stream_name":"valid","extra":true}`},
+		{"trailing JSON", `{"host":"192.168.10.20","stream_name":"valid"} {"extra":true}`},
 	} {
-		request := newRequest(http.MethodPost, "/api/v1/cameras", body)
-		result := httptest.NewRecorder()
-		handler.ServeHTTP(result, request)
-		if result.Code != http.StatusBadRequest {
-			t.Fatalf("POST body %q status = %d, body = %s", body, result.Code, result.Body.String())
-		}
+		t.Run(test.name, func(t *testing.T) {
+			request(t, handler, http.MethodPost, "/api/v1/cameras", test.body, http.StatusBadRequest)
+		})
 	}
-	deleteRequest := newRequest(http.MethodDelete, "/api/v1/cameras/192.168.10.20", "")
-	result := httptest.NewRecorder()
-	handler.ServeHTTP(result, deleteRequest)
-	if result.Code != http.StatusNotFound {
-		t.Fatalf("DELETE missing camera status = %d", result.Code)
-	}
+	request(t, handler, http.MethodDelete, "/api/v1/cameras/192.168.10.20", "", http.StatusNotFound)
 }
 
 func TestManagerHTTPStopsAndRestartsCamera(t *testing.T) {
@@ -488,40 +441,17 @@ func TestManagerHTTPStopsAndRestartsCamera(t *testing.T) {
 		return nil
 	})
 	handler := manager.Handler()
-	add := newRequest(http.MethodPost, "/api/v1/cameras",
-		`{"host":"192.168.10.20","stream_name":"living_room"}`)
-	addResult := httptest.NewRecorder()
-	handler.ServeHTTP(addResult, add)
-	if addResult.Code != http.StatusAccepted {
-		t.Fatalf("add status = %d, body = %s", addResult.Code, addResult.Body.String())
-	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("camera session did not start")
-	}
+	request(t, handler, http.MethodPost, "/api/v1/cameras",
+		`{"host":"192.168.10.20","stream_name":"living_room"}`, http.StatusAccepted)
+	waitForSignal(t, started, "camera session")
 
-	stop := newRequest(http.MethodPost, "/api/v1/cameras/192.168.10.20/stop", "")
-	stopResult := httptest.NewRecorder()
-	handler.ServeHTTP(stopResult, stop)
-	if stopResult.Code != http.StatusOK {
-		t.Fatalf("stop status = %d, body = %s", stopResult.Code, stopResult.Body.String())
-	}
+	request(t, handler, http.MethodPost, "/api/v1/cameras/192.168.10.20/stop", "", http.StatusOK)
 	if camera, found := manager.Camera("192.168.10.20"); !found || camera.State != stateStopped {
 		t.Fatalf("camera after stop = %+v, found = %v", camera, found)
 	}
 
-	start := newRequest(http.MethodPost, "/api/v1/cameras/192.168.10.20/start", "")
-	startResult := httptest.NewRecorder()
-	handler.ServeHTTP(startResult, start)
-	if startResult.Code != http.StatusAccepted {
-		t.Fatalf("start status = %d, body = %s", startResult.Code, startResult.Body.String())
-	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("camera session did not restart")
-	}
+	request(t, handler, http.MethodPost, "/api/v1/cameras/192.168.10.20/start", "", http.StatusAccepted)
+	waitForSignal(t, started, "camera restart")
 	if got := starts.Load(); got != 2 {
 		t.Fatalf("session starts = %d, want 2", got)
 	}
@@ -603,11 +533,23 @@ func newTestManager(t *testing.T, runner sessionRunner) *Manager {
 	return manager
 }
 
-func newRequest(method, path, body string) *http.Request {
-	if body == "" {
-		return httptest.NewRequest(method, path, nil)
+func request(t *testing.T, handler http.Handler, method, path, body string, want int) *httptest.ResponseRecorder {
+	t.Helper()
+	result := httptest.NewRecorder()
+	handler.ServeHTTP(result, httptest.NewRequest(method, path, strings.NewReader(body)))
+	if result.Code != want {
+		t.Fatalf("%s %s: status = %d, want %d, body = %s", method, path, result.Code, want, result.Body.String())
 	}
-	return httptest.NewRequest(method, path, strings.NewReader(body))
+	return result
+}
+
+func waitForSignal(t *testing.T, started <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatalf("%s did not start", description)
+	}
 }
 
 func waitForStart(t *testing.T, started <-chan int32, want int32) {

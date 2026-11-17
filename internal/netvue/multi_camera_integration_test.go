@@ -3,7 +3,6 @@ package netvue
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,10 +10,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
-	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
-	tscodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
 )
 
 // Each publisher and decoder has exactly one owner; cleanup also waits for it.
@@ -198,36 +193,12 @@ func multiCameraFrames(t *testing.T, ffmpeg, path, color, size string) [][]byte 
 		t.Fatal(err)
 	}
 	defer file.Close()
-	reader, err := mpegts.NewReader(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var track *mpegts.Track
-	for _, candidate := range reader.Tracks() {
-		if _, ok := candidate.Codec.(*tscodecs.H264); ok {
-			track = candidate
-			break
-		}
-	}
-	if track == nil {
-		t.Fatal("fixture has no H.264 track")
-	}
 	var frames [][]byte
-	reader.OnDataH264(track, func(_, _ int64, au [][]byte) error {
-		data, err := (h264.AnnexB(au)).Marshal()
-		if err == nil {
-			frames = append(frames, data)
-		}
-		return err
-	})
-	for {
-		err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read fixture: %v", err)
-		}
+	if err := readH264Frames(file, func(_ int64, accessUnit []byte) error {
+		frames = append(frames, accessUnit)
+		return nil
+	}); err != nil {
+		t.Fatalf("read fixture: %v", err)
 	}
 	if len(frames) != 20 {
 		t.Fatalf("fixture has %d frames, want 20", len(frames))

@@ -145,21 +145,6 @@ func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	reader, err := mpegts.NewReader(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var track *mpegts.Track
-	for _, candidate := range reader.Tracks() {
-		if _, ok := candidate.Codec.(*tscodecs.H264); ok {
-			track = candidate
-			break
-		}
-	}
-	if track == nil {
-		t.Fatal("synthetic transport stream has no H.264 track")
-	}
-
 	type probeResult struct {
 		output string
 		err    error
@@ -169,7 +154,7 @@ func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
 	startTime := time.Time{}
 	var firstPTS int64
 	timeDecoder := mpegts.NewTimeDecoder()
-	reader.OnDataH264(track, func(pts, _ int64, accessUnit [][]byte) error {
+	err = readH264Frames(file, func(pts int64, data []byte) error {
 		pts = timeDecoder.Decode(pts)
 		if startTime.IsZero() {
 			startTime = time.Now()
@@ -179,10 +164,6 @@ func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
 		targetTime := startTime.Add(time.Duration(relativePTS) * time.Second / 90_000)
 		if delay := time.Until(targetTime); delay > 0 {
 			time.Sleep(delay)
-		}
-		data, err := (h264.AnnexB(accessUnit)).Marshal()
-		if err != nil {
-			return err
 		}
 		timestamp := uint32(relativePTS / 90)
 		if err := publisher.Push(data, timestamp); err != nil {
@@ -204,14 +185,8 @@ func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
 		}
 		return nil
 	})
-	for {
-		err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read synthetic H.264 stream: %v", err)
-		}
+	if err != nil {
+		t.Fatalf("read synthetic H.264 stream: %v", err)
 	}
 	if !probeStarted {
 		t.Fatal("the publisher did not start")
@@ -230,6 +205,42 @@ func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
 	}
 	if publisher.PublishedFrames() < 10 {
 		t.Fatalf("published only %d access units", publisher.PublishedFrames())
+	}
+}
+
+// readH264Frames extracts Annex-B access units from a transport stream and
+// invokes onFrame synchronously as each frame is read.
+func readH264Frames(file *os.File, onFrame func(pts int64, accessUnit []byte) error) error {
+	reader, err := mpegts.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("create MPEG-TS reader: %w", err)
+	}
+	var track *mpegts.Track
+	for _, candidate := range reader.Tracks() {
+		if _, ok := candidate.Codec.(*tscodecs.H264); ok {
+			track = candidate
+			break
+		}
+	}
+	if track == nil {
+		return errors.New("MPEG-TS stream has no H.264 track")
+	}
+
+	reader.OnDataH264(track, func(pts, _ int64, nalus [][]byte) error {
+		accessUnit, err := (h264.AnnexB(nalus)).Marshal()
+		if err != nil {
+			return fmt.Errorf("marshal H.264 access unit: %w", err)
+		}
+		return onFrame(pts, accessUnit)
+	})
+	for {
+		err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read MPEG-TS stream: %w", err)
+		}
 	}
 }
 

@@ -66,22 +66,22 @@ func TestReadPacketRejectsTruncation(t *testing.T) {
 }
 
 func TestUnitIntRequiresJSONInteger(t *testing.T) {
-	for _, raw := range []string{`{"C":0}`, `{"C":4}`} {
-		units, err := ParseUnits([]byte("[" + raw + "]"))
+	for _, test := range []struct {
+		raw      string
+		wantOkay bool
+	}{
+		{raw: `{"C":0}`, wantOkay: true},
+		{raw: `{"C":4}`, wantOkay: true},
+		{raw: `{"C":0.0}`},
+		{raw: `{"C":"0"}`},
+		{raw: `{}`},
+	} {
+		units, err := ParseUnits([]byte("[" + test.raw + "]"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := unitInt(units[0], "C"); !ok {
-			t.Fatalf("expected integer in %s", raw)
-		}
-	}
-	for _, raw := range []string{`{"C":0.0}`, `{"C":"0"}`, `{}`} {
-		units, err := ParseUnits([]byte("[" + raw + "]"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := unitInt(units[0], "C"); ok {
-			t.Fatalf("accepted non-integer result in %s", raw)
+		if _, okay := unitInt(units[0], "C"); okay != test.wantOkay {
+			t.Fatalf("unitInt() accepted=%v for %s, want %v", okay, test.raw, test.wantOkay)
 		}
 	}
 	if _, err := ParseUnits([]byte(`[null]`)); !errors.Is(err, ErrProtocol) {

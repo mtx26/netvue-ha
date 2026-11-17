@@ -1,24 +1,18 @@
 # Netvue Bridge
 
-Passerelle locale **Netvue LAN → H.264/RTSP → Home Assistant**. Une seule
-application Go gère plusieurs caméras, avec une session supervisée indépendante
-par caméra et un serveur MediaMTX partagé. L'intégration Home Assistant reste
-en Python ; elle conserve les entrées de configuration et communique avec
-l'API locale du pont.
+Passerelle locale Netvue LAN → H.264/RTSP → Home Assistant. Une application
+Go gère plusieurs caméras et publie vers MediaMTX ; l'intégration HA Python
+conserve la configuration et pilote l'API locale.
 
 ## Installation
 
-Le [guide Docker/Portainer](deployment/go-portainer.md) décrit la stack avec
-deux variables obligatoires et l'installation de l'intégration HA associée.
-L'image est privée : Portainer doit pouvoir accéder à GHCR. La publication
-automatique préparée localement ne prendra effet qu'après transmission sur
-`main` et réussite du workflow. La stack partage le réseau host de HA et ne
-publie aucun port. L'ajout d'une caméra déclenche immédiatement une connexion
-réelle : lire d'abord les préconditions de transition du guide.
+Suivre le [guide Docker/Portainer](deployment/go-portainer.md). Le dépôt GitHub
+doit être public pour installer Netvue Local avec HACS ; l'image GHCR doit
+également être publique pour que Portainer la télécharge sans authentification.
 
 ## Développement
 
-Prérequis : Go 1.26 ou supérieur. Depuis la racine :
+Go 1.26+ ; depuis la racine :
 
 ```sh
 go test ./...
@@ -27,31 +21,21 @@ go vet ./...
 go build ./cmd/netvue-bridge
 ```
 
-Le [guide du pont](docs/bridge.md) décrit les commandes et les limites ;
-le [guide de développement](docs/development.md) explique les tests Go,
-Docker et Home Assistant. Voir aussi l'[architecture](docs/architecture.md),
-le [plan](docs/go-plan.md) et les [faits sur le protocole](docs/netvue-protocol.md).
+Voir le [guide du pont](docs/bridge.md), les
+[tests et outils de développement](docs/development.md),
+l'[architecture](docs/architecture.md), le [protocole observé](docs/netvue-protocol.md)
+et le [plan Go](docs/go-plan.md).
 
-## Organisation
+## Organisation et limites
 
-- `cmd/netvue-bridge/` : interface de commande.
-- `internal/netvue/` : protocole, sessions, vidéo et supervision.
-- `internal/manager/` : gestion multi-caméra et API HTTP locale.
-- `custom_components/netvue_local/` : intégration Home Assistant en Python.
-- `deployment/` : stack Portainer et configuration MediaMTX.
-- `tests/` : tests et scénario synthétique Home Assistant.
-- `docs/` : architecture, développement et plan.
-- `archive/python-bridge/` : ancien pont Python et ses fichiers historiques,
-  hors du fonctionnement et des workflows actifs.
-
-Les rapports historiques conservent les connaissances utiles. Les dossiers
+`cmd/netvue-bridge/` : commandes ; `internal/netvue/` : protocole et vidéo ;
+`internal/manager/` : sessions multi-caméra et API ; `custom_components/` :
+intégration HA ; `deployment/` : stack et MediaMTX ; `tests/` : tests
+synthétiques.
 `findings/`, `input/`, `tools/` et les captures peuvent contenir des données
 privées et sont ignorés par Git.
 
-## Limites et sécurité
-
-Les tests synthétiques ne démontrent ni la compatibilité de toutes les
-caméras ni la stabilité prolongée. L'API HTTP et RTSP sont limités au loopback,
-mais restent accessibles aux processus qui partagent cet espace réseau.
-Le protocole Netvue observé ne chiffre pas le login : utiliser un LAN de
-confiance. Ne jamais publier de secrets ni exposer les flux sur Internet.
+Les tests synthétiques ne prouvent ni compatibilité universelle ni stabilité
+prolongée. L'API et RTSP sont accessibles aux processus partageant le réseau
+hôte ; le protocole Netvue observé n'est pas chiffré. Utiliser un LAN de
+confiance et ne jamais exposer les services.

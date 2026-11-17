@@ -1,6 +1,6 @@
 # Développement et tests hors caméra
 
-Depuis la racine, avec Go 1.26 ou supérieur :
+Go 1.26+ ; depuis la racine :
 
 ```sh
 go test ./...
@@ -9,25 +9,21 @@ go vet ./...
 go build ./cmd/netvue-bridge
 ```
 
-Les tests Go ordinaires utilisent des données fictives et des pairs locaux.
-Les tests vidéo optionnels utilisent MediaMTX et FFmpeg ; voir le
-[guide du pont](./bridge.md) pour les variables et commandes. Ne fournissez
-jamais aux tests une adresse de caméra réelle.
+Les tests Go ordinaires utilisent des données fictives ou des pairs locaux.
+Le test vidéo MediaMTX/FFmpeg est documenté dans le
+[guide du pont](./bridge.md).
 
-## Tests Home Assistant
+## Home Assistant
 
-Les tests d'intégration Python sont conservés dans
-[`tests/`](../tests/). Les dépendances de test sont indiquées dans
-[`requirements-homeassistant.txt`](../tests/requirements-homeassistant.txt).
-Dans un environnement Python compatible isolé :
+Dépendances Python dans [`tests/requirements-homeassistant.txt`](../tests/requirements-homeassistant.txt) :
 
 ```sh
 python -m pip install -r tests/requirements-homeassistant.txt
 python -B -m unittest discover -s tests -p test_home_assistant_integration.py -v
 ```
 
-On peut aussi exécuter les tests avec l'image officielle Home Assistant en
-montant le dépôt en lecture seule et sans réseau :
+Optionnellement, lancer les tests dans l'image HA officielle, sans réseau et
+avec le dépôt en lecture seule :
 
 ```sh
 docker run --rm --network none \
@@ -37,34 +33,28 @@ docker run --rm --network none \
   -B -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-[`ha_integration_synthetic.py`](../tests/ha_integration_synthetic.py) teste
-également l'intégration HA et un flux fictif avec MediaMTX et FFmpeg. Il
-utilise un faux manager HTTP, pas le gestionnaire Go. Configurer les variables
+`tests/ha_integration_synthetic.py` vérifie HA et un flux fictif avec
+MediaMTX/FFmpeg via un faux manager HTTP (pas le gestionnaire Go). Définir
 `NETVUE_TEST_COMPONENT`, `NETVUE_TEST_MEDIAMTX`,
-`NETVUE_TEST_MEDIAMTX_CONFIG` et `NETVUE_TEST_FFMPEG` avec des chemins locaux ;
-la configuration MediaMTX fournie est
-[`deployment/mediamtx.yml`](../deployment/mediamtx.yml). Ce scénario exige
-une interface IPv4 pour Zeroconf ; en Docker, employer un réseau bridge
-`--internal` temporaire, sans ports publiés.
+`NETVUE_TEST_MEDIAMTX_CONFIG` et `NETVUE_TEST_FFMPEG` avec des chemins locaux.
+La config de référence est `deployment/mediamtx.yml`. Zeroconf exige une
+interface IPv4 ; sous Docker, utiliser un réseau bridge temporaire `--internal`,
+sans ports publiés.
 
-[`ha_go_e2e_synthetic.py`](../tests/ha_go_e2e_synthetic.py) va plus loin : il
-utilise le véritable binaire Go `serve`, un pair Netvue fabriqué, MediaMTX et
-Home Assistant. Le premier login fictif est rejeté ; le test vérifie l'erreur
-HA, la reprise explicite, la publication RTSP, une image JPEG et la suppression
-de la session. Le script est annulé après 120 secondes ; le nettoyage peut
-prolonger cette durée. Il doit être
-exécuté dans un conteneur de test sur un réseau Docker temporaire `--internal`,
-sans ports publiés : la caméra fictive utilise exclusivement l'IPv4 privée du
-conteneur lui-même. Il requiert FFmpeg dans l'image HA, un binaire Linux
-MediaMTX et le binaire Go Linux compilé depuis le code à tester. Monter les
-sources et binaires en lecture seule et définir `NETVUE_TEST_COMPONENT`,
-`NETVUE_TEST_MEDIAMTX`, `NETVUE_TEST_MEDIAMTX_CONFIG` et
-`NETVUE_TEST_GO_BRIDGE` avec les chemins **dans le conteneur**. Supprimer le
-réseau temporaire après le test. Aucune adresse de caméra réelle ne doit être
-fournie.
+`tests/ha_go_e2e_synthetic.py` teste le vrai binaire Go `serve`, un pair Netvue
+fictif, MediaMTX et HA : rejet du premier login, erreur HA, reprise explicite,
+RTSP, image JPEG et suppression de session. Le script est annulé après 120 s,
+hors nettoyage. Exécuter uniquement dans un conteneur sur un réseau Docker
+temporaire `--internal`, sans ports publiés ; le pair utilise l'IPv4 privée du
+conteneur. Requiert FFmpeg dans l'image HA, MediaMTX Linux et le binaire Go
+Linux compilé depuis le code testé. Monter sources et binaires en lecture seule,
+configurer les quatre variables ci-dessous avec chemins **dans le conteneur**,
+puis supprimer le réseau :
+`NETVUE_TEST_COMPONENT`, `NETVUE_TEST_MEDIAMTX`,
+`NETVUE_TEST_MEDIAMTX_CONFIG`, `NETVUE_TEST_GO_BRIDGE`.
 
-Exemple depuis la racine du dépôt sous Linux, après avoir défini
-`MEDIAMTX_BIN` comme chemin absolu d'un binaire Linux/amd64 MediaMTX 1.21.4 :
+Exemple Linux après définition de `MEDIAMTX_BIN` (binaire Linux/amd64
+MediaMTX 1.21.4) :
 
 ```sh
 (
@@ -89,19 +79,13 @@ docker run --rm --network "$network" \
 )
 ```
 
-Le réseau est créé uniquement pour le test et supprimé à la sortie du sous-shell.
-La commande ne doit pas être exécutée sur un réseau de production.
+Ces tests utilisent un réseau isolé, des données fictives et des ports libres.
+Les résultats ne prouvent ni la compatibilité matérielle ni la stabilité
+prolongée. Expurger les journaux avant partage.
 
-## Docker et diagnostic
+## Docker
 
-Le [guide Portainer](../deployment/go-portainer.md) décrit la publication de
-l'image et le rendu de la stack sans déploiement. Le workflow teste Go et HA,
-puis publie l'image et l'artefact HA associé sur `main`. Le test
-`test_portainer_config.py` compare les variables MediaMTX de la stack avec la
-configuration de référence. Le fichier `.dockerignore` n'envoie que les
-sources Go nécessaires au build.
-
-Utiliser des données fictives, des ports libres et des journaux expurgés.
-Ne pas modifier de services de production ni contacter de caméra sans
-autorisation explicite. Les résultats hors ligne ne prouvent pas la stabilité
-ni la compatibilité du matériel réel.
+Le [guide Portainer](../deployment/go-portainer.md) explique l'image et le
+rendu local de stack, sans déploiement. Le workflow teste Go et HA puis publie
+sur `main` ; `test_portainer_config.py` compare les variables MediaMTX à la
+référence. `.dockerignore` limite le contexte aux sources Go requises.

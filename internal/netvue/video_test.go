@@ -1,6 +1,7 @@
 package netvue
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ func TestPublisherRejectsConflictingParameterSetsWithoutChangingState(t *testing
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("Push() error = %v, want ErrProtocol", err)
 	}
-	if string(publisher.sps) != string(oldSPS) || string(publisher.pps) != string(oldPPS) {
+	if !bytes.Equal(publisher.sps, oldSPS) || !bytes.Equal(publisher.pps, oldPPS) {
 		t.Fatalf("rejected access unit changed stored parameters: SPS=%x PPS=%x", publisher.sps, publisher.pps)
 	}
 	if !publisher.started {
@@ -69,7 +70,7 @@ func TestPublisherTracksRepeatedParameterAndResolutionChanges(t *testing.T) {
 			t.Fatalf("stored SPS for %dx%d is invalid: %v", test.width, test.height, err)
 		}
 		if parsed.Width() != test.width || parsed.Height() != test.height ||
-			string(publisher.pps) != string(test.pps) {
+			!bytes.Equal(publisher.pps, test.pps) {
 			t.Fatalf("stored parameters = %dx%d / %x, want %dx%d / %x",
 				parsed.Width(), parsed.Height(), publisher.pps, test.width, test.height, test.pps)
 		}
@@ -166,8 +167,8 @@ func TestPrependParametersWithoutLosingAccessUnit(t *testing.T) {
 	pps := []byte{byte(h264.NALUTypePPS), 2}
 	idr := []byte{byte(h264.NALUTypeIDR), 3}
 	got := prependParameters(h264.AnnexB{idr}, sps, pps)
-	if len(got) != 3 || string(got[0]) != string(sps) ||
-		string(got[1]) != string(pps) || string(got[2]) != string(idr) {
+	if len(got) != 3 || !bytes.Equal(got[0], sps) ||
+		!bytes.Equal(got[1], pps) || !bytes.Equal(got[2], idr) {
 		t.Fatalf("unexpected access unit: %x", got)
 	}
 }

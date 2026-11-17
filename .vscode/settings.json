@@ -1,1 +1,12 @@
-{}
+{
+    "i18n-ally.localesPaths": [
+        "findings/decompiled/sources/org/bouncycastle/i18n",
+        "findings/decompiled/sources/org/intellij/lang",
+        "findings/decompiled/sources/org/checkerframework/checker/i18n",
+        "findings/decompiled/resources/assets/ui/helps/static/i18n",
+        "findings/decompiled/resources/org/apache/commons/codec/language",
+        "findings/decompiled/sources/com/stripe/android/view/i18n",
+        "findings/decompiled/sources/org/apache/commons/beanutils/locale",
+        "findings/decompiled/sources/org/apache/commons/codec/language"
+    ]
+}

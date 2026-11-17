@@ -45,14 +45,21 @@ func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 }
 
 func TestValidateLANIPv4RejectsPublicAndNonIPv4(t *testing.T) {
-	for _, address := range []string{"203.0.113.10", "2001:db8::1", "not-an-address"} {
-		if _, err := validateLANIPv4(address); err == nil {
-			t.Fatalf("accepted address %q", address)
-		}
-	}
-	for _, address := range []string{"192.168.1.12", "10.1.2.3", "127.0.0.1"} {
-		if _, err := validateLANIPv4(address); err != nil {
-			t.Fatalf("rejected address %q: %v", address, err)
+	for _, test := range []struct {
+		address string
+		valid   bool
+	}{
+		{address: "203.0.113.10"},
+		{address: "2001:db8::1"},
+		{address: "not-an-address"},
+		{address: "192.168.1.12", valid: true},
+		{address: "10.1.2.3", valid: true},
+		{address: "127.0.0.1", valid: true},
+	} {
+		_, err := validateLANIPv4(test.address)
+		if gotValid := err == nil; gotValid != test.valid {
+			t.Fatalf("validateLANIPv4(%q) valid=%v, want %v (err=%v)",
+				test.address, gotValid, test.valid, err)
 		}
 	}
 }

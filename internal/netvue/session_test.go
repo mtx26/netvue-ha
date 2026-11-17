@@ -11,9 +11,7 @@ import (
 )
 
 func TestLiveRequestIsOneExplicitCommand(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, server := testPipe(t)
 	result := make(chan error, 1)
 	go func() {
 		packet, err := ReadPacket(server)
@@ -46,9 +44,7 @@ func TestLiveRequestIsOneExplicitCommand(t *testing.T) {
 }
 
 func TestReceiveLiveRejectsMediaBeforeConfirmation(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, server := testPipe(t)
 	publisher, err := newVideoPublisher(context.Background(), "rtsp://127.0.0.1:8554/netvue")
 	if err != nil {
 		t.Fatal(err)
@@ -71,9 +67,7 @@ func contextWithTimeout(t *testing.T) context.Context {
 }
 
 func TestReceiveLiveStartupDeadlineIsNotExtendedByCommands(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, server := testPipe(t)
 	command, err := EncodeCommand([]map[string]any{{"A": 2, "V": 2, "C": 0}})
 	if err != nil {
 		t.Fatal(err)
@@ -101,9 +95,7 @@ func TestReceiveLiveStartupDeadlineIsNotExtendedByCommands(t *testing.T) {
 }
 
 func TestReceiveLiveCancellationWakesBlockedRead(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, server := testPipe(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	publisher := &generationTestPublisher{total: 1, current: 1, generation: 1, pushed: make(chan struct{})}
@@ -133,9 +125,7 @@ func TestReceiveLiveCancellationWakesBlockedRead(t *testing.T) {
 }
 
 func TestReceiveLiveHandlesCancellationRaceWithReadDeadline(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, _ := testPipe(t)
 	conn := &readDeadlineRaceConn{
 		Conn:    client,
 		entered: make(chan struct{}),
@@ -161,9 +151,7 @@ func TestReceiveLiveHandlesCancellationRaceWithReadDeadline(t *testing.T) {
 }
 
 func TestReceiveLiveDoesNotConvertParentDeadlineToSuccess(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, server := testPipe(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	publisher := &generationTestPublisher{total: 1, current: 1, generation: 1}
@@ -190,9 +178,7 @@ func TestReceiveLiveReclassifiesPushErrorWhenContextEnds(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			client, server := net.Pipe()
-			defer client.Close()
-			defer server.Close()
+			client, server := testPipe(t)
 			ctx, cancel := context.WithCancelCause(context.Background())
 			defer cancel(context.Canceled)
 			publisher := &blockedPushPublisher{
@@ -232,9 +218,7 @@ func TestReceiveLiveReclassifiesPushErrorWhenContextEnds(t *testing.T) {
 }
 
 func TestReceiveLiveRejectsInactivePublicationAtSessionEnd(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, server := testPipe(t)
 	publisher := &generationTestPublisher{resetOnly: true}
 	go func() {
 		acknowledgment, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 2, "C": 0}})
@@ -255,9 +239,7 @@ func TestReceiveLiveRejectsInactivePublicationAtSessionEnd(t *testing.T) {
 }
 
 func TestReceiveLiveTracksNewPublicationGeneration(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	client, server := testPipe(t)
 	publisher := &generationTestPublisher{}
 	go func() {
 		acknowledgment, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 2, "C": 0}})
@@ -283,6 +265,16 @@ type generationTestPublisher struct {
 	generation uint64
 	resetOnly  bool
 	pushed     chan struct{}
+}
+
+func testPipe(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	return client, server
 }
 
 type blockedPushPublisher struct {

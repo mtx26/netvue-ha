@@ -1,50 +1,36 @@
-# Architecture Netvue Bridge
-
-Une seule application Go gère les caméras et un MediaMTX partagé :
+# Architecture
 
 ```text
-Home Assistant (config entries, entités)
-    | HTTP loopback
+Home Assistant (configuration et entités)
+    | HTTP sur loopback
     v
-gestionnaire Go -- une session et un superviseur par caméra --> LAN Netvue
+gestionnaire Go -- session + superviseur par caméra --> LAN Netvue
     | H.264 / RTSP TCP
     v
-MediaMTX loopback --> Home Assistant Stream
+MediaMTX sur loopback --> Home Assistant Stream
 ```
 
-- [`cmd/netvue-bridge/`](../cmd/netvue-bridge/) fournit `test`, `run` et
-  `serve` ; `serve` démarre le gestionnaire HTTP.
-- [`internal/manager/`](../internal/manager/) gère les sessions distinctes et
-  les opérations HTTP d'ajout, consultation, arrêt, reprise et suppression.
-- [`internal/netvue/`](../internal/netvue/) réalise découverte unicast,
-  authentification, réception H.264, publication RTSP et supervision avec
-  backoff. Il ne dépend pas de Home Assistant.
-- [`custom_components/netvue_local/`](../custom_components/netvue_local/)
-  fournit les config entries et entités HA et sonde le RTSP ; il n'implémente
-  pas le protocole caméra.
-- [`deployment/go-stack.yaml`](../deployment/go-stack.yaml) déploie une
-  instance Go et MediaMTX sur le réseau host du même nœud.
+- `cmd/netvue-bridge/` fournit `test`, `run` et `serve`.
+- `internal/manager/` gère les sessions et l'API d'ajout, état, arrêt,
+  reprise et suppression.
+- `internal/netvue/` isole découverte unicast, authentification, transport
+  vidéo, publication et supervision ; il ne dépend pas de HA.
+- `custom_components/netvue_local/` gère les entrées et entités HA ; seul Go
+  parle le protocole caméra.
+- `deployment/go-stack.yaml` lance Go et MediaMTX sur le réseau host du nœud.
 
-HA est la source persistante de configuration ; le registre Go est volatile.
-Après redémarrage du pont, HA ajoute à nouveau une entrée absente, sans
-relancer une session existante arrêtée ou en échec. La suppression HA retire
-la session. La saisie de l'IPv4 caméra est manuelle ; il n'y a pas de
-recherche de candidats LAN depuis HA.
+HA conserve les entrées ; le registre Go est volatil. Après redémarrage du
+pont, HA réajoute une entrée absente, mais ne relance pas une session présente
+arrêtée ou en échec. La suppression HA retire la session. L'adresse IPv4 est
+saisie manuellement ; HA ne recherche pas de candidats.
 
-Le gestionnaire expose l'état de chaque superviseur et une catégorie d'erreur
-non sensible en cas d'échec définitif. HA les affiche dans un capteur de
-diagnostic et propose un bouton de reprise explicite pour les sessions en
-échec ou arrêtées. Le capteur RTSP reste indépendant : une session supervisée
-peut être en attente de reconnexion et ne garantit pas un flux disponible.
-Les causes des erreurs transitoires réessayées ne sont pas encore exposées.
+Le gestionnaire expose l'état du superviseur et, en cas d'échec définitif, une
+catégorie d'erreur non sensible. HA fournit un capteur de session, un bouton
+de reprise explicite et un capteur RTSP indépendant : une session supervisée
+ne garantit pas un flux, et les causes transitoires ne sont pas exposées.
 
-L'API écoute sur `127.0.0.1:8765` et MediaMTX sur `127.0.0.1:8554`, sans
-authentification distincte : les processus partageant le réseau hôte peuvent
-y accéder. Le protocole Netvue observé n'est pas chiffré. Voir le
-[guide Portainer](../deployment/go-portainer.md), le
-[protocole](./netvue-protocol.md) et le [plan Go](./go-plan.md).
-
-Le code Python historique du pont est isolé dans
-[`archive/python-bridge/`](../archive/python-bridge/), hors des workflows et
-du déploiement actifs. Les observations et rapports historiques restent des
-preuves, pas une description du fonctionnement actuel.
+L'API `127.0.0.1:8765` et MediaMTX `127.0.0.1:8554` n'ont pas
+d'authentification distincte ; tout processus du même espace réseau peut y
+accéder. Le protocole Netvue observé n'est pas chiffré. Détails et limites :
+[pont](./bridge.md), [protocole](./netvue-protocol.md),
+[déploiement](../deployment/go-portainer.md) et [plan Go](./go-plan.md).
