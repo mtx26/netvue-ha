@@ -12,3 +12,4 @@ tools/
 *.img
 __pycache__/
 *.pyc
+*.exe

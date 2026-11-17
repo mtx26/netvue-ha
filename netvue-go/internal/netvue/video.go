@@ -34,7 +34,9 @@ const (
 )
 
 var (
-	ErrVideoStartup = errors.New("H.264 startup failed")
+	ErrVideoStartup  = errors.New("H.264 startup failed")
+	ErrVideoNotReady = errors.New("H.264 stream is not ready")
+	ErrVideoFatal    = errors.New("fatal video publisher error")
 )
 
 type timestampClock struct {
@@ -159,7 +161,7 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 			return nil
 		}
 		if len(publisher.sps) == 0 || len(publisher.pps) == 0 {
-			return fmt.Errorf("%w: IDR arrived before SPS/PPS", ErrVideoStartup)
+			return fmt.Errorf("%w: IDR arrived before SPS/PPS", ErrVideoNotReady)
 		}
 		if err := publisher.start(); err != nil {
 			return err
@@ -251,7 +253,7 @@ func (publisher *videoPublisher) start() error {
 		err := contextError(startCtx)
 		if err != nil && publisher.ctx.Err() == nil &&
 			errors.Is(err, context.DeadlineExceeded) && !publisher.startDeadline.IsZero() {
-			return fmt.Errorf("%w: RTSP setup exceeded video startup deadline", ErrVideoStartup)
+			return fmt.Errorf("%w: RTSP setup exceeded video startup deadline: %w", ErrVideoStartup, err)
 		}
 		return err
 	}
@@ -263,7 +265,7 @@ func (publisher *videoPublisher) start() error {
 	}
 	encoder, err := h264Format.CreateEncoder()
 	if err != nil {
-		return fmt.Errorf("%w: create H.264 RTP encoder: %v", ErrVideoStartup, err)
+		return fmt.Errorf("%w: create H.264 RTP encoder: %w", ErrVideoFatal, err)
 	}
 	media := &description.Media{
 		Type:    description.MediaTypeVideo,
@@ -271,7 +273,7 @@ func (publisher *videoPublisher) start() error {
 	}
 	var initialTimestamp [4]byte
 	if _, err := rand.Read(initialTimestamp[:]); err != nil {
-		return fmt.Errorf("%w: generate RTP timestamp base: %v", ErrVideoStartup, err)
+		return fmt.Errorf("%w: generate RTP timestamp base: %w", ErrVideoFatal, err)
 	}
 	transport := gortsplib.ProtocolTCP
 	client := &gortsplib.Client{
@@ -290,12 +292,12 @@ func (publisher *videoPublisher) start() error {
 	}
 	u, err := base.ParseURL(publisher.url)
 	if err != nil {
-		return fmt.Errorf("%w: parse RTSP publication URL: %w", ErrVideoStartup, err)
+		return fmt.Errorf("%w: parse RTSP publication URL: %w", ErrVideoFatal, err)
 	}
 	client.Scheme = u.Scheme
 	client.Host = u.Host
 	if err := client.Start(); err != nil {
-		return fmt.Errorf("%w: start RTSP client: %w", ErrVideoStartup, err)
+		return fmt.Errorf("%w: start RTSP client: %w", ErrVideoFatal, err)
 	}
 	// Closing the gortsplib client interrupts any request blocked on RTSP I/O.
 	stopOnCancel := context.AfterFunc(publisher.ctx, func() {
@@ -320,23 +322,25 @@ func (publisher *videoPublisher) start() error {
 	}()
 	desc := &description.Session{Medias: []*description.Media{media}}
 	// Keep each RTSP request interruptible by the session context.
-	if _, err := client.Announce(u, desc); err != nil {
+	response, err := client.Announce(u, desc)
+	if err != nil {
 		if ctxErr := startupContextError(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("%w: announce RTSP publication: %w", ErrVideoStartup, err)
+		return rtspStartupError("announce RTSP publication", response, err)
 	}
 	if err := client.SetupAll(u, desc.Medias); err != nil {
 		if ctxErr := startupContextError(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("%w: set up RTSP publication: %w", ErrVideoStartup, err)
+		return rtspStartupError("set up RTSP publication", nil, err)
 	}
-	if _, err := client.Record(); err != nil {
+	response, err = client.Record()
+	if err != nil {
 		if ctxErr := startupContextError(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("%w: start RTSP recording: %w", ErrVideoStartup, err)
+		return rtspStartupError("start RTSP recording", response, err)
 	}
 	if err := startupContextError(); err != nil {
 		return err
@@ -370,6 +374,22 @@ func closeRTSPClient(client *gortsplib.Client) {
 		_ = conn.Close()
 	}
 	client.Close()
+}
+
+func rtspStartupError(operation string, response *base.Response, err error) error {
+	if response != nil {
+		if response.StatusCode >= base.StatusInternalServerError && response.StatusCode < 600 {
+			return fmt.Errorf("%w: %s (RTSP status %d): %w", ErrVideoStartup, operation, response.StatusCode, err)
+		}
+		if response.StatusCode >= base.StatusBadRequest {
+			return fmt.Errorf("%w: %s (RTSP status %d): %w", ErrVideoFatal, operation, response.StatusCode, err)
+		}
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %s: %w", ErrVideoStartup, operation, err)
+	}
+	return fmt.Errorf("%w: %s: %w", ErrVideoFatal, operation, err)
 }
 
 func (publisher *videoPublisher) stop() {

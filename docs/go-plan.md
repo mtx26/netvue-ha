@@ -34,8 +34,9 @@ n'est ni remplacée ni supprimée pendant cette reprise.
   est requis avant de demander le flux.
 - Une demande LIVE, réception et validation de trames H.264 bornées.
 - Publication RTSP/TCP vers un serveur local tel que MediaMTX.
-- CLI explicite avec adresse source, caméra, URL RTSP et durée ; aucune
-  configuration implicite ne doit contacter un appareil.
+- CLI explicite : `test` exécute une session bornée et `run` supervise une
+  session continue jusqu'à l'arrêt ; aucune commande implicite ne contacte un
+  appareil.
 - Tests synthétiques du cadrage, des résultats d'authentification, des délais,
   des erreurs H.264 et de la publication.
 
@@ -48,9 +49,9 @@ sur RTSP/TCP et décodé par un outil indépendant ; aucune caméra n'est contac
 
 - Configuration documentée, plusieurs caméras indépendantes et une session
   active par appareil.
-- Supervision unique avec arrêt, délais de silence vidéo, backoff borné et
-  erreurs d'authentification bloquantes ; pas de budgets persistants hérités
-  sans besoin démontré ni migration sûre.
+- Extension du superviseur unique au multi-caméra, avec une session active par
+  appareil ; pas de budgets persistants hérités sans besoin démontré ni
+  migration sûre.
 - Gestion de la reconnexion, des changements SPS/PPS/résolution et des
   interruptions, caractérisée par des tests de bout en bout synthétiques.
 - API de contrôle loopback ou mécanisme Home Assistant retenu après
@@ -98,10 +99,10 @@ doit être explicitement caractérisé.
 ## Architecture cible
 
 ```text
-CLI / configuration explicite
+CLI test/run / configuration explicite
           |
           v
-session unique et bornée
+superviseur unique (run) ou session bornée (test)
    | découverte UDP -> endpoint LAN -> login explicite -> demande LIVE
    | réception TCP -> trames de commande / média
    v
@@ -115,10 +116,9 @@ client publieur gortsplib -- RTSP/TCP --> MediaMTX local
 
 Le paquet `internal/netvue` porte les détails spécifiques aux trames Netvue et
 au cycle de session. Le traitement Annex B, l'horloge et la publication RTSP
-restent séparés des messages de commande. Le CLI possède le cycle de vie d'une
-session ; la reconnexion ne sera ajoutée qu'après tests de fermeture et de
-backoff. Aucun superviseur, gestionnaire HTTP ou état persistant n'est ajouté
-au MVP.
+restent séparés des messages de commande. `test` exécute une session bornée ;
+`run` délègue sa reconnexion à un unique superviseur séquentiel. Aucun
+gestionnaire HTTP ni état persistant n'est ajouté.
 
 ## Avancement et décisions ouvertes
 
@@ -129,6 +129,12 @@ au MVP.
   les remplacements successifs de SPS/PPS sans mutation partielle sur entrée
   rejetée et la fermeture du publisher. Un pair loopback vérifie que le refus
   d'authentification arrête le flux avant LIVE.
+- **Phase 25 :** le CLI offre `test` (session bornée) et `run` (supervision
+  continue), avec un seul cycle retryable, backoff plafonné et arrêt bloquant
+  sur refus d'authentification, configuration invalide ou erreur critique.
+  Les réponses RTSP 5xx sont transitoires, les 4xx bloquantes ; SIGINT/SIGTERM
+  et annulation ferment le cycle courant avant la sortie. `test` exige une
+  durée positive sans plafond ; `run` n'a pas d'échéance de session.
 - **Vérifié hors ligne :** génération synthétique H.264, publication vers un
   MediaMTX temporaire lié à loopback et décodage de dix images par FFmpeg ;
   tests unitaires, tests avec le détecteur de courses et `go vet` réussis.
@@ -141,8 +147,8 @@ au MVP.
   démarrage, l'annulation RTSP et le préflight IPv6.
 - **En cours :** images B, fragments et validation indépendante du décodage
   après les changements du moteur restent à caractériser.
-- **Ensuite :** concevoir le superviseur unique et le multi-caméra après
-  stabilisation des limites vidéo hors ligne.
+- **Ensuite :** caractériser les interactions avec MediaMTX/FFmpeg après
+  stabilisation du moteur, puis étendre l'architecture au multi-caméra.
 - **Ouvert :** disponibilité du flux sans cloud, protocole réellement utilisé
   par la caméra 1, gestion générique des images B et fragments, stabilité
   continue, version Home Assistant et configuration de déploiement Go.
@@ -171,3 +177,11 @@ au MVP.
   remplacements successifs et trois générations RTSP loopback. La
   lecture/décodage par MediaMTX/FFmpeg n'a pas été exécutée dans cette phase :
   les deux binaires et variables d'intégration sont absents.
+- **Phase 25 :** `go test ./...`, `go test -race ./...`, `go vet ./...` et
+  `go build ./cmd/netvue-bridge` réussissent. Les tests caractérisent la
+  classification des erreurs, les reconnexions séquentielles, le backoff et
+  son reset, les erreurs bloquantes, l'arrêt pendant le délai, la durée nulle
+  de session, les durées `test` positives supérieures à 24 heures et les
+  commandes `test`/`run`. La compilation Linux/amd64 avec
+  `CGO_ENABLED=0` réussit ; la cross-compilation cgo n'est pas disponible faute
+  d'en-têtes Linux sur l'hôte Windows. MediaMTX et FFmpeg restent absents.

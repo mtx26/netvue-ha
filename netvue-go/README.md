@@ -19,8 +19,9 @@ Depuis `netvue-go/` :
 
 ```text
 go test ./...
+go test -race ./...
 go vet ./...
-go build -o netvue-bridge ./cmd/netvue-bridge
+go build ./cmd/netvue-bridge
 ```
 
 Le test de publication/décodage local peut être activé ainsi dans PowerShell,
@@ -35,33 +36,49 @@ go test -run TestMediaMTXPublicationDecodesWithFFmpeg -v ./internal/netvue
 Les autres tests de transport utilisent des réponses fabriquées ou un pair de
 boucle locale. Ils ne contactent pas les caméras.
 
-## Session unique
+## Commandes
 
-La commande `session` envoie effectivement une requête de découverte LAN,
-ouvre une connexion au endpoint annoncé, effectue un login puis demande le
-flux. Elle doit être utilisée uniquement avec une autorisation spécifique
-pour l'appareil concerné. Elle ne contient pas de mode simulation présenté
-comme un accès réel.
+`test` effectue une session bornée ; `run` supervise une session jusqu'à l'arrêt
+du programme. Les deux commandes appellent le même moteur de session. Elles
+envoient réellement une découverte LAN, ouvrent une connexion au endpoint
+annoncé, effectuent le login puis demandent le flux. À utiliser uniquement
+avec une autorisation spécifique pour l'appareil concerné ; aucun mode de
+simulation n'est présenté comme un accès réel.
 
 ```text
-netvue-bridge session \
+netvue-bridge test \
   --source 192.168.10.10 \
   --camera 192.168.10.20 \
   --rtsp rtsp://127.0.0.1:8554/netvue_test \
   --duration 15s
 ```
 
-Les valeurs sont des exemples. La durée est obligatoire, positive et limitée à
-24 heures ; l'interruption clavier ferme la session. Le pont n'écrit pas de
-vidéo ni de clé sur disque et ne journalise pas la clé obtenue pendant la
-découverte. Les erreurs d'authentification arrêtent l'essai avant LIVE.
+```text
+netvue-bridge run \
+  --source 192.168.10.10 \
+  --camera 192.168.10.20 \
+  --rtsp rtsp://127.0.0.1:8554/netvue_test
+```
+
+Les valeurs sont des exemples. `test` exige une durée explicite strictement
+positive, sans plafond maximal ; la session s'arrête à son échéance ou à
+l'annulation du contexte. `run` continue jusqu'à Ctrl+C ou SIGTERM ; il relance
+les erreurs récupérables séquentiellement après 2, 4, 8, 16 puis 30 secondes
+au maximum.
+Après cinq minutes de fonctionnement d'une session, le délai repart à deux
+secondes. Les refus d'authentification, les configurations invalides et les
+erreurs critiques arrêtent le programme. Une seule session caméra est active
+à la fois. Le pont n'écrit pas de vidéo ni de clé sur disque et ne journalise
+pas la clé obtenue pendant la découverte.
+
 L'URL RTSP de sortie doit avoir un hôte loopback, un port explicite et un
 chemin ; la publication force RTSP sur TCP.
 
-La durée couvre aussi le préflight RTSP local, la découverte, l'authentification
-et l'établissement de la publication. Le démarrage vidéo a une échéance absolue
-de cinq secondes, qui n'est pas repoussée par les commandes seules ; l'annulation
-du contexte ferme les connexions Netvue et RTSP.
+Pour `test`, la durée couvre aussi le préflight RTSP local, la découverte,
+l'authentification et l'établissement de la publication. Le démarrage vidéo a
+une échéance absolue de cinq secondes, qui n'est pas repoussée par les
+commandes seules. Pour `run`, le contexte reste actif sans échéance de session.
+L'annulation ferme les connexions Netvue et RTSP.
 
 Le protocole Netvue observé ne chiffre pas la découverte ni le login : la clé
 locale envoyée au login peut être visible à un observateur du LAN. Son
@@ -71,8 +88,8 @@ cryptographique au transport caméra.
 
 ## Limites actuelles
 
-- Une caméra et une session bornée par processus ; pas de superviseur,
-  reconnexion automatique, API de contrôle, configuration multi-caméra ou
+- Une caméra par processus. `run` fournit un seul superviseur et une reprise
+  séquentielle bornée ; pas de configuration multi-caméra, API de contrôle ou
   intégration Home Assistant Go.
 - Le démarrage attend SPS, PPS et IDR ; le SPS est contrôlé avant et après
   recadrage avec des calculs bornés. Un changement de paramètres ferme puis

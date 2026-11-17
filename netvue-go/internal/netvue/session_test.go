@@ -92,7 +92,7 @@ func TestReceiveLiveStartupDeadlineIsNotExtendedByCommands(t *testing.T) {
 	started := time.Now()
 	err = receiveLiveWithTimeouts(ctx, client, &generationTestPublisher{},
 		80*time.Millisecond, time.Second)
-	if !errors.Is(err, ErrVideoStartup) {
+	if !errors.Is(err, ErrVideoNotReady) {
 		t.Fatalf("expected absolute video startup timeout, got %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {

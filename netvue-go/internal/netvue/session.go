@@ -13,27 +13,34 @@ const (
 	connectTimeout      = 2 * time.Second
 	videoSilenceTimeout = 3 * time.Second
 	videoStartupTimeout = 5 * time.Second
-	maxSessionDuration  = 24 * time.Hour
 )
 
 var (
-	ErrStreamInterrupted = errors.New("Netvue video stream interrupted")
-	// Only expiration of this session's own duration is a clean receive-loop end.
+	ErrStreamInterrupted      = errors.New("Netvue video stream interrupted")
 	errSessionDurationElapsed = errors.New("Netvue session duration elapsed")
 )
 
-// RunSession performs one explicit, time-bounded camera session.
-func RunSession(ctx context.Context, source, target, rtspURL string, duration time.Duration) error {
-	if duration <= 0 || duration > maxSessionDuration {
-		return fmt.Errorf("%w: session duration must be between zero and 24 hours", ErrProtocol)
+func validateSessionDuration(duration time.Duration) error {
+	if duration < 0 {
+		return fmt.Errorf("%w: session duration must be non-negative", ErrProtocol)
 	}
-	// The same deadline bounds local setup, discovery, authentication, LIVE and RTSP.
-	sessionCtx, cancel := context.WithTimeoutCause(ctx, duration, errSessionDurationElapsed)
-	defer cancel()
-	if err := validateLocalRTSPURL(rtspURL); err != nil {
+	return nil
+}
+
+// RunSession runs one session; a zero duration runs until ctx ends.
+func RunSession(ctx context.Context, source, target, rtspURL string, duration time.Duration) error {
+	if err := validateSessionDuration(duration); err != nil {
 		return err
 	}
-	if err := checkRTSPListener(sessionCtx, rtspURL); err != nil {
+	var sessionCtx context.Context
+	var cancel context.CancelFunc
+	if duration == 0 {
+		sessionCtx, cancel = context.WithCancel(ctx)
+	} else {
+		sessionCtx, cancel = context.WithTimeoutCause(ctx, duration, errSessionDurationElapsed)
+	}
+	defer cancel()
+	if err := validateLocalRTSPURL(rtspURL); err != nil {
 		return err
 	}
 	sourceIP, err := validateLANIPv4(source)
@@ -46,6 +53,9 @@ func RunSession(ctx context.Context, source, target, rtspURL string, duration ti
 	}
 	if sourceIP.Equal(targetIP) {
 		return fmt.Errorf("%w: source and camera addresses must differ", ErrProtocol)
+	}
+	if err := checkRTSPListener(sessionCtx, rtspURL); err != nil {
+		return err
 	}
 
 	device, err := discover(sessionCtx, sourceIP.String(), targetIP.String())
@@ -184,7 +194,7 @@ func receiveLiveWithTimeouts(
 			return err
 		}
 		if publisher.CurrentPublicationFrames() == 0 && !now.Before(startupDeadline) {
-			return fmt.Errorf("%w: no video publication before startup deadline", ErrVideoStartup)
+			return fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)
 		}
 		deadline := now.Add(silenceTimeout)
 		if !lastVideo.IsZero() {
@@ -210,7 +220,7 @@ func receiveLiveWithTimeouts(
 			var networkError net.Error
 			if errors.As(err, &networkError) && networkError.Timeout() {
 				if publisher.CurrentPublicationFrames() == 0 && !time.Now().Before(startupDeadline) {
-					return fmt.Errorf("%w: no video publication before startup deadline", ErrVideoStartup)
+					return fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)
 				}
 				return fmt.Errorf("%w: no video received before timeout", ErrStreamInterrupted)
 			}
@@ -291,7 +301,7 @@ func receiveLiveWithTimeouts(
 					startupDeadline = now.Add(startupTimeout)
 				}
 				if !now.Before(startupDeadline) {
-					return fmt.Errorf("%w: no IDR after startup or parameter change", ErrVideoStartup)
+					return fmt.Errorf("%w: no IDR after startup or parameter change", ErrVideoNotReady)
 				}
 			}
 
