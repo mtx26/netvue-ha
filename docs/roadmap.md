@@ -21,7 +21,8 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Supervision | Reconnexion et fonctionnement continu |
 | 🧪 | Multi-caméra | Sessions indépendantes |
 | 🧪 | Home Assistant | Intégration complète |
-| 🧪 | Découverte LAN | Recherche et sélection depuis HA ; testée hors ligne |
+| 🧪 | Découverte LAN | E2E broadcast synthétique confirmé en CI ; réseau et caméra réels non vérifiés |
+| ✅ | CI multi-composants | Go/race/vet, 39 tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) |
 | ⬜ | Stabilité 24 h/24 | Validation prolongée |
 | ⬜ | Optimisation | CPU, RAM et latence |
 
@@ -64,7 +65,7 @@ fiable, performante, modulaire et simple à installer.
 | ⬜ | Configuration HA | Simplifier les réglages |
 | ⬜ | Alertes de panne | Signaler les caméras indisponibles |
 | ⬜ | Dashboard | Centraliser les informations |
-| ⬜ | Installation Portainer | Installation et mises à jour simples |
+| 🧪 | Installation Portainer | Guide et stack disponibles ; déploiement réel non validé |
 
 ## Règles de suivi
 

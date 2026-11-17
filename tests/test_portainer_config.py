@@ -10,6 +10,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PortainerConfigTest(unittest.TestCase):
+    def test_services_keep_container_security_settings(self):
+        stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
+
+        for name, service in stack["services"].items():
+            with self.subTest(service=name):
+                self.assertEqual(service["user"], "10001:10001")
+                self.assertTrue(service["read_only"])
+                self.assertEqual(service["cap_drop"], ["ALL"])
+                self.assertNotIn("ports", service)
+                self.assertNotIn("volumes", service)
+
     def test_mediamtx_environment_matches_reference(self):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
         reference = yaml.safe_load((ROOT / "deployment/mediamtx.yml").read_text())

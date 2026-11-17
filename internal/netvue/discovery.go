@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+var errDiscoveryRejected = errors.New("camera rejected discovery response")
+
 const (
 	discoveryPort        = 36868
 	discoveryTimeout     = 2 * time.Second
@@ -54,31 +56,45 @@ func DiscoverLAN(ctx context.Context, source string) ([]string, error) {
 	return nil, errors.New("source address is not assigned to a local interface")
 }
 
-func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *net.UDPAddr) ([]string, error) {
+func openDiscoverySocket(ctx context.Context, source net.IP, target *net.UDPAddr) (*net.UDPConn, func() bool, error) {
 	request, err := EncodeCommand([]map[string]any{{"Q": 8, "V": 2, "P": []any{}}})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source})
 	if err != nil {
-		return nil, fmt.Errorf("bind discovery socket: %w", err)
+		return nil, nil, fmt.Errorf("bind discovery socket: %w", err)
 	}
-	defer conn.Close()
+	closeOnError := func(err error) (*net.UDPConn, func() bool, error) {
+		_ = conn.Close()
+		return nil, nil, err
+	}
 	deadline := time.Now().Add(discoveryTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, fmt.Errorf("set discovery deadline: %w", err)
+		return closeOnError(fmt.Errorf("set discovery deadline: %w", err))
 	}
 	stopCancel := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
-	defer stopCancel()
 	if err := contextError(ctx); err != nil {
-		return nil, err
+		stopCancel()
+		return closeOnError(err)
 	}
 	if _, err := conn.WriteToUDP(request, target); err != nil {
-		return nil, fmt.Errorf("send discovery request: %w", err)
+		stopCancel()
+		return closeOnError(fmt.Errorf("send discovery request: %w", err))
 	}
+	return conn, stopCancel, nil
+}
+
+func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *net.UDPAddr) ([]string, error) {
+	conn, stopCancel, err := openDiscoverySocket(ctx, source, target)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	defer stopCancel()
 	found := make(map[string]struct{})
 	buffer := make([]byte, 65535)
 	for {
@@ -130,34 +146,17 @@ func discover(ctx context.Context, source, target string) (camera, error) {
 		return camera{}, fmt.Errorf("%w: source and camera addresses must differ", ErrProtocol)
 	}
 
-	request, err := EncodeCommand([]map[string]any{{"Q": 8, "V": 2, "P": []any{}}})
+	conn, stopCancel, err := openDiscoverySocket(
+		ctx, sourceIP, &net.UDPAddr{IP: targetIP, Port: discoveryPort},
+	)
 	if err != nil {
 		return camera{}, err
-	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: sourceIP})
-	if err != nil {
-		return camera{}, fmt.Errorf("bind discovery socket: %w", err)
 	}
 	defer conn.Close()
-	deadline := time.Now().Add(discoveryTimeout)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
-	if err := conn.SetDeadline(deadline); err != nil {
-		return camera{}, fmt.Errorf("set discovery deadline: %w", err)
-	}
-	stopCancel := context.AfterFunc(ctx, func() {
-		_ = conn.SetDeadline(time.Now())
-	})
 	defer stopCancel()
-	if err := contextError(ctx); err != nil {
-		return camera{}, err
-	}
-	if _, err := conn.WriteToUDP(request, &net.UDPAddr{IP: targetIP, Port: discoveryPort}); err != nil {
-		return camera{}, fmt.Errorf("send discovery request: %w", err)
-	}
 
 	buffer := make([]byte, 65535)
+	var malformed error
 	for {
 		n, remote, err := conn.ReadFromUDP(buffer)
 		if err != nil {
@@ -165,6 +164,9 @@ func discover(ctx context.Context, source, target string) (camera, error) {
 				return camera{}, ctxErr
 			}
 			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+				if malformed != nil {
+					return camera{}, fmt.Errorf("%w: malformed response: %v", ErrDiscoveryTimeout, malformed)
+				}
 				return camera{}, ErrDiscoveryTimeout
 			}
 			return camera{}, fmt.Errorf("receive discovery response: %w", err)
@@ -172,7 +174,14 @@ func discover(ctx context.Context, source, target string) (camera, error) {
 		if remote == nil || !remote.IP.Equal(targetIP) {
 			continue
 		}
-		return parseDiscovery(buffer[:n], remote.IP.String(), targetIP.String())
+		device, parseErr := parseDiscovery(buffer[:n], remote.IP.String(), targetIP.String())
+		if parseErr == nil {
+			return device, nil
+		}
+		if errors.Is(parseErr, errDiscoveryRejected) {
+			return camera{}, parseErr
+		}
+		malformed = parseErr
 	}
 }
 
@@ -204,8 +213,11 @@ func parseDiscovery(data []byte, source, expected string) (camera, error) {
 		}
 		if _, hasCode := unit["C"]; hasCode {
 			code, ok := unitInt(unit, "C")
-			if !ok || code != 0 {
-				return camera{}, withReason("discovery response reported failure", fmt.Errorf("%w: discovery response reported failure", ErrProtocol))
+			if !ok {
+				return camera{}, withReason("invalid discovery result code", fmt.Errorf("%w: invalid discovery result code", ErrProtocol))
+			}
+			if code != 0 {
+				return camera{}, withReason("discovery response reported failure", fmt.Errorf("%w: %w", ErrProtocol, errDiscoveryRejected))
 			}
 		}
 		rawParams, ok := unit["P"]

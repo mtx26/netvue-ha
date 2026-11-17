@@ -197,6 +197,50 @@ func TestPublisherRejectsMalformedAnnexB(t *testing.T) {
 	}
 }
 
+func TestPublisherRequiresPartitionAForPartitionBC(t *testing.T) {
+	tests := []struct {
+		name      string
+		naluTypes []h264.NALUType
+		wantClock bool
+	}{
+		{name: "partition A", naluTypes: []h264.NALUType{h264.NALUTypeDataPartitionA}, wantClock: true},
+		{name: "complete partitions", naluTypes: []h264.NALUType{
+			h264.NALUTypeDataPartitionA,
+			h264.NALUTypeDataPartitionB,
+			h264.NALUTypeDataPartitionC,
+		}, wantClock: true},
+		{name: "orphan B", naluTypes: []h264.NALUType{h264.NALUTypeDataPartitionB}},
+		{name: "orphan C", naluTypes: []h264.NALUType{h264.NALUTypeDataPartitionC}},
+		{name: "orphan BC with non-partitioned slice", naluTypes: []h264.NALUType{
+			h264.NALUTypeNonIDR,
+			h264.NALUTypeDataPartitionB,
+			h264.NALUTypeDataPartitionC,
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			publisher, err := newVideoPublisher(
+				context.Background(), "rtsp://127.0.0.1:8554/netvue",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer publisher.Close()
+
+			var accessUnit []byte
+			for _, naluType := range test.naluTypes {
+				accessUnit = append(accessUnit, 0, 0, 0, 1, byte(naluType), 0x80)
+			}
+			if err := publisher.Push(accessUnit, 100); err != nil {
+				t.Fatalf("Push() failed: %v", err)
+			}
+			if publisher.clock.hasPrevious != test.wantClock {
+				t.Fatalf("clock advanced = %t, want %t", publisher.clock.hasPrevious, test.wantClock)
+			}
+		})
+	}
+}
+
 func TestValidateH264SPSChecksCodedAndDisplayedBounds(t *testing.T) {
 	valid4K := h264.SPS{
 		ChromaFormatIdc:           1,

@@ -108,6 +108,8 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 
 	hasIDR := false
 	hasVCL := false
+	hasPartitionA := false
+	hasPartitionBC := false
 	parametersChanged := false
 	sps, pps := publisher.sps, publisher.pps
 	var accessUnitSPS, accessUnitPPS []byte
@@ -118,6 +120,11 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 		switch h264.NALUType(nalu[0] & 0x1f) {
 		case h264.NALUTypeNonIDR:
 			hasVCL = true
+		case h264.NALUTypeDataPartitionA:
+			hasVCL = true
+			hasPartitionA = true
+		case h264.NALUTypeDataPartitionB, h264.NALUTypeDataPartitionC:
+			hasPartitionBC = true
 		case h264.NALUTypeIDR:
 			hasVCL = true
 			hasIDR = true
@@ -150,6 +157,9 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 				pps = nalu
 			}
 		}
+	}
+	if hasPartitionBC && !hasPartitionA {
+		return nil
 	}
 	if !bytes.Equal(publisher.sps, sps) {
 		publisher.sps = append(publisher.sps[:0], sps...)

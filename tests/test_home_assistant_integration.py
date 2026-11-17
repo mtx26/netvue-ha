@@ -326,6 +326,96 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             entry, [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON]
         )
 
+    async def test_cancelled_unload_waits_and_restores_only_successful_platforms(self):
+        for result in (True, False):
+            with self.subTest(result=result):
+                entry = SimpleNamespace(data={
+                    "host": "192.168.10.2", "stream_name": "a",
+                    "stream_url": "rtsp://127.0.0.1:8554/a",
+                }, options={})
+                started, proceed = asyncio.Event(), asyncio.Event()
+                restore_started, restore_proceed = asyncio.Event(), asyncio.Event()
+
+                async def unload(_entry, platform):
+                    if platform == Platform.CAMERA:
+                        return True
+                    started.set()
+                    await proceed.wait()
+                    return result
+
+                async def restore(_entry, _platforms):
+                    restore_started.set()
+                    await restore_proceed.wait()
+
+                entries = SimpleNamespace(
+                    async_forward_entry_unload=unittest.mock.AsyncMock(side_effect=unload),
+                    async_forward_entry_setups=unittest.mock.AsyncMock(side_effect=restore),
+                )
+                hass = SimpleNamespace(config_entries=entries)
+                with patch("custom_components.netvue_local.async_stop_camera",
+                           new=unittest.mock.AsyncMock()) as stop:
+                    task = asyncio.create_task(async_unload_entry(hass, entry))
+                    await asyncio.wait_for(started.wait(), 2)
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    proceed.set()
+                    await asyncio.wait_for(restore_started.wait(), 2)
+                    task.cancel()  # A second cancellation must not interrupt rollback.
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    restore_proceed.set()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                expected = [Platform.CAMERA]
+                if result:
+                    expected.append(Platform.BINARY_SENSOR)
+                entries.async_forward_entry_setups.assert_awaited_once_with(entry, expected)
+                self.assertEqual(entries.async_forward_entry_unload.await_count, 2)
+                stop.assert_not_awaited()
+
+    async def test_unload_exception_restores_only_previously_unloaded_platforms(self):
+        entry = SimpleNamespace(data={
+            "host": "192.168.10.2", "stream_name": "a",
+            "stream_url": "rtsp://127.0.0.1:8554/a",
+        }, options={})
+        entries = SimpleNamespace(
+            async_forward_entry_unload=unittest.mock.AsyncMock(
+                side_effect=[True, RuntimeError("unload failed")]),
+            async_forward_entry_setups=unittest.mock.AsyncMock(),
+        )
+        with patch("custom_components.netvue_local.async_stop_camera",
+                   new=unittest.mock.AsyncMock()) as stop:
+            with self.assertRaisesRegex(RuntimeError, "unload failed"):
+                await async_unload_entry(SimpleNamespace(config_entries=entries), entry)
+        entries.async_forward_entry_setups.assert_awaited_once_with(entry, [Platform.CAMERA])
+        stop.assert_not_awaited()
+
+    async def test_cancel_during_confirmed_delete_completes_unload(self):
+        entry = SimpleNamespace(data={
+            "host": "192.168.10.2", "stream_name": "a",
+            "stream_url": "rtsp://127.0.0.1:8554/a",
+        }, options={})
+        entries = SimpleNamespace(
+            async_forward_entry_unload=unittest.mock.AsyncMock(return_value=True),
+            async_forward_entry_setups=unittest.mock.AsyncMock(),
+        )
+        started, proceed = asyncio.Event(), asyncio.Event()
+
+        async def delete(_hass, _host):
+            started.set()
+            await proceed.wait()
+
+        with patch("custom_components.netvue_local.async_stop_camera", side_effect=delete):
+            task = asyncio.create_task(async_unload_entry(SimpleNamespace(config_entries=entries), entry))
+            await asyncio.wait_for(started.wait(), 2)
+            task.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            proceed.set()
+            self.assertTrue(await task)
+        entries.async_forward_entry_setups.assert_not_awaited()
+
     async def test_setup_rejects_entry_without_managed_stream_name(self):
         entry = SimpleNamespace(data={"host": "192.168.10.2",
                                       "stream_url": "rtsp://127.0.0.1:8554/legacy"},
@@ -352,13 +442,22 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         self.start_started = asyncio.Event()
         self.start_continue = asyncio.Event()
         self.delay_start = False
+        self.delete_started = asyncio.Event()
+        self.delete_continue = asyncio.Event()
+        self.delay_delete = False
         self.post_status = 202
+        self.invalid_post_json = False
+        self.inconsistent_post = False
         self.invalid_json = False
         self.status = {}
         self.body = None
 
         async def handler(request):
             self.requests.append((request.method, request.path))
+            if request.method == "DELETE":
+                self.delete_started.set()
+                if self.delay_delete:
+                    await self.delete_continue.wait()
             if request.path.endswith("/start"):
                 if self.status.get("START") is not None:
                     return web.Response(status=self.status["START"])
@@ -388,7 +487,13 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
                 if self.delay_post:
                     await self.post_continue.wait()
                 self.current = dict(self.record)
-                return web.json_response(self.current, status=self.post_status)
+                if self.invalid_post_json:
+                    return web.Response(text="{", content_type="application/json",
+                                        status=self.post_status)
+                response = dict(self.current)
+                if self.inconsistent_post:
+                    response["stream_name"] = "other"
+                return web.json_response(response, status=self.post_status)
             existed = self.current is not None
             self.current = None
             return web.Response(status=200 if existed else 404)
@@ -418,6 +523,7 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         self.post_continue.set()
         self.get_continue.set()
         self.start_continue.set()
+        self.delete_continue.set()
         await self.client.close()
         await self.runner.cleanup()
         self.session_patch.stop()
@@ -476,6 +582,136 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         self.invalid_json = True
         with self.assertRaisesRegex(BridgeError, "invalid camera JSON"):
             await self.camera.async_reconcile()
+
+    async def test_ambiguous_post_blocks_retries_even_after_state_is_collected(self):
+        for status, invalid_json, inconsistent in (
+            (500, False, False), (502, False, False), (202, True, False),
+            (200, True, False), (202, False, True),
+        ):
+            with self.subTest(status=status, invalid_json=invalid_json, inconsistent=inconsistent):
+                hass = SimpleNamespace(data={})
+                camera = ManagedCamera(hass, self.host, self.name)
+                self.current = None
+                self.requests.clear()
+                self.post_status = status
+                self.invalid_post_json = invalid_json
+                self.inconsistent_post = inconsistent
+                with self.assertRaises(BridgeError):
+                    await camera.async_reconcile()
+                self.assertIsNotNone(self.current)  # Server inserted before the bad response.
+                self.current = None  # A later GET must not authorize another create.
+                del camera
+                gc.collect()
+                camera = ManagedCamera(hass, self.host, self.name)
+                with self.assertRaisesRegex(BridgeError, "creation outcome is uncertain"):
+                    await camera.async_reconcile()
+                with self.assertRaisesRegex(BridgeError, "creation outcome is uncertain"):
+                    await async_stop_camera(hass, self.host)
+                with self.assertRaisesRegex(BridgeError, "operation outcome is uncertain"):
+                    await camera.async_start()
+                self.assertEqual([method for method, _ in self.requests], ["GET", "POST"])
+
+    async def test_cancel_after_post_headers_preserves_creation_guard(self):
+        body_started = asyncio.Event()
+
+        async def read_body():
+            body_started.set()
+            await asyncio.Event().wait()
+
+        missing = unittest.mock.MagicMock()
+        missing.status = 404
+        created = unittest.mock.MagicMock()
+        created.status = 202
+        created.json = unittest.mock.AsyncMock(side_effect=read_body)
+        get_context = unittest.mock.MagicMock()
+        get_context.__aenter__ = unittest.mock.AsyncMock(return_value=missing)
+        get_context.__aexit__ = unittest.mock.AsyncMock(return_value=False)
+        post_context = unittest.mock.MagicMock()
+        post_context.__aenter__ = unittest.mock.AsyncMock(return_value=created)
+        post_context.__aexit__ = unittest.mock.AsyncMock(return_value=False)
+        session = SimpleNamespace(get=unittest.mock.Mock(return_value=get_context),
+                                  post=unittest.mock.Mock(return_value=post_context))
+        with patch("custom_components.netvue_local.bridge_api.async_get_clientsession",
+                   return_value=session):
+            task = asyncio.create_task(self.camera.async_reconcile())
+            await asyncio.wait_for(body_started.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            with self.assertRaisesRegex(BridgeError, "creation outcome is uncertain"):
+                await self.camera.async_reconcile()
+            with self.assertRaisesRegex(BridgeError, "creation outcome is uncertain"):
+                await async_stop_camera(self.hass, self.host)
+        session.get.assert_called_once()
+        session.post.assert_called_once()
+
+    async def test_pre_insertion_post_rejections_allow_recovery(self):
+        for status in (400, 409, 503):
+            with self.subTest(status=status):
+                hass = SimpleNamespace(data={})
+                camera = ManagedCamera(hass, self.host, self.name)
+                self.current = None
+                self.requests.clear()
+                self.status["POST"] = status
+                with self.assertRaisesRegex(BridgeError, f"HTTP {status}"):
+                    await camera.async_reconcile()
+                self.status.clear()
+                self.assertEqual(await camera.async_reconcile(),
+                                 SessionStatus("supervising", None))
+                self.assertEqual([method for method, _ in self.requests],
+                                 ["GET", "POST", "GET", "POST"])
+
+    async def test_cancel_during_failed_delete_restores_and_keeps_guard(self):
+        self.current = dict(self.record)
+        self.delay_delete = True
+        self.status["DELETE"] = 500
+        entries = SimpleNamespace(
+            async_forward_entry_unload=unittest.mock.AsyncMock(return_value=True),
+            async_forward_entry_setups=unittest.mock.AsyncMock(),
+        )
+        self.hass.config_entries = entries
+        entry = SimpleNamespace(data={
+            "host": self.host, "stream_name": self.name,
+            "stream_url": self.record["rtsp_url"],
+        }, options={})
+        task = asyncio.create_task(async_unload_entry(self.hass, entry))
+        await asyncio.wait_for(self.delete_started.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        self.delete_continue.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        entries.async_forward_entry_setups.assert_awaited_once_with(
+            entry, [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON])
+        self.current = None  # The failed DELETE may have removed the session.
+        with self.assertRaisesRegex(BridgeError, "deletion outcome is uncertain"):
+            await self.camera.async_reconcile()
+        self.assertEqual([method for method, _ in self.requests], ["DELETE", "GET"])
+
+    async def test_cancel_during_confirmed_delete_invalidates_coordinator(self):
+        self.current = dict(self.record)
+        self.delay_delete = True
+        entries = SimpleNamespace(
+            async_forward_entry_unload=unittest.mock.AsyncMock(return_value=True),
+            async_forward_entry_setups=unittest.mock.AsyncMock(),
+        )
+        self.hass.config_entries = entries
+        entry = SimpleNamespace(data={
+            "host": self.host, "stream_name": self.name,
+            "stream_url": self.record["rtsp_url"],
+        }, options={})
+        task = asyncio.create_task(async_unload_entry(self.hass, entry))
+        await asyncio.wait_for(self.delete_started.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        self.delete_continue.set()
+        self.assertTrue(await task)
+        entries.async_forward_entry_setups.assert_not_awaited()
+        self.assertIsNone(self.current)
+        self.assertIsNone(await self.camera.async_reconcile())
+        self.assertEqual([method for method, _ in self.requests], ["DELETE"])
 
     async def test_errors_and_inconsistent_json_are_visible(self):
         self.status["GET"] = 503
