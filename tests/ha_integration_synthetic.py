@@ -58,7 +58,14 @@ async def main():
                 body = await reader.readexactly(int(header.split(b":", 1)[1]))
         parts = path.decode().split("/")
         host = parts[4] if len(parts) > 4 else ""
-        if method == b"POST" and path.endswith(b"/start"):
+        if method == b"POST" and path == b"/api/v1/discovery":
+            if body:
+                raise RuntimeError("Discovery request must have no body")
+            status = b"200 OK"
+            body = json.dumps({"cameras": [
+                {"host": "192.168.10.2"}, {"host": "192.168.10.3"},
+            ]}).encode()
+        elif method == b"POST" and path.endswith(b"/start"):
             start_requests.append(host)
             if reject_start:
                 status = b"503 Service Unavailable"
@@ -138,11 +145,14 @@ async def main():
             raise RuntimeError("Unpublished synthetic path was reported available")
         manager = hass.config_entries.flow
         result = await manager.async_init("netvue_local", context={"source": "user"})
-        if result["type"] != "form" or result["step_id"] != "user":
-            raise RuntimeError("Manual setup missing")
+        if result["type"] != "menu" or result["step_id"] != "user":
+            raise RuntimeError("Setup menu missing")
         flow_id = result["flow_id"]
+        result = await manager.async_configure(flow_id, {"next_step_id": "discovery"})
+        if result["type"] != "form" or result["step_id"] != "select" or manager_cameras:
+            raise RuntimeError("Discovery did not offer cameras without starting a session")
         result = await manager.async_configure(flow_id, {
-            "name": "Synthetic Netvue", "host": "192.168.10.2",
+            "name": "Synthetic Netvue", "host": "192.168.10.2", "manual": False,
         })
         if result["type"] != "create_entry":
             raise RuntimeError("Config entry not created")
@@ -191,6 +201,7 @@ async def main():
             raise RuntimeError("Home Assistant camera preview did not produce a JPEG")
 
         result = await manager.async_init("netvue_local", context={"source": "user"})
+        result = await manager.async_configure(result["flow_id"], {"next_step_id": "manual"})
         result = await manager.async_configure(result["flow_id"], {
             "name": "Second synthetic Netvue", "host": "192.168.10.3",
         })

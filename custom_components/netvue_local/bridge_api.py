@@ -10,10 +10,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
-from .rtsp import stream_url_from_name
+from .rtsp import stream_url_from_name, validate_host
 
 API_URL = "http://127.0.0.1:8765/api/v1"
 REQUEST_TIMEOUT = 5
+DISCOVERY_TIMEOUT = 30
 
 
 class BridgeError(Exception):
@@ -23,6 +24,38 @@ class BridgeError(Exception):
 class SessionStatus(NamedTuple):
     state: str
     error: str | None
+
+
+async def async_discover_cameras(hass: HomeAssistant) -> list[str]:
+    """Request a discovery scan from the bridge, without starting sessions."""
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(DISCOVERY_TIMEOUT):
+            async with session.post(f"{API_URL}/discovery") as response:
+                if response.status != 200:
+                    raise BridgeError(f"Bridge returned HTTP {response.status}")
+                try:
+                    data = await response.json()
+                except (ValueError, ClientError) as exc:
+                    raise BridgeError("Bridge returned invalid discovery JSON") from exc
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot reach the local bridge manager") from exc
+
+    if not isinstance(data, dict) or not isinstance(data.get("cameras"), list):
+        raise BridgeError("Bridge returned invalid discovery results")
+    hosts = []
+    seen = set()
+    for camera in data["cameras"]:
+        if not isinstance(camera, dict) or not isinstance(camera.get("host"), str):
+            raise BridgeError("Bridge returned invalid discovery results")
+        try:
+            host = validate_host(camera["host"])
+        except ValueError as exc:
+            raise BridgeError("Bridge returned invalid discovery results") from exc
+        if host not in seen:
+            seen.add(host)
+            hosts.append(host)
+    return hosts
 
 
 class _CameraState:

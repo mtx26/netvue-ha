@@ -24,7 +24,7 @@ go build ./cmd/netvue-bridge
 Voir le [guide du pont](docs/bridge.md), les
 [tests et outils de développement](docs/development.md),
 l'[architecture](docs/architecture.md), le [protocole observé](docs/netvue-protocol.md)
-et le [plan Go](docs/go-plan.md).
+et la [roadmap](docs/roadmap.md).
 
 ## Organisation et limites
 

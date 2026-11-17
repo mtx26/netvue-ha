@@ -160,6 +160,7 @@ async def main():
             await hass.async_start()
             flow = hass.config_entries.flow
             result = await flow.async_init("netvue_local", context={"source": "user"})
+            result = await flow.async_configure(result["flow_id"], {"next_step_id": "manual"})
             result = await flow.async_configure(
                 result["flow_id"], {"name": "Synthetic Netvue", "host": host}
             )

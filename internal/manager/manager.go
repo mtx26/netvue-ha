@@ -47,10 +47,12 @@ type sessionRunner func(context.Context, string, string, string) error
 
 type Manager struct {
 	mu            sync.RWMutex
+	discoveryMu   sync.Mutex
 	ctx           context.Context
 	cancel        context.CancelFunc
 	source        string
 	runSession    sessionRunner
+	discoverLAN   func(context.Context, string) ([]string, error)
 	cameras       map[string]*cameraSession
 	closed        bool
 	closeOnce     sync.Once
@@ -85,6 +87,7 @@ func newManager(
 		cancel:        cancel,
 		source:        source,
 		runSession:    runSession,
+		discoverLAN:   netvue.DiscoverLAN,
 		cameras:       make(map[string]*cameraSession),
 		closeComplete: make(chan struct{}),
 	}, nil

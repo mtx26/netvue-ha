@@ -1,10 +1,89 @@
 package netvue
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"net"
+	"reflect"
 	"testing"
+	"time"
 )
+
+func TestDiscoverLANFiltersAndDeduplicates(t *testing.T) {
+	server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	outside, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.4")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outside.Close()
+	response := discoveryResponse(t, "127.0.0.2", 5555, "fake-key", 0)
+	wrongHost := discoveryResponse(t, "127.0.0.3", 5555, "fake-key", 0)
+	outsideResponse := discoveryResponse(t, "127.0.0.4", 5555, "fake-key", 0)
+	request, err := EncodeCommand([]map[string]any{{"Q": 8, "V": 2, "P": []any{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverErr := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		_ = server.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, peer, err := server.ReadFromUDP(buf)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if !bytes.Equal(buf[:n], request) {
+			serverErr <- errors.New("invalid discovery request")
+			return
+		}
+		if _, err := outside.WriteToUDP(outsideResponse, peer); err != nil {
+			serverErr <- err
+			return
+		}
+		for _, data := range [][]byte{[]byte("invalid"), wrongHost, response, response} {
+			if _, err := server.WriteToUDP(data, peer); err != nil {
+				serverErr <- err
+				return
+			}
+		}
+		serverErr <- nil
+	}()
+	_, subnet, _ := net.ParseCIDR("127.0.0.0/30")
+	hosts, err := discoverLAN(context.Background(), net.ParseIP("127.0.0.1"), subnet, server.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(hosts, []string{"127.0.0.2"}) {
+		t.Fatalf("discovered hosts = %v", hosts)
+	}
+}
+
+func TestDiscoverLANEmptyAndCancellation(t *testing.T) {
+	server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	_, subnet, _ := net.ParseCIDR("127.0.0.0/8")
+	hosts, err := discoverLAN(context.Background(), net.ParseIP("127.0.0.1"), subnet, server.LocalAddr().(*net.UDPAddr))
+	if err != nil || len(hosts) != 0 || hosts == nil {
+		t.Fatalf("empty discovery = %v, %v", hosts, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := discoverLAN(ctx, net.ParseIP("127.0.0.1"), subnet, server.LocalAddr().(*net.UDPAddr)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled discovery error = %v", err)
+	}
+}
 
 func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 	packet, err := EncodeCommand([]map[string]any{{

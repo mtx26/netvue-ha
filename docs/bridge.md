@@ -80,6 +80,8 @@ Utiliser un réseau de confiance (détails : [protocole](./netvue-protocol.md)).
 `127.0.0.1:8554`. L'API JSON fournit :
 
 - `GET /api/v1/status` et `GET /api/v1/cameras/{host}`
+- `POST /api/v1/discovery` : une diffusion UDP sur le sous-réseau de
+  l'interface `--source`, puis `{ "cameras": [{ "host": "..." }] }`
 - `POST /api/v1/cameras` avec `{host, stream_name}`
 - `POST /api/v1/cameras/{host}/start` ou `/stop`
 - `DELETE /api/v1/cameras/{host}`
@@ -93,6 +95,14 @@ relance pas implicitement une entrée déjà présente, même arrêtée ou en é
 La suppression HA arrête et retire la session. Le guide
 [d'intégration HA](../custom_components/netvue_local/README.md) décrit les
 entités et erreurs de configuration.
+
+La découverte est déclenchée explicitement depuis HA ; elle attend deux
+secondes, filtre les réponses compatibles avec le protocole Go et ne renvoie
+que les adresses. Une liste vide n'indique pas nécessairement l'absence de
+caméras : le broadcast peut être filtré ou le modèle non pris en charge.
+Une seule recherche est exécutée à la fois. La saisie manuelle reste possible.
+La découverte n'ouvre pas de session vidéo ; la sélection et la configuration
+de la caméra déclenchent ensuite le fonctionnement normal du pont.
 
 ## Limites vidéo
 
@@ -108,6 +118,5 @@ entités et erreurs de configuration.
   arrière ou saut supérieur à 10 s : incrément de 1 ms (90 ticks), sans
   inférer la cadence. Les données brutes de l'anomalie historique manquent ;
   cela garantit l'ordre de sortie, pas la continuité temporelle réelle.
-- HA saisit l'IPv4 manuellement ; seule la session Go découvre l'appareil.
-  Caméra 1, autonomie sans cloud, stabilité prolongée et déploiement réel ne
+- Caméra 1, autonomie sans cloud, stabilité prolongée et déploiement réel ne
   sont pas établis par les tests synthétiques.

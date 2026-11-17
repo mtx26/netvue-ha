@@ -20,8 +20,18 @@ pont Go et MediaMTX.
 ## Ajouter et gérer une caméra
 
 Dans **Paramètres → Appareils et services → Ajouter une intégration**, choisir
-**Netvue Local**, saisir un nom puis l'IPv4 privée. L'intégration génère le nom
-et l'URL RTSP ; elle ne demande ni URL, port ni identifiants :
+**Netvue Local**. Choisir **Rechercher des caméras** pour demander au pont une
+découverte LAN (à utiliser uniquement avec autorisation), puis sélectionner
+une adresse et saisir un nom. Une liste vide ou une erreur permet de réessayer
+ou de passer à la saisie manuelle ; celle-ci est également proposée dès le
+début et après une recherche. Les adresses déjà configurées sont refusées.
+La découverte ne démarre pas de session ; la création de l'entrée le fait.
+
+La découverte exige un pont prenant en charge `POST /api/v1/discovery` sans
+corps, avec réponse JSON `{"cameras":[{"host":"192.168.x.y"}]}` ; une liste
+vide est valide et une erreur HTTP est signalée. Si cette API est absente,
+utiliser la saisie manuelle. L'intégration génère le nom et l'URL RTSP ; elle
+ne demande ni URL, port ni identifiants :
 
 ```text
 192.168.10.2 → netvue_192_168_10_2
@@ -31,8 +41,7 @@ et l'URL RTSP ; elle ne demande ni URL, port ni identifiants :
 Cette opération démarre une session caméra. Une entrée HA restaurée peut
 également être réconciliée dès qu'un gestionnaire répond : voir les
 [précautions de déploiement](../../deployment/go-portainer.md) avant tout
-essai ou redémarrage. L'adresse est manuelle ; HA ne parle pas le protocole
-Netvue.
+essai ou redémarrage. HA ne parle pas le protocole Netvue.
 
 Une session et un superviseur Go sont gérés par entrée ; le nombre maximal
 n'est pas fixé et la capacité dépend des ressources/caméras/MediaMTX. Le

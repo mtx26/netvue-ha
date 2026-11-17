@@ -6,16 +6,110 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"time"
 )
 
 const (
-	discoveryPort    = 36868
-	discoveryTimeout = 2 * time.Second
+	discoveryPort        = 36868
+	discoveryTimeout     = 2 * time.Second
+	maxDiscoveredCameras = 256
 )
 
 var ErrDiscoveryTimeout = errors.New("Netvue discovery timed out")
+
+// DiscoverLAN sends one discovery request to the source interface's subnet.
+// Only hosts compatible with the existing unicast session protocol are returned.
+func DiscoverLAN(ctx context.Context, source string) ([]string, error) {
+	sourceIP, err := validateLANIPv4(source)
+	if err != nil {
+		return nil, fmt.Errorf("invalid source address: %w", err)
+	}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list network interfaces: %w", err)
+	}
+	for _, iface := range interfaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, fmt.Errorf("list interface addresses: %w", err)
+		}
+		for _, addr := range addrs {
+			ip, subnet, err := net.ParseCIDR(addr.String())
+			if err != nil || ip.To4() == nil || !ip.Equal(sourceIP) {
+				continue
+			}
+			ones, bits := subnet.Mask.Size()
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagBroadcast == 0 || bits != 32 || ones > 30 {
+				return nil, errors.New("source interface does not support IPv4 broadcast")
+			}
+			broadcast := make(net.IP, net.IPv4len)
+			for i := range broadcast {
+				broadcast[i] = subnet.IP.To4()[i] | ^subnet.Mask[i]
+			}
+			return discoverLAN(ctx, sourceIP, subnet, &net.UDPAddr{IP: broadcast, Port: discoveryPort})
+		}
+	}
+	return nil, errors.New("source address is not assigned to a local interface")
+}
+
+func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *net.UDPAddr) ([]string, error) {
+	request, err := EncodeCommand([]map[string]any{{"Q": 8, "V": 2, "P": []any{}}})
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source})
+	if err != nil {
+		return nil, fmt.Errorf("bind discovery socket: %w", err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(discoveryTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set discovery deadline: %w", err)
+	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	defer stopCancel()
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	if _, err := conn.WriteToUDP(request, target); err != nil {
+		return nil, fmt.Errorf("send discovery request: %w", err)
+	}
+	found := make(map[string]struct{})
+	buffer := make([]byte, 65535)
+	for {
+		n, remote, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			if ctxErr := contextError(ctx); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+				hosts := make([]string, 0, len(found))
+				for host := range found {
+					hosts = append(hosts, host)
+				}
+				sort.Strings(hosts)
+				return hosts, nil
+			}
+			return nil, fmt.Errorf("receive discovery response: %w", err)
+		}
+		if remote == nil || remote.IP.Equal(source) || !subnet.Contains(remote.IP) {
+			continue
+		}
+		host := remote.IP.String()
+		if _, err := parseDiscovery(buffer[:n], host, host); err != nil {
+			continue
+		}
+		if _, exists := found[host]; !exists && len(found) == maxDiscoveredCameras {
+			return nil, errors.New("too many discovery responses")
+		}
+		found[host] = struct{}{}
+	}
+}
 
 type camera struct {
 	host string

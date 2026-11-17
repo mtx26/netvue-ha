@@ -3,13 +3,30 @@
     "step": {
       "user": {
         "title": "Ajouter une caméra",
+        "description": "Choisissez une découverte par le pont ou la saisie manuelle.",
+        "menu_options": {"discovery": "Rechercher des caméras", "manual": "Saisir une adresse"}
+      },
+      "manual": {
+        "title": "Saisir une adresse",
         "description": "Indiquez le nom affiché et l'adresse IPv4. L'intégration crée un flux unique et demande au pont de le démarrer.",
         "data": {"name": "Nom affiché", "host": "Adresse IPv4 de la caméra"}
+      },
+      "discovery": {
+        "title": "Recherche de caméras",
+        "description": "Décochez pour réessayer ou cochez pour saisir une adresse manuellement.",
+        "data": {"manual": "Saisir une adresse manuellement"}
+      },
+      "select": {
+        "title": "Sélectionner une caméra",
+        "description": "Choisissez une adresse et un nom, ou cochez la saisie manuelle.",
+        "data": {"name": "Nom affiché", "host": "Caméra découverte", "manual": "Saisir une adresse manuellement"}
       }
     },
     "error": {
       "invalid_input": "Adresse IPv4 ou nom affiché invalide.",
-      "already_configured": "Cette caméra est déjà configurée."
+      "already_configured": "Cette caméra est déjà configurée.",
+      "discovery_failed": "La recherche a échoué ou le pont est indisponible.",
+      "no_cameras": "Aucune caméra trouvée."
     },
     "abort": {
       "already_configured": "Cette caméra est déjà configurée."

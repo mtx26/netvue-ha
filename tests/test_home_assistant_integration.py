@@ -12,7 +12,7 @@ from aiohttp import ClientSession, web
 
 from custom_components.netvue_local import async_setup_entry, async_unload_entry
 from custom_components.netvue_local.bridge_api import (
-    BridgeError, ManagedCamera, SessionStatus, async_stop_camera,
+    BridgeError, ManagedCamera, SessionStatus, async_discover_cameras, async_stop_camera,
 )
 from custom_components.netvue_local.binary_sensor import NetvueStreamSensor
 from custom_components.netvue_local.button import NetvueRestartButton
@@ -104,10 +104,12 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         data = {"name": "Test", "host": "192.168.10.2"}
         form = await flow.async_step_user()
         self.assertEqual(form["step_id"], "user")
+        self.assertEqual(form["type"], "menu")
+        form = await flow.async_step_manual()
         self.assertEqual(form["data_schema"](data), data)
-        invalid = await flow.async_step_user({**data, "host": "8.8.8.8"})
+        invalid = await flow.async_step_manual({**data, "host": "8.8.8.8"})
         self.assertEqual(invalid["errors"]["base"], "invalid_input")
-        result = await flow.async_step_user(data)
+        result = await flow.async_step_manual(data)
         name = "netvue_192_168_10_2"
         self.assertEqual(result["type"], "create_entry")
         self.assertEqual(result["title"], "Test")
@@ -115,6 +117,86 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             "host": "192.168.10.2", "stream_name": name,
             "stream_url": f"rtsp://127.0.0.1:8554/{name}",
         })
+
+    async def test_discovery_api_contract_and_validation(self):
+        hass = SimpleNamespace()
+        response = unittest.mock.MagicMock()
+        response.status = 200
+        response.json = unittest.mock.AsyncMock(return_value={
+            "cameras": [{"host": "192.168.10.2"}, {"host": "10.0.0.2"},
+                        {"host": "192.168.10.2"}],
+        })
+        context = unittest.mock.MagicMock()
+        context.__aenter__ = unittest.mock.AsyncMock(return_value=response)
+        context.__aexit__ = unittest.mock.AsyncMock(return_value=False)
+        session = SimpleNamespace(post=unittest.mock.Mock(return_value=context))
+        with patch("custom_components.netvue_local.bridge_api.async_get_clientsession",
+                   return_value=session):
+            self.assertEqual(await async_discover_cameras(hass), ["192.168.10.2", "10.0.0.2"])
+            session.post.assert_called_once_with("http://127.0.0.1:8765/api/v1/discovery")
+            response.json.return_value = {"cameras": []}
+            self.assertEqual(await async_discover_cameras(hass), [])
+            for payload in ({}, {"cameras": None}, {"cameras": [{}]},
+                            {"cameras": [{"host": "8.8.8.8"}]},
+                            {"cameras": [{"host": 42}]}):
+                response.json.return_value = payload
+                with self.subTest(payload=payload), self.assertRaises(BridgeError):
+                    await async_discover_cameras(hass)
+            response.status = 503
+            with self.assertRaisesRegex(BridgeError, "HTTP 503"):
+                await async_discover_cameras(hass)
+            response.status = 200
+            response.json.side_effect = ValueError("invalid JSON")
+            with self.assertRaises(BridgeError):
+                await async_discover_cameras(hass)
+            context.__aenter__.side_effect = TimeoutError()
+            with self.assertRaises(BridgeError):
+                await async_discover_cameras(hass)
+
+    async def test_discovery_selection_duplicate_and_manual_fallback(self):
+        entry = SimpleNamespace(entry_id="1", data={
+            "host": "192.168.10.2", "stream_url": "rtsp://127.0.0.1:8554/netvue_192_168_10_2",
+        }, options={})
+        hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: [entry]))
+        flow = NetvueConfigFlow()
+        flow.hass = hass
+        with patch("custom_components.netvue_local.config_flow.async_discover_cameras",
+                   new=unittest.mock.AsyncMock(return_value=["192.168.10.2", "192.168.10.3"])) as scan:
+            form = await flow.async_step_discovery()
+            self.assertEqual(form["step_id"], "select")
+            scan.assert_awaited_once_with(hass)
+            invalid = await flow.async_step_select({"name": "Test", "host": "192.168.10.4"})
+            self.assertEqual(invalid["errors"]["base"], "invalid_input")
+            invalid = await flow.async_step_select({"name": " ", "host": "192.168.10.3"})
+            self.assertEqual(invalid["errors"]["base"], "invalid_input")
+            duplicate = await flow.async_step_select({"name": "Test", "host": "192.168.10.2"})
+            self.assertEqual(duplicate["errors"]["base"], "already_configured")
+            self.assertEqual((await flow.async_step_select({"manual": True}))["step_id"], "manual")
+            result = await flow.async_step_select({"name": " Test ", "host": "192.168.10.3"})
+        self.assertEqual(result["title"], "Test")
+        self.assertEqual(result["data"], {
+            "host": "192.168.10.3", "stream_name": "netvue_192_168_10_3",
+            "stream_url": "rtsp://127.0.0.1:8554/netvue_192_168_10_3",
+        })
+
+    async def test_discovery_empty_error_retry_and_manual(self):
+        flow = NetvueConfigFlow()
+        flow.hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: []))
+        with patch("custom_components.netvue_local.config_flow.async_discover_cameras",
+                   new=unittest.mock.AsyncMock(side_effect=[
+                       [], BridgeError("HTTP 503"), ["192.168.10.3"],
+                   ])) as scan:
+            empty = await flow.async_step_discovery()
+            self.assertEqual(empty["errors"]["base"], "no_cameras")
+            error = await flow.async_step_discovery({"manual": False})
+            self.assertEqual(error["errors"]["base"], "discovery_failed")
+            manual = await flow.async_step_discovery({"manual": True})
+            self.assertEqual(manual["step_id"], "manual")
+            self.assertEqual(scan.await_count, 2)
+            created = await flow.async_step_manual({"name": "Manual", "host": "192.168.10.4"})
+            self.assertEqual(created["data"]["host"], "192.168.10.4")
+            selected = await flow.async_step_discovery({"manual": False})
+            self.assertEqual(selected["step_id"], "select")
 
     async def test_options_change_ip_and_duplicates(self):
         entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",

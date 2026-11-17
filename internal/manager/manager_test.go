@@ -434,6 +434,67 @@ func TestManagerHTTPRoutesReconcileAndDeleteCameras(t *testing.T) {
 	request(t, handler, http.MethodGet, "/api/v1/cameras/192.168.10.20", "", http.StatusNotFound)
 }
 
+func TestManagerHTTPDiscovery(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	manager.discoverLAN = func(_ context.Context, source string) ([]string, error) {
+		if source != "192.168.10.2" {
+			t.Errorf("unexpected source %q", source)
+		}
+		return []string{"192.168.10.20"}, nil
+	}
+	handler := manager.Handler()
+	result := request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusOK)
+	if result.Body.String() != "{\"cameras\":[{\"host\":\"192.168.10.20\"}]}\n" {
+		t.Fatalf("discovery response = %q", result.Body.String())
+	}
+	manager.discoverLAN = func(context.Context, string) ([]string, error) { return nil, nil }
+	result = request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusOK)
+	if result.Body.String() != "{\"cameras\":[]}\n" {
+		t.Fatalf("empty discovery response = %q", result.Body.String())
+	}
+	manager.discoverLAN = func(context.Context, string) ([]string, error) {
+		return nil, errors.New("discovery failed")
+	}
+	request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusInternalServerError)
+}
+
+func TestManagerHTTPDiscoveryConcurrentAndShutdown(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	started := make(chan struct{})
+	manager.discoverLAN = func(ctx context.Context, _ string) ([]string, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	handler := manager.Handler()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		result := httptest.NewRecorder()
+		handler.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/api/v1/discovery", nil))
+		done <- result
+	}()
+	waitForSignal(t, started, "discovery")
+	request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusConflict)
+	if err := manager.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		if result.Code != http.StatusServiceUnavailable {
+			t.Fatalf("canceled discovery status = %d", result.Code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("discovery did not stop on shutdown")
+	}
+	request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusServiceUnavailable)
+}
+
 func TestManagerHTTPRejectsInvalidRequestsAndReportsMissingDelete(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
 		<-ctx.Done()

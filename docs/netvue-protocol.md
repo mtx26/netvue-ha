@@ -9,6 +9,12 @@ historiques locales peuvent rester dans `findings/` (ignoré par Git).
 
 - Le code Android analysé contient une découverte UDP broadcast ; une
   requête unicast et sa réponse ont aussi été testées.
+- La recherche utilisateur Go envoie une requête V2 UDP/36868 à l'adresse
+  broadcast du sous-réseau de l'interface configurée, puis collecte pendant
+  deux secondes les réponses compatibles avec la session Go. L'adresse
+  annoncée doit correspondre à l'émetteur ; les autres paquets sont ignorés.
+  Une recherche réelle autorisée a trouvé la caméra 2 depuis le serveur.
+  Ce filtrage n'établit pas à lui seul la compatibilité vidéo du modèle.
 - Les réponses de découverte sont encadrées et contiennent des unités JSON.
   Une réponse observée sur la caméra 2 annonçait son adresse source, un
   endpoint TCP et des informations locales d'authentification.
@@ -49,7 +55,8 @@ et codec caméra 1, audio, fragments génériques, B-frames et stabilité 24/7.
 ## Garde-fous et sécurité
 
 - Accepter la découverte seulement si source et endpoint correspondent à
-  l'adresse ciblée ; borner longueurs et délais.
+  l'adresse ciblée (ou à l'émetteur sur le sous-réseau pour une recherche
+  broadcast) ; borner longueurs, nombre de réponses et délais.
 - Exiger un résultat entier explicite à chaque étape login/sélection LIVE ;
   rejeter `null` ainsi que les paquets incomplets ou inattendus. En découverte,
   le résultat reste facultatif, mais doit être un entier nul s'il est présent.

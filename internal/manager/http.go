@@ -20,12 +20,45 @@ type addCameraRequest struct {
 func (manager *Manager) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", manager.handleStatus)
+	mux.HandleFunc("POST /api/v1/discovery", manager.handleDiscovery)
 	mux.HandleFunc("POST /api/v1/cameras", manager.handleAddCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{host}", manager.handleGetCamera)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/start", manager.handleStartCamera)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/stop", manager.handleStopCamera)
 	mux.HandleFunc("DELETE /api/v1/cameras/{host}", manager.handleDeleteCamera)
 	return mux
+}
+
+func (manager *Manager) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+	if !manager.discoveryMu.TryLock() {
+		writeAPIError(w, http.StatusConflict, "discovery already in progress")
+		return
+	}
+	defer manager.discoveryMu.Unlock()
+	manager.mu.RLock()
+	closed := manager.closed || manager.ctx.Err() != nil
+	manager.mu.RUnlock()
+	if closed {
+		writeManagerError(w, ErrManagerClosed)
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	stop := context.AfterFunc(manager.ctx, cancel)
+	defer stop()
+	hosts, err := manager.discoverLAN(ctx, manager.source)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	type discoveredCamera struct {
+		Host string `json:"host"`
+	}
+	cameras := make([]discoveredCamera, 0, len(hosts))
+	for _, host := range hosts {
+		cameras = append(cameras, discoveredCamera{Host: host})
+	}
+	writeJSON(w, http.StatusOK, map[string][]discoveredCamera{"cameras": cameras})
 }
 
 func (manager *Manager) handleStatus(w http.ResponseWriter, _ *http.Request) {

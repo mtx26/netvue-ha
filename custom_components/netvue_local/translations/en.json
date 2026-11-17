@@ -3,13 +3,30 @@
     "step": {
       "user": {
         "title": "Add a camera",
+        "description": "Choose bridge discovery or manual entry.",
+        "menu_options": {"discovery": "Discover cameras", "manual": "Enter an address"}
+      },
+      "manual": {
+        "title": "Enter an address",
         "description": "Enter a display name and IPv4 address. The integration creates a unique stream and asks the bridge to start it.",
         "data": {"name": "Display name", "host": "Camera IPv4 address"}
+      },
+      "discovery": {
+        "title": "Discover cameras",
+        "description": "Leave unchecked to retry, or check to enter an address manually.",
+        "data": {"manual": "Enter an address manually"}
+      },
+      "select": {
+        "title": "Select a camera",
+        "description": "Choose an address and name, or check manual entry.",
+        "data": {"name": "Display name", "host": "Discovered camera", "manual": "Enter an address manually"}
       }
     },
     "error": {
       "invalid_input": "Invalid IPv4 address or display name.",
-      "already_configured": "This camera is already configured."
+      "already_configured": "This camera is already configured.",
+      "discovery_failed": "Discovery failed or the bridge is unavailable.",
+      "no_cameras": "No cameras found."
     },
     "abort": {
       "already_configured": "This camera is already configured."

@@ -11,9 +11,9 @@ MediaMTX sur loopback --> Home Assistant Stream
 ```
 
 - `cmd/netvue-bridge/` fournit `test`, `run` et `serve`.
-- `internal/manager/` gère les sessions et l'API d'ajout, état, arrêt,
+- `internal/manager/` gère les sessions et l'API de découverte, ajout, état, arrêt,
   reprise et suppression.
-- `internal/netvue/` isole découverte unicast, authentification, transport
+- `internal/netvue/` isole découverte LAN et unicast, authentification, transport
   vidéo, publication et supervision ; il ne dépend pas de HA.
 - `custom_components/netvue_local/` gère les entrées et entités HA ; seul Go
   parle le protocole caméra.
@@ -21,8 +21,8 @@ MediaMTX sur loopback --> Home Assistant Stream
 
 HA conserve les entrées ; le registre Go est volatil. Après redémarrage du
 pont, HA réajoute une entrée absente, mais ne relance pas une session présente
-arrêtée ou en échec. La suppression HA retire la session. L'adresse IPv4 est
-saisie manuellement ; HA ne recherche pas de candidats.
+arrêtée ou en échec. La suppression HA retire la session. HA peut lancer une
+recherche sur le LAN du pont, sélectionner un candidat ou saisir une IPv4.
 
 Le gestionnaire expose l'état du superviseur et, en cas d'échec définitif, une
 catégorie d'erreur non sensible. HA fournit un capteur de session, un bouton
@@ -33,4 +33,4 @@ L'API `127.0.0.1:8765` et MediaMTX `127.0.0.1:8554` n'ont pas
 d'authentification distincte ; tout processus du même espace réseau peut y
 accéder. Le protocole Netvue observé n'est pas chiffré. Détails et limites :
 [pont](./bridge.md), [protocole](./netvue-protocol.md),
-[déploiement](../deployment/go-portainer.md) et [plan Go](./go-plan.md).
+[déploiement](../deployment/go-portainer.md) et [roadmap](./roadmap.md).
