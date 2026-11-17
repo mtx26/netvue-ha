@@ -1,0 +1,72 @@
+version: "3.8"
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.4@sha256:c730bccdbc8739f8f0c13cefe9bea8b61926f599b88fa4d0d229baa91846c7bc
+    command: ["/mediamtx.yml"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    networks: [host]
+    volumes:
+      - type: bind
+        source: ${NETVUE_MEDIAMTX_CONFIG:?set the host MediaMTX configuration path}
+        target: /mediamtx.yml
+        read_only: true
+    stop_grace_period: 15s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the node shared with Home Assistant}
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        order: stop-first
+      rollback_config:
+        order: stop-first
+
+  netvue-bridge:
+    image: ${NETVUE_BRIDGE_IMAGE:?set the built Go bridge image}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    networks: [host]
+    command:
+      - serve
+      - --source
+      - ${NETVUE_SOURCE:?set the host LAN IPv4 address}
+      - --listen
+      - 127.0.0.1:8765
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the node shared with Home Assistant}
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        order: stop-first
+      rollback_config:
+        order: stop-first
+
+networks:
+  host:
+    external: true
+    name: host

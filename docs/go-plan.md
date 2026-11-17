@@ -47,17 +47,18 @@ sur RTSP/TCP et décodé par un outil indépendant ; aucune caméra n'est contac
 
 ### Version 1 — exploitation locale et Home Assistant
 
-- Configuration documentée, plusieurs caméras indépendantes et une session
-  active par appareil.
-- Extension du superviseur unique au multi-caméra, avec une session active par
-  appareil ; pas de budgets persistants hérités sans besoin démontré ni
-  migration sûre.
+- Configuration documentée ; utiliser une seule instance du programme Go
+  pour toutes les caméras, avec une session et le superviseur existant par
+  caméra, et un MediaMTX partagé. Le nombre de caméras n'est pas fixé dans le
+  code.
+- Pas de budgets persistants hérités sans besoin démontré ni migration.
 - Gestion de la reconnexion, des changements SPS/PPS/résolution et des
   interruptions, caractérisée par des tests de bout en bout synthétiques.
-- API de contrôle loopback ou mécanisme Home Assistant retenu après
-  comparaison ; MediaMTX reste un service distinct.
-- Stack Docker/Portainer reproductible, privilèges minimaux, ressources
-  bornées, aucun port publié et documentation de retour arrière.
+- L'intégration `netvue_local` reste en Python pour les config entries, les
+  entités et la lecture RTSP ; elle communique avec l'API locale du gestionnaire
+  Go au lieu de démarrer le gestionnaire Python.
+- Stack Docker/Portainer reproductible sur le réseau host du nœud Home
+  Assistant, privilèges minimaux, ressources bornées et aucun port publié.
 - Compatibilité caméra 1, stabilité prolongée et déploiement restent des
   validations réelles autorisées, pas des critères démontrables par les seuls
   tests hors ligne.
@@ -99,26 +100,49 @@ doit être explicitement caractérisé.
 ## Architecture cible
 
 ```text
-CLI test/run / configuration explicite
-          |
-          v
-superviseur unique (run) ou session bornée (test)
-   | découverte UDP -> endpoint LAN -> login explicite -> demande LIVE
-   | réception TCP -> trames de commande / média
-   v
-analyse Annex B, paramètres H.264 et horloge
-          |
-          v
-client publieur gortsplib -- RTSP/TCP --> MediaMTX local
-                                               |
-                                               +--> Home Assistant
+CLI test/run                         CLI serve
+     |                                   |
+     v                                   v
+session / superviseur unique       API HTTP locale Go
+                                        |
+                               gestionnaire runtime léger
+                               une session RunContinuous par caméra
+                                        |
+    découverte UDP -> login -> LIVE -> H.264/RTP
+                                        |
+                         gortsplib -- RTSP/TCP --> MediaMTX
+                                                       |
+                                                       +--> Home Assistant
 ```
 
 Le paquet `internal/netvue` porte les détails spécifiques aux trames Netvue et
 au cycle de session. Le traitement Annex B, l'horloge et la publication RTSP
 restent séparés des messages de commande. `test` exécute une session bornée ;
-`run` délègue sa reconnexion à un unique superviseur séquentiel. Aucun
-gestionnaire HTTP ni état persistant n'est ajouté.
+`run` supervise une caméra. La commande `serve` ajoute le gestionnaire HTTP
+runtime : il lance une session indépendante par caméra sans persister la liste.
+Les config entries Home Assistant constituent la source de configuration
+durable.
+
+### Décision phase 26 — multi-caméra dynamique
+
+Une seule application Go et un gestionnaire runtime lancent `RunContinuous`
+indépendamment pour chaque caméra ; aucune limite fixe au nombre de caméras
+n'est codée. Un seul MediaMTX reçoit les chemins uniques, stables et dérivés
+des adresses caméra. L'API `net/http` locale gère ajout idempotent, état, URL
+RTSP, arrêt, redémarrage explicite et suppression. Elle n'ajoute pas
+d'authentification distincte et reste liée à loopback comme l'ancien manager.
+
+Les config entries Home Assistant constituent la source persistante de
+configuration ; Go ne conserve que l'état runtime. Le coordinator HA réconcilie
+une entrée absente après redémarrage du pont sans relancer une entrée existante
+en état arrêté ou en échec. La suppression HA arrête et retire la session.
+Python reste l'interface Home Assistant (config entries, entités, probe RTSP),
+Go porte les sessions, l'authentification Netvue, H.264, RTSP et la supervision.
+L'ajout HA garde la saisie manuelle de l'adresse ; chaque session Go effectue
+sa découverte unicast. La découverte de candidats par diffusion LAN n'est pas
+implémentée. `netvue_bridge/` reste une référence historique et ne doit pas
+tourner en parallèle du nouveau service. La stack dynamique contient un seul
+service Go et un MediaMTX. Les détails sont dans `deployment/go-portainer.md`.
 
 ## Avancement et décisions ouvertes
 
@@ -132,26 +156,41 @@ gestionnaire HTTP ni état persistant n'est ajouté.
 - **Phase 25 :** le CLI offre `test` (session bornée) et `run` (supervision
   continue), avec un seul cycle retryable, backoff plafonné et arrêt bloquant
   sur refus d'authentification, configuration invalide ou erreur critique.
-  Les réponses RTSP 5xx sont transitoires, les 4xx bloquantes ; SIGINT/SIGTERM
+  Seul le 503 RTSP est classé temporaire ; les autres codes de réponse 4xx/5xx
+  arrêtent la tentative, pour ne pas assimiler toute réponse serveur à une panne
+  transitoire. SIGINT/SIGTERM
   et annulation ferment le cycle courant avant la sortie. `test` exige une
   durée positive sans plafond ; `run` n'a pas d'échéance de session.
 - **Vérifié hors ligne :** génération synthétique H.264, publication vers un
   MediaMTX temporaire lié à loopback et décodage de dix images par FFmpeg ;
   tests unitaires, tests avec le détecteur de courses et `go vet` réussis.
-  Cette vérification date de la phase 23 et n'a pas été rejouée en phase 24,
-  MediaMTX et FFmpeg étant absents de l'environnement courant.
+  Cette vérification initiale date de la phase 23 ; après une période sans
+  binaires disponibles, elle a été rejouée en phase 26 à partir des outils
+  locaux fournis.
   Le listener RTSP loopback est prévalidé avant la découverte ; cette
   correction passe les tests unitaires et avec détecteur de courses. Un serveur
   gortsplib local vérifie aussi la séquence ANNOUNCE/SETUP/RECORD sur trois
   générations successives après changement SPS/PPS, ainsi que les délais de
   démarrage, l'annulation RTSP et le préflight IPv6.
-- **En cours :** images B, fragments et validation indépendante du décodage
-  après les changements du moteur restent à caractériser.
-- **Ensuite :** caractériser les interactions avec MediaMTX/FFmpeg après
-  stabilisation du moteur, puis étendre l'architecture au multi-caméra.
+- **Phase 26 — implémentation et vérification hors ligne terminées :**
+  l'application Go unique, le gestionnaire runtime multi-caméra, l'API locale,
+  la réconciliation HA et la stack Portainer sont implémentés. `go test ./...`,
+  `go test -race ./...`, `go vet ./...` et `go build` réussissent. Avec
+  MediaMTX 1.21.4 et FFmpeg 8.1 locaux, la publication RTSP décodée et le test
+  multi-flux passent ; ce dernier vérifie l'isolation, l'arrêt/reprise d'une
+  publication et le changement de résolution. PyYAML analyse la stack en deux
+  services et `py_compile` valide l'intégration et ses tests. Dans l'image
+  officielle Home Assistant 2026.11.2, 20 tests unitaires et le scénario
+  synthétique complet (config/options, entités, RTSP, JPEG, arrêt et décharge)
+  réussissent dans des conteneurs isolés sans accès réseau externe. L'image Go
+  se construit localement, démarre en UID 10001 sur Linux/amd64 et affiche
+  l'aide de `serve` ; `docker stack config` valide la stack rendue. Aucune
+  caméra réelle ni production n'a été contactée.
+- **Ensuite :** déployer la stack uniquement après autorisation et effectuer
+  des essais caméra/production uniquement après autorisation distincte.
 - **Ouvert :** disponibilité du flux sans cloud, protocole réellement utilisé
   par la caméra 1, gestion générique des images B et fragments, stabilité
-  continue, version Home Assistant et configuration de déploiement Go.
+  continue et stabilité sous charge.
 - **Politique timestamp Go :** un wrap naturel 32 bits est accepté. Un doublon,
   un retour arrière ou un saut supérieur à 10 s avance de 1 ms (90 ticks RTP),
   avec ancre réinitialisée sur la nouvelle valeur source. Cette correction

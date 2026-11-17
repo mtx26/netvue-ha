@@ -1,19 +1,50 @@
 # Architecture Netvue Local
 
-## Périmètre
+## Architecture actuellement active — passerelle Go
 
-Le projet comprend la passerelle Python, son API de contrôle loopback, l'intégration Home Assistant et MediaMTX. L'intégration demande au gestionnaire du pont de démarrer ou d'arrêter les sessions ; le pont reste seul responsable des budgets et de l'authentification LAN Netvue.
+Depuis la phase 26, une seule instance de `netvue-go` gère toutes les caméras.
+Son gestionnaire en mémoire crée une session `RunContinuous` indépendante par
+adresse ; il n'y a pas de nombre maximal codé en dur ni de second superviseur.
+MediaMTX est partagé. Les chemins RTSP sont déterministes, et chaque opération
+sur une caméra reste isolée des autres sessions.
+
+L'API `net/http` du pont écoute sur `127.0.0.1:8765`. Elle permet à
+Home Assistant d'ajouter, consulter, arrêter, redémarrer explicitement et
+supprimer une caméra. La publication utilise MediaMTX sur
+`127.0.0.1:8554`. L'API n'ajoute pas d'authentification distincte et ne doit
+pas être exposée hors de l'hôte.
+
+Home Assistant conserve ses config entries et sert de source persistante ; le
+registre Go est volatile et est réconcilié après redémarrage du pont.
+L'intégration Python ne contient plus le protocole Netvue : elle gère les
+config entries, les entités, l'état RTSP et le contrat HTTP local. L'adresse
+IPv4 est saisie manuellement ; seule la session Go découvre la caméra.
+Le déchargement HA supprime la session Go et conserve l'entrée si la
+suppression échoue.
+
+Voir le [plan Go](./go-plan.md), le [guide Portainer Go](../deployment/go-portainer.md)
+et le [rapport phase 26](../findings/phase26-multicamera-go.md).
+
+## Architecture Python historique
+
+Les sections suivantes décrivent l'ancienne passerelle Python et son
+superviseur à budgets persistants. Elles sont conservées comme référence ; ces
+mécanismes ne sont pas utilisés par la stack Go de phase 26.
+
+### Périmètre
+
+L'ancien projet Python comprend sa passerelle, son API de contrôle loopback,
+l'intégration Home Assistant et MediaMTX.
 
 ```text
-Home Assistant -- découverte UDP utilisateur --> caméra
-       -- HTTP loopback 127.0.0.1:8765 --> gestionnaire --> superviseur v4
+Home Assistant -- HTTP loopback 127.0.0.1:8765 --> gestionnaire --> superviseur v4
                                                          --> authentification LAN --> caméra
 Home Assistant <-- RTSP 127.0.0.1:8554 <-- MediaMTX <-- H.264/RTSP/TCP
 ```
 
 Le transport Netvue local n'est pas chiffré. RTSP est limité à la boucle locale dans la configuration fournie, mais reste accessible aux autres processus partageant cet espace réseau. Aucun accès Internet ni enregistrement ne sont nécessaires.
 
-## Passerelle
+### Passerelle Python
 
 | Module | Responsabilité |
 |---|---|
@@ -28,9 +59,9 @@ Le transport Netvue local n'est pas chiffré. RTSP est limité à la boucle loca
 | [continuous.py](../netvue_bridge/continuous.py) | Supervision unique, travailleur vidéo, veille et mode de test borné. |
 | [check_rtsp.py](../netvue_bridge/check_rtsp.py) | Diagnostic borné avec MediaMTX et lecteurs externes ; le flux caméra passe par le mode test du superviseur et son budget v4. |
 
-Les dépendances internes vont de l'orchestration vers le protocole et la vidéo ; aucun cycle d'import relatif n'a été détecté par l'analyse statique des modules Python. Le module de protocole ne dépend ni de Home Assistant ni de MediaMTX. Les deux implémentations de découverte sont volontairement distinctes : l'intégration HA doit être installable sans le paquet de la passerelle, et sa découverte est une diffusion utilisateur plutôt que l'unicast du pont.
+Les dépendances internes vont de l'orchestration vers le protocole et la vidéo ; aucun cycle d'import relatif n'a été détecté par l'analyse statique des modules Python. Le module de protocole ne dépend ni de Home Assistant ni de MediaMTX. L'intégration HA ne met plus en œuvre la découverte UDP ; celle de la passerelle Python historique reste inchangée.
 
-## Cycle d'une session
+### Cycle historique d'une session
 
 Le superviseur détient le verrou du budget, vérifie son état, puis réserve une tentative durablement **avant** la découverte. `stream.run_session` exécute une tentative : la passerelle émet une requête UDP, ouvre une connexion TCP, envoie une authentification puis une seule demande LIVE. La réception classe les commandes et paquets média ; le publieur attend SPS, PPS et IDR, vérifie le décodage puis remuxe les images en RTSP/TCP. La socket et le publieur sont fermés en fin de session ou sur erreur. Le worker retourne l'étape réessayable ou un résultat bloquant ; seul `continuous.py` décide de la reconnexion et applique le backoff v4.
 
@@ -38,7 +69,7 @@ Le superviseur détient le verrou du budget, vérifie son état, puis réserve u
 
 Le verrou coordonne les processus partageant le même répertoire ; au démarrage, le superviseur vérifie aussi dans `/proc` qu'aucun travailleur connu ne tourne déjà pour la même caméra. Après un redémarrage, un `in_progress` n'est repris que si cette absence est vérifiée et que l'horloge est cohérente ; la reprise le transforme en nouvel essai réessayable avec backoff. Un processus actif, un état corrompu, une horloge ambiguë ou `blocked` arrête le démarrage sans modifier l'état bloqué. Ne jamais contourner un état avec une copie ou un nouveau répertoire. Le budget v4 n'impose aucun quota journalier ou hebdomadaire ; seul le backoff progressif limite les erreurs transitoires.
 
-## Contrat du superviseur unique
+### Contrat de l'ancien superviseur
 
 `netvue_bridge.continuous` fournit `init`, `run`, `test` et une commande
 interne `_session`. `run` est l'exploitation continue ; `test`
@@ -63,8 +94,16 @@ l'exclusivité entre hôtes ou espaces PID différents. Le mode `test` est celui
 destiné aux essais synthétiques et ne constitue pas une autorisation de
 contacter une caméra.
 
-## Home Assistant et déploiement
+### Intégration Home Assistant et déploiement
 
-[config_flow.py](../custom_components/netvue_local/config_flow.py) propose une découverte UDP déclenchée par l'utilisateur ou un ajout manuel. La sélection démarre le gestionnaire via [bridge_api.py](../custom_components/netvue_local/bridge_api.py) ; une URL et un nom de flux déterministes sont associés à chaque IPv4. Le gestionnaire démarre un superviseur et un budget distincts par caméra, sans plafond logiciel fixe ; la capacité pratique dépend des ressources allouées au service. L'API est sans authentification mais écoute uniquement sur 127.0.0.1:8765 ; elle est accessible aux processus partageant l'espace réseau de l'hôte. [coordinator.py](../custom_components/netvue_local/coordinator.py) sonde périodiquement le RTSP ; [camera.py](../custom_components/netvue_local/camera.py) et [binary_sensor.py](../custom_components/netvue_local/binary_sensor.py) exposent l'entité caméra et l'état de disponibilité. Les entrées Home Assistant doivent contenir le nom et l'URL gérés par l'intégration ; les anciens formats sont refusés et ne sont pas réécrits.
+L'intégration Python active, [netvue_local](../custom_components/netvue_local/README.md),
+ajoute les caméras par adresse IPv4 manuelle et communique avec le gestionnaire
+Go par HTTP loopback. `bridge_api.py` réconcilie les entrées absentes et
+supprime la session au déchargement ; le coordinator sonde le RTSP et les
+plateformes exposent la caméra et sa disponibilité. Le protocole Netvue n'est
+pas implémenté dans cette intégration.
 
-[stack.yaml](../deployment/stack.yaml) épingle les deux services au nœud Home Assistant, utilise le réseau host, ne publie aucun port et conserve les budgets v4 dans le volume d'état. MediaMTX reste lié à `127.0.0.1:8554` ; l'API du pont écoute sur `127.0.0.1:8765`. Lire le guide [Home Assistant](../custom_components/netvue_local/README.md) et [deployment/README.md](../deployment/README.md) avant toute opération autorisée.
+[deployment/stack.yaml](../deployment/stack.yaml) reste l'ancienne stack Python
+et utilise encore ses budgets v4. Pour la passerelle actuelle, utiliser
+[go-stack.yaml](../deployment/go-stack.yaml) avec le [guide Go Portainer](../deployment/go-portainer.md) ;
+ces deux stacks ne doivent pas être démarrées simultanément sur le même hôte.

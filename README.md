@@ -1,12 +1,18 @@
 # Netvue Vigil → Home Assistant — Phase 1
 
-> Le projet comprend désormais une passerelle LAN → RTSP et une intégration Home Assistant en cours de stabilisation. Voir [l'architecture](docs/architecture.md), [le développement](docs/development.md), [la passerelle](netvue_bridge/README.md) et [le déploiement](deployment/README.md). Le guide ci-dessous conserve le contexte historique de la phase 1 ; il ne décrit pas l'état actuel du pont ni n'autorise une connexion caméra.
+> **Architecture actuelle, phase 26 :** une passerelle Go gère dynamiquement
+> plusieurs caméras avec un superviseur indépendant par caméra ; Home
+> Assistant conserve la configuration et utilise une intégration Python légère.
+> Voir le [plan Go](docs/go-plan.md), le [guide du programme Go](netvue-go/README.md),
+> l'[architecture](docs/architecture.md), le [guide Go Portainer](deployment/go-portainer.md)
+> et le [guide Home Assistant](custom_components/netvue_local/README.md).
+> `netvue_bridge/` et le reste de cette page décrivent l'ancienne référence
+> Python / la phase 1, pas la stack Go actuelle.
 
-Le pont utilise un superviseur et un état de budget uniques (format v4), avec
-backoff progressif et sans quotas journaliers ou hebdomadaires. Seul v4 est
-pris en charge ; les autres versions sont refusées sans être modifiées. Cette
-simplification est testée hors ligne, mais n'a pas été déployée et ne prouve
-pas le fonctionnement réel 24 h/24.
+La liste des caméras est persistée par les config entries Home Assistant ; le
+gestionnaire Go conserve seulement l'état runtime et ne crée aucun budget
+persistant. Les tests hors ligne n'établissent ni la compatibilité de chaque
+caméra, ni la stabilité prolongée, ni le déploiement en production.
 
 Espace de travail prêt à ouvrir dans **VS Code avec GitHub Copilot (harness « Copilot »)**. La première phase est exclusivement consacrée à l'analyse statique de l'application Android Netvue et aux recherches documentaires. Aucun accès à un compte Netvue n'est nécessaire.
 

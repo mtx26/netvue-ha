@@ -1,6 +1,7 @@
 """Exercise a real isolated Home Assistant config flow and synthetic camera."""
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -41,15 +42,34 @@ async def main():
     hass = None
     api = None
 
+    manager_cameras = {}
+
     async def bridge_handler(reader, writer):
         request = await reader.readuntil(b"\r\n\r\n")
-        method = request.split(b" ", 1)[0]
+        method, path, _ = request.split(b"\r\n", 1)[0].split(b" ", 2)
+        body = b""
         for header in request.split(b"\r\n")[1:]:
             if header.lower().startswith(b"content-length:"):
-                await reader.readexactly(int(header.split(b":", 1)[1]))
-        status = b"200 OK" if method == b"DELETE" else b"202 Accepted"
-        writer.write(b"HTTP/1.1 " + status + b"\r\nContent-Length: 2\r\n"
-                     b"Connection: close\r\n\r\n{}")
+                body = await reader.readexactly(int(header.split(b":", 1)[1]))
+        host = path.rsplit(b"/", 1)[-1].decode()
+        if method == b"POST":
+            data = json.loads(body)
+            host = data["host"]
+            manager_cameras[host] = {**data, "rtsp_url": url, "state": "running"}
+            status = b"202 Accepted"
+            body = json.dumps(manager_cameras[host]).encode()
+        elif method == b"GET" and host in manager_cameras:
+            status = b"200 OK"
+            body = json.dumps(manager_cameras[host]).encode()
+        elif method == b"DELETE" and manager_cameras.pop(host, None) is not None:
+            status = b"200 OK"
+            body = b""
+        else:
+            status = b"404 Not Found"
+            body = b""
+        writer.write(b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n"
+                     + f"Content-Length: {len(body)}\r\n".encode()
+                     + b"Connection: close\r\n\r\n" + body)
         await writer.drain()
         writer.close()
         await writer.wait_closed()
@@ -96,12 +116,9 @@ async def main():
             raise RuntimeError("Unpublished synthetic path was reported available")
         manager = hass.config_entries.flow
         result = await manager.async_init("netvue_local", context={"source": "user"})
-        if result["type"] != "menu" or set(result["menu_options"]) != {"manual", "discover"}:
-            raise RuntimeError("Expected configuration menu missing")
-        flow_id = result["flow_id"]
-        result = await manager.async_configure(flow_id, {"next_step_id": "manual"})
-        if result["step_id"] != "manual":
+        if result["type"] != "form" or result["step_id"] != "user":
             raise RuntimeError("Manual setup missing")
+        flow_id = result["flow_id"]
         result = await manager.async_configure(flow_id, {
             "name": "Synthetic Netvue", "host": "192.168.10.2",
         })

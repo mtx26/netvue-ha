@@ -5,7 +5,7 @@
   "documentation": "https://github.com/mtx26/netvue-ha",
   "codeowners": [],
   "config_flow": true,
-  "dependencies": ["network", "stream"],
+  "dependencies": ["stream"],
   "integration_type": "device",
   "iot_class": "local_polling"
 }

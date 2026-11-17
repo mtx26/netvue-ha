@@ -72,10 +72,13 @@ func TestRTSPStartupErrorClassifiesResponseStatus(t *testing.T) {
 		retryable  bool
 		videoFatal bool
 	}{
-		{name: "internal server error", status: base.StatusInternalServerError, retryable: true},
-		{name: "not implemented", status: 501, retryable: true},
-		{name: "version not supported", status: 505, retryable: true},
-		{name: "last server error status", status: 599, retryable: true},
+		{name: "internal server error", status: base.StatusInternalServerError, videoFatal: true},
+		{name: "not implemented", status: base.StatusNotImplemented, videoFatal: true},
+		{name: "bad gateway", status: base.StatusBadGateway, videoFatal: true},
+		{name: "service unavailable", status: base.StatusServiceUnavailable, retryable: true},
+		{name: "gateway timeout", status: base.StatusGatewayTimeout, videoFatal: true},
+		{name: "RTSP version not supported", status: base.StatusRTSPVersionNotSupported, videoFatal: true},
+		{name: "unknown server error", status: 599, videoFatal: true},
 		{name: "bad request", status: 400, videoFatal: true},
 		{name: "unauthorized", status: base.StatusUnauthorized, videoFatal: true},
 		{name: "forbidden", status: base.StatusForbidden, videoFatal: true},

@@ -2,24 +2,6 @@
   "config": {
     "step": {
       "user": {
-        "title": "Netvue Local",
-        "description": "Discover a camera on the local network or add it by IPv4 address.",
-        "menu_options": {
-          "discover": "Discover cameras",
-          "manual": "Add manually"
-        }
-      },
-      "discover": {
-        "title": "Discover cameras",
-        "description": "Choose a local interface. One UDP broadcast is sent on the selected subnet.",
-        "data": {"source": "Network interface"}
-      },
-      "select": {
-        "title": "Select a detected camera",
-        "description": "Select a detected address, then choose a camera name.",
-        "data": {"host": "Detected camera"}
-      },
-      "manual": {
         "title": "Add a camera",
         "description": "Enter a display name and IPv4 address. The integration creates a unique stream and asks the bridge to start it.",
         "data": {"name": "Display name", "host": "Camera IPv4 address"}
@@ -27,13 +9,9 @@
     },
     "error": {
       "invalid_input": "Invalid IPv4 address or display name.",
-      "already_configured": "This camera is already configured.",
-      "invalid_interface": "The selected interface is no longer available.",
-      "discovery_failed": "UDP discovery failed. Check the network or add the camera manually.",
-      "no_devices": "No camera responded. You can add it manually."
+      "already_configured": "This camera is already configured."
     },
     "abort": {
-      "no_interfaces": "No compatible private IPv4 interface is available.",
       "already_configured": "This camera is already configured."
     }
   },

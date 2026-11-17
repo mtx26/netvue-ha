@@ -21,6 +21,10 @@ func TestRunCommandUsesBoundedSessionForTest(t *testing.T) {
 		t.Fatal("continuous runner called for test command")
 		return nil
 	}
+	runManager := func(context.Context, string, string) error {
+		t.Fatal("manager runner called for test command")
+		return nil
+	}
 
 	code := runCommand(context.Background(), []string{
 		"test",
@@ -28,7 +32,7 @@ func TestRunCommandUsesBoundedSessionForTest(t *testing.T) {
 		"--camera", "192.0.2.20",
 		"--rtsp", "rtsp://127.0.0.1:8554/test",
 		"--duration", "15s",
-	}, runTest, runContinuous)
+	}, runTest, runContinuous, runManager)
 	if code != 0 || !called {
 		t.Fatalf("runCommand() = %d, test runner called = %v", code, called)
 	}
@@ -48,13 +52,17 @@ func TestRunCommandUsesContinuousSupervisorForRun(t *testing.T) {
 		}
 		return nil
 	}
+	runManager := func(context.Context, string, string) error {
+		t.Fatal("manager runner called for run command")
+		return nil
+	}
 
 	code := runCommand(context.Background(), []string{
 		"run",
 		"--source", "192.0.2.10",
 		"--camera", "192.0.2.20",
 		"--rtsp", "rtsp://127.0.0.1:8554/test",
-	}, runTest, runContinuous)
+	}, runTest, runContinuous, runManager)
 	if code != 0 || !called {
 		t.Fatalf("runCommand() = %d, continuous runner called = %v", code, called)
 	}
@@ -110,9 +118,13 @@ func TestRunCommandRejectsInvalidConfigurationBeforeStarting(t *testing.T) {
 		called = true
 		return nil
 	}
+	runManager := func(context.Context, string, string) error {
+		called = true
+		return nil
+	}
 
 	code := runCommand(context.Background(), []string{"run", "--source", "192.0.2.10"},
-		runTest, runContinuous)
+		runTest, runContinuous, runManager)
 	if code != 2 || called {
 		t.Fatalf("runCommand() = %d, runner called = %v", code, called)
 	}
@@ -130,14 +142,83 @@ func TestRunCommandTreatsCanceledContextAsNormalStop(t *testing.T) {
 		called = true
 		return errors.New("must not run")
 	}
+	runManager := func(context.Context, string, string) error {
+		called = true
+		return errors.New("must not run")
+	}
 
 	code := runCommand(ctx, []string{
 		"run",
 		"--source", "192.0.2.10",
 		"--camera", "192.0.2.20",
 		"--rtsp", "rtsp://127.0.0.1:8554/test",
-	}, runTest, runContinuous)
+	}, runTest, runContinuous, runManager)
 	if code != 0 || called {
 		t.Fatalf("runCommand() = %d, runner called = %v", code, called)
+	}
+}
+
+func TestRunCommandReportsShutdownErrorAfterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := false
+	runManager := func(context.Context, string, string) error {
+		called = true
+		cancel()
+		return errors.New("shutdown deadline exceeded")
+	}
+	runTest := func(context.Context, string, string, string, time.Duration) error {
+		t.Fatal("test runner called for serve command")
+		return nil
+	}
+	runContinuous := func(context.Context, string, string, string) error {
+		t.Fatal("single-camera runner called for serve command")
+		return nil
+	}
+
+	code := runCommand(ctx, []string{"serve", "--source", "192.168.10.10"},
+		runTest, runContinuous, runManager)
+	if code != 1 || !called {
+		t.Fatalf("runCommand() = %d, manager runner called = %v", code, called)
+	}
+}
+
+func TestRunCommandUsesManagerForServe(t *testing.T) {
+	called := false
+	runTest := func(context.Context, string, string, string, time.Duration) error {
+		t.Fatal("bounded runner called for serve command")
+		return nil
+	}
+	runContinuous := func(context.Context, string, string, string) error {
+		t.Fatal("single-camera runner called for serve command")
+		return nil
+	}
+	runManager := func(_ context.Context, source, listenAddress string) error {
+		called = true
+		if source != "192.168.10.10" || listenAddress != "127.0.0.1:8765" {
+			t.Fatalf("manager args = %q %q", source, listenAddress)
+		}
+		return nil
+	}
+
+	code := runCommand(context.Background(), []string{"serve", "--source", "192.168.10.10"},
+		runTest, runContinuous, runManager)
+	if code != 0 || !called {
+		t.Fatalf("runCommand() = %d, manager runner called = %v", code, called)
+	}
+}
+
+func TestParseServeRequiresSourceOnly(t *testing.T) {
+	config, err := parseCommandFlags("serve", []string{"--source", "192.168.10.10"})
+	if err != nil {
+		t.Fatalf("parseCommandFlags() error = %v", err)
+	}
+	if config.listenAddress != "127.0.0.1:8765" {
+		t.Fatalf("serve listen address = %q", config.listenAddress)
+	}
+	if _, err := parseCommandFlags("serve", []string{"--source", "192.168.10.10", "--camera", "192.168.10.20"}); err == nil {
+		t.Fatal("serve accepted a single-camera flag")
+	}
+	if _, err := parseCommandFlags("serve", []string{"--source", "192.168.10.10", "--rtsp-address", "127.0.0.1:8554"}); err == nil {
+		t.Fatal("serve accepted an RTSP address that is fixed by the Home Assistant contract")
 	}
 }

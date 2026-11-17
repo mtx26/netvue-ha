@@ -150,6 +150,11 @@ func validateLANIPv4(value string) (net.IP, error) {
 	return ip, nil
 }
 
+func ValidateLANIPv4(value string) error {
+	_, err := validateLANIPv4(value)
+	return err
+}
+
 func (c camera) endpoint() string {
 	return net.JoinHostPort(c.host, strconv.Itoa(c.port))
 }

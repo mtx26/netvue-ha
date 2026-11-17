@@ -1,0 +1,557 @@
+package manager
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestManagerRunsFiveIndependentCameras(t *testing.T) {
+	started := make(chan string, 5)
+	manager := newTestManager(t, func(ctx context.Context, _, host, _ string) error {
+		started <- host
+		<-ctx.Done()
+		return nil
+	})
+
+	for i := 10; i < 15; i++ {
+		host := fmt.Sprintf("192.168.10.%d", i)
+		stream := fmt.Sprintf("camera_%d", i)
+		camera, added, err := manager.AddCamera(host, stream)
+		if err != nil || !added {
+			t.Fatalf("AddCamera(%q) = %v, %v", host, added, err)
+		}
+		if camera.RTSPURL != "rtsp://127.0.0.1:8554/"+stream {
+			t.Fatalf("camera RTSP URL = %q", camera.RTSPURL)
+		}
+	}
+	for range 5 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("camera session did not start")
+		}
+	}
+
+	cameras := manager.Cameras()
+	if len(cameras) != 5 {
+		t.Fatalf("camera count = %d, want 5", len(cameras))
+	}
+	for i := 1; i < len(cameras); i++ {
+		if cameras[i-1].Host >= cameras[i].Host {
+			t.Fatalf("camera list is not sorted: %q >= %q", cameras[i-1].Host, cameras[i].Host)
+		}
+	}
+	if _, added, err := manager.AddCamera("192.168.10.10", "camera_10"); err != nil || added {
+		t.Fatalf("idempotent AddCamera() = added %v, error %v", added, err)
+	}
+	if _, _, err := manager.AddCamera("192.168.10.10", "different"); !errors.Is(err, ErrCameraConflict) {
+		t.Fatalf("same host with another stream error = %v", err)
+	}
+	if _, _, err := manager.AddCamera("192.168.10.20", "camera_10"); !errors.Is(err, ErrCameraConflict) {
+		t.Fatalf("duplicate stream error = %v", err)
+	}
+}
+
+func TestManagerConcurrentAddStartsOneSession(t *testing.T) {
+	var starts atomic.Int32
+	started := make(chan struct{}, 1)
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		starts.Add(1)
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil
+	})
+
+	const attempts = 20
+	var workers sync.WaitGroup
+	var added atomic.Int32
+	for range attempts {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			_, wasAdded, err := manager.AddCamera("192.168.10.20", "one_camera")
+			if err != nil {
+				t.Errorf("AddCamera() error = %v", err)
+				return
+			}
+			if wasAdded {
+				added.Add(1)
+			}
+		}()
+	}
+	workers.Wait()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("camera session did not start")
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("session starts = %d, want 1", got)
+	}
+	if got := added.Load(); got != 1 {
+		t.Fatalf("successful additions = %d, want 1", got)
+	}
+}
+
+func TestManagerStopDeleteAndRestart(t *testing.T) {
+	var starts atomic.Int32
+	started := make(chan int32, 2)
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		count := starts.Add(1)
+		started <- count
+		<-ctx.Done()
+		return nil
+	})
+
+	if _, _, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil {
+		t.Fatal(err)
+	}
+	waitForStart(t, started, 1)
+	stopped, err := manager.StopCamera(context.Background(), "192.168.10.20")
+	if err != nil || stopped.State != stateStopped {
+		t.Fatalf("StopCamera() = %+v, %v", stopped, err)
+	}
+
+	if _, startedAgain, err := manager.StartCamera("192.168.10.20"); err != nil || !startedAgain {
+		t.Fatalf("StartCamera() = started %v, error %v", startedAgain, err)
+	}
+	waitForStart(t, started, 2)
+	if deleted, err := manager.DeleteCamera(context.Background(), "192.168.10.20"); err != nil || !deleted {
+		t.Fatalf("DeleteCamera() = deleted %v, error %v", deleted, err)
+	}
+	if _, found := manager.Camera("192.168.10.20"); found {
+		t.Fatal("camera remains after deletion")
+	}
+}
+
+func TestManagerStoppingOneCameraLeavesOtherRunning(t *testing.T) {
+	active := make(map[string]bool)
+	var mu sync.Mutex
+	started := make(chan string, 2)
+	manager := newTestManager(t, func(ctx context.Context, _, host, _ string) error {
+		mu.Lock()
+		active[host] = true
+		mu.Unlock()
+		started <- host
+		<-ctx.Done()
+		mu.Lock()
+		delete(active, host)
+		mu.Unlock()
+		return nil
+	})
+
+	for i := 20; i < 22; i++ {
+		host := fmt.Sprintf("192.168.10.%d", i)
+		if _, _, err := manager.AddCamera(host, fmt.Sprintf("camera_%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("camera session did not start")
+		}
+	}
+	if _, err := manager.StopCamera(context.Background(), "192.168.10.20"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	firstActive, secondActive := active["192.168.10.20"], active["192.168.10.21"]
+	mu.Unlock()
+	if firstActive || !secondActive {
+		t.Fatalf("active cameras after stopping first = first:%v second:%v", firstActive, secondActive)
+	}
+}
+
+func TestDeleteSerializesWithConcurrentRestart(t *testing.T) {
+	stopping := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var starts atomic.Int32
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		if starts.Add(1) == 1 {
+			<-ctx.Done()
+			stopping <- struct{}{}
+			<-release
+			return nil
+		}
+		<-ctx.Done()
+		return nil
+	})
+	if _, _, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil {
+		t.Fatal(err)
+	}
+
+	type deleteResult struct {
+		deleted bool
+		err     error
+	}
+	deleted := make(chan deleteResult, 1)
+	go func() {
+		ok, err := manager.DeleteCamera(context.Background(), "192.168.10.20")
+		deleted <- deleteResult{deleted: ok, err: err}
+	}()
+	select {
+	case <-stopping:
+	case <-time.After(time.Second):
+		t.Fatal("camera session was not canceled")
+	}
+
+	restarted := make(chan error, 1)
+	go func() {
+		_, _, err := manager.StartCamera("192.168.10.20")
+		restarted <- err
+	}()
+	close(release)
+
+	select {
+	case result := <-deleted:
+		if result.err != nil || !result.deleted {
+			t.Fatalf("DeleteCamera() = %v, %v", result.deleted, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("camera deletion did not finish")
+	}
+	select {
+	case err := <-restarted:
+		if !errors.Is(err, ErrCameraNotFound) {
+			t.Fatalf("StartCamera() after delete error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent start did not finish")
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("session starts = %d, want 1", got)
+	}
+	if _, found := manager.Camera("192.168.10.20"); found {
+		t.Fatal("deleted camera remains registered")
+	}
+}
+
+func TestManagerFatalSessionCanBeRestartedExplicitly(t *testing.T) {
+	var starts atomic.Int32
+	started := make(chan struct{}, 1)
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		if starts.Add(1) == 1 {
+			return errors.New("authentication denied")
+		}
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil
+	})
+
+	if _, _, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, manager, "192.168.10.20", stateFailed)
+	if _, added, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil || added {
+		t.Fatalf("duplicate add restarted failed camera: added %v, error %v", added, err)
+	}
+	if _, startedAgain, err := manager.StartCamera("192.168.10.20"); err != nil || !startedAgain {
+		t.Fatalf("StartCamera() = started %v, error %v", startedAgain, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("explicit restart did not start a new session")
+	}
+}
+
+func TestManagerCloseStopsSessionsAndRejectsAdds(t *testing.T) {
+	started := make(chan struct{}, 2)
+	var active atomic.Int32
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		active.Add(1)
+		started <- struct{}{}
+		<-ctx.Done()
+		active.Add(-1)
+		return nil
+	})
+	for i := 20; i < 22; i++ {
+		if _, _, err := manager.AddCamera(
+			fmt.Sprintf("192.168.10.%d", i),
+			fmt.Sprintf("camera_%d", i),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("camera session did not start")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := active.Load(); got != 0 {
+		t.Fatalf("active sessions after close = %d", got)
+	}
+	if _, _, err := manager.AddCamera("192.168.10.30", "late_camera"); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("AddCamera() after close error = %v", err)
+	}
+}
+
+func TestManagerHTTPRoutesReconcileAndDeleteCameras(t *testing.T) {
+	var starts atomic.Int32
+	started := make(chan struct{}, 1)
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		starts.Add(1)
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil
+	})
+	handler := manager.Handler()
+	requestBody := `{"host":"192.168.10.20","stream_name":"living_room"}`
+
+	add := newRequest(http.MethodPost, "/api/v1/cameras", requestBody)
+	addResult := httptest.NewRecorder()
+	handler.ServeHTTP(addResult, add)
+	if addResult.Code != http.StatusAccepted {
+		t.Fatalf("first POST status = %d, body = %s", addResult.Code, addResult.Body.String())
+	}
+	var response Camera
+	if err := json.Unmarshal(addResult.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RTSPURL != "rtsp://127.0.0.1:8554/living_room" || response.Host != "192.168.10.20" {
+		t.Fatalf("POST camera response = %+v", response)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("camera session did not start")
+	}
+
+	duplicate := newRequest(http.MethodPost, "/api/v1/cameras", requestBody)
+	duplicateResult := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateResult, duplicate)
+	if duplicateResult.Code != http.StatusOK || starts.Load() != 1 {
+		t.Fatalf("duplicate POST status = %d, session starts = %d", duplicateResult.Code, starts.Load())
+	}
+
+	get := newRequest(http.MethodGet, "/api/v1/cameras/192.168.10.20", "")
+	getResult := httptest.NewRecorder()
+	handler.ServeHTTP(getResult, get)
+	if getResult.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, body = %s", getResult.Code, getResult.Body.String())
+	}
+
+	status := newRequest(http.MethodGet, "/api/v1/status", "")
+	statusResult := httptest.NewRecorder()
+	handler.ServeHTTP(statusResult, status)
+	if statusResult.Code != http.StatusOK || !strings.Contains(statusResult.Body.String(), "living_room") {
+		t.Fatalf("status response = %d, %s", statusResult.Code, statusResult.Body.String())
+	}
+
+	deleteRequest := newRequest(http.MethodDelete, "/api/v1/cameras/192.168.10.20", "")
+	deleteResult := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResult, deleteRequest)
+	if deleteResult.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, body = %s", deleteResult.Code, deleteResult.Body.String())
+	}
+	missing := newRequest(http.MethodGet, "/api/v1/cameras/192.168.10.20", "")
+	missingResult := httptest.NewRecorder()
+	handler.ServeHTTP(missingResult, missing)
+	if missingResult.Code != http.StatusNotFound {
+		t.Fatalf("GET removed camera status = %d", missingResult.Code)
+	}
+}
+
+func TestManagerHTTPRejectsInvalidRequestsAndReportsMissingDelete(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	handler := manager.Handler()
+	for _, body := range []string{
+		`{"host":"192.168.10.20","stream_name":"../invalid"}`,
+		`{"host":"192.168.10.20","stream_name":"valid","extra":true}`,
+		`{"host":"192.168.10.20","stream_name":"valid"} {"extra":true}`,
+	} {
+		request := newRequest(http.MethodPost, "/api/v1/cameras", body)
+		result := httptest.NewRecorder()
+		handler.ServeHTTP(result, request)
+		if result.Code != http.StatusBadRequest {
+			t.Fatalf("POST body %q status = %d, body = %s", body, result.Code, result.Body.String())
+		}
+	}
+	deleteRequest := newRequest(http.MethodDelete, "/api/v1/cameras/192.168.10.20", "")
+	result := httptest.NewRecorder()
+	handler.ServeHTTP(result, deleteRequest)
+	if result.Code != http.StatusNotFound {
+		t.Fatalf("DELETE missing camera status = %d", result.Code)
+	}
+}
+
+func TestManagerHTTPStopsAndRestartsCamera(t *testing.T) {
+	var starts atomic.Int32
+	started := make(chan struct{}, 2)
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		starts.Add(1)
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil
+	})
+	handler := manager.Handler()
+	add := newRequest(http.MethodPost, "/api/v1/cameras",
+		`{"host":"192.168.10.20","stream_name":"living_room"}`)
+	addResult := httptest.NewRecorder()
+	handler.ServeHTTP(addResult, add)
+	if addResult.Code != http.StatusAccepted {
+		t.Fatalf("add status = %d, body = %s", addResult.Code, addResult.Body.String())
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("camera session did not start")
+	}
+
+	stop := newRequest(http.MethodPost, "/api/v1/cameras/192.168.10.20/stop", "")
+	stopResult := httptest.NewRecorder()
+	handler.ServeHTTP(stopResult, stop)
+	if stopResult.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, body = %s", stopResult.Code, stopResult.Body.String())
+	}
+	if camera, found := manager.Camera("192.168.10.20"); !found || camera.State != stateStopped {
+		t.Fatalf("camera after stop = %+v, found = %v", camera, found)
+	}
+
+	start := newRequest(http.MethodPost, "/api/v1/cameras/192.168.10.20/start", "")
+	startResult := httptest.NewRecorder()
+	handler.ServeHTTP(startResult, start)
+	if startResult.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, body = %s", startResult.Code, startResult.Body.String())
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("camera session did not restart")
+	}
+	if got := starts.Load(); got != 2 {
+		t.Fatalf("session starts = %d, want 2", got)
+	}
+}
+
+func TestManagerHasNoPersistentCameraState(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	if got := manager.Cameras(); len(got) != 0 {
+		t.Fatalf("new manager cameras = %v", got)
+	}
+}
+
+func TestControlAPIOnlyAcceptsLoopbackListenAddresses(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:8765", "[::1]:8765"} {
+		if err := validateLoopbackAddress(address); err != nil {
+			t.Errorf("validateLoopbackAddress(%q) error = %v", address, err)
+		}
+	}
+	for _, address := range []string{"0.0.0.0:8765", "192.168.10.2:8765", "localhost:8765"} {
+		if err := validateLoopbackAddress(address); err == nil {
+			t.Errorf("validateLoopbackAddress(%q) accepted a non-loopback address", address)
+		}
+	}
+}
+
+func TestRunStopsControlAPIWhenContextIsCanceled(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- Run(ctx, "192.168.10.2", address)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", address, 10*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			cancel()
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Fatalf("Run() shutdown error = %v", err)
+				}
+				return
+			case <-time.After(time.Second):
+				t.Fatal("Run() did not stop after cancellation")
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	t.Fatal("control API did not start")
+}
+
+func newTestManager(t *testing.T, runner sessionRunner) *Manager {
+	t.Helper()
+	manager, err := newManager(context.Background(), "192.168.10.2", runner)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Errorf("Manager.Close() error = %v", err)
+		}
+	})
+	return manager
+}
+
+func newRequest(method, path, body string) *http.Request {
+	if body == "" {
+		return httptest.NewRequest(method, path, nil)
+	}
+	return httptest.NewRequest(method, path, strings.NewReader(body))
+}
+
+func waitForStart(t *testing.T, started <-chan int32, want int32) {
+	t.Helper()
+	select {
+	case got := <-started:
+		if got != want {
+			t.Fatalf("session start sequence = %d, want %d", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("session %d did not start", want)
+	}
+}
+
+func waitForState(t *testing.T, manager *Manager, host, state string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		camera, found := manager.Camera(host)
+		if found && camera.State == state {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	camera, _ := manager.Camera(host)
+	t.Fatalf("camera state = %q, want %q", camera.State, state)
+}

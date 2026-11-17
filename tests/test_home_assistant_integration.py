@@ -1,74 +1,24 @@
 """Offline tests for the pinned Home Assistant integration environment."""
 
 import asyncio
-import ipaddress
 import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from aiohttp import ClientSession, web
+
 from custom_components.netvue_local import async_setup_entry, async_unload_entry
-from custom_components.netvue_local.bridge_api import BridgeError
+from custom_components.netvue_local.bridge_api import BridgeError, ManagedCamera, async_stop_camera
 from custom_components.netvue_local.binary_sensor import NetvueStreamSensor
 from custom_components.netvue_local.camera import NetvueCamera
 from custom_components.netvue_local.config_flow import NetvueConfigFlow, NetvueOptionsFlow, _duplicate
-from custom_components.netvue_local.discovery import (
-    Candidate, _DiscoveryProtocol, async_discover, local_network, parse_response,
-)
+from custom_components.netvue_local.coordinator import NetvueCoordinator
 from custom_components.netvue_local.rtsp import (
     async_probe_stream, stream_url_from_name, validate_host, validate_stream_url,
 )
 from homeassistant.exceptions import ConfigEntryNotReady
-from netvue_bridge.protocol import command_packet
-
-
-def packet(host="192.168.10.2", **unit):
-    return command_packet([{"A": 8, "V": 2, "C": 0,
-                            "P": ["fake", "fake", host, 5555, "test-key"], **unit}])
-
-
-class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
-    def test_validate_replies_and_discard_key(self):
-        network = local_network("192.168.10.1", 24)
-        candidate = parse_response(packet(), "192.168.10.2", network)
-        self.assertEqual(candidate.host, "192.168.10.2")
-        self.assertNotIn("test-key", repr(candidate))
-        for data, sender in [
-            (packet(host="192.168.10.3"), "192.168.10.2"),
-            (packet(C=1), "192.168.10.2"),
-            (packet(P=["fake"]), "192.168.10.2"),
-            (command_packet([{"A": 8, "V": 2, "P": ["fake", "fake", "192.168.10.2", 5555, "test-key"]}, 1]), "192.168.10.2"),
-            (b"bad", "192.168.10.2"),
-            (packet(), "192.168.11.2"),
-        ]:
-            self.assertIsNone(parse_response(data, sender, network))
-
-    def test_duplicates_and_bounds(self):
-        protocol = _DiscoveryProtocol("192.168.10.1", local_network("192.168.10.1", 24))
-        protocol.datagram_received(packet(), ("192.168.10.2", 36868))
-        protocol.datagram_received(packet(), ("192.168.10.2", 36868))
-        protocol.datagram_received(b"x", ("192.168.10.2", 36868))
-        self.assertEqual(len(protocol.candidates), 1)
-        self.assertEqual(protocol.invalid, 1)
-        for value, prefix in [("8.8.8.8", 24), ("192.168.10.1", 16),
-                              ("127.0.0.1", 24), ("192.168.10.0", 24)]:
-            with self.assertRaises(ValueError):
-                local_network(value, prefix)
-
-    async def test_one_broadcast_and_deadline_cleanup(self):
-        transport = unittest.mock.Mock()
-        loop = asyncio.get_running_loop()
-        with patch.object(loop, "create_datagram_endpoint", return_value=(transport, None)), \
-                patch("custom_components.netvue_local.discovery.asyncio.sleep",
-                      new=unittest.mock.AsyncMock()) as sleep:
-            self.assertEqual(await async_discover("192.168.10.1", 24), [])
-        transport.sendto.assert_called_once()
-        self.assertEqual(transport.sendto.call_args.args[1], ("192.168.10.255", 36868))
-        sleep.assert_awaited_once_with(2.0)
-        transport.close.assert_called_once()
-
-
 class ConfigurationTests(unittest.TestCase):
     def test_urls_and_addresses(self):
         self.assertEqual(validate_host("192.168.10.2"), "192.168.10.2")
@@ -141,35 +91,17 @@ class RTSPTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_user_discovery_and_selection(self):
-        hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: []))
-        flow = NetvueConfigFlow()
-        flow.hass = hass
-        adapters = [{"name": "fake0", "enabled": True,
-                     "ipv4": [{"address": "192.168.10.1", "network_prefix": 24}]}]
-        with patch("custom_components.netvue_local.config_flow.async_get_adapters",
-                   new=unittest.mock.AsyncMock(return_value=adapters)), \
-                patch("custom_components.netvue_local.config_flow.async_discover",
-                      new=unittest.mock.AsyncMock(return_value=[Candidate("192.168.10.2")])) as discover:
-            await flow.async_step_discover()
-            discover.assert_not_awaited()
-            result = await flow.async_step_discover({"source": "fake0: 192.168.10.1 (192.168.10.0/24)"})
-            self.assertEqual(result["step_id"], "select")
-            result = await flow.async_step_select({"host": "192.168.10.2"})
-            self.assertEqual(result["step_id"], "manual")
-            self.assertEqual(flow._host, "192.168.10.2")
-            discover.assert_awaited_once_with("192.168.10.1", 24)
-
     async def test_manual_flow_creates_a_unique_managed_stream(self):
         hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: []))
         flow = NetvueConfigFlow()
         flow.hass = hass
         data = {"name": "Test", "host": "192.168.10.2"}
-        form = await flow.async_step_manual()
+        form = await flow.async_step_user()
+        self.assertEqual(form["step_id"], "user")
         self.assertEqual(form["data_schema"](data), data)
-        invalid = await flow.async_step_manual({**data, "host": "8.8.8.8"})
+        invalid = await flow.async_step_user({**data, "host": "8.8.8.8"})
         self.assertEqual(invalid["errors"]["base"], "invalid_input")
-        result = await flow.async_step_manual(data)
+        result = await flow.async_step_user(data)
         name = "netvue_192_168_10_2"
         self.assertEqual(result["type"], "create_entry")
         self.assertEqual(result["title"], "Test")
@@ -226,13 +158,13 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
                                   async_unload_platforms=unittest.mock.AsyncMock(return_value=True))
         hass = SimpleNamespace(config_entries=entries)
         coordinator = SimpleNamespace(data=True, last_update_success=True,
-                                      async_refresh=unittest.mock.AsyncMock())
-        with patch("custom_components.netvue_local.async_ensure_camera",
-                   new=unittest.mock.AsyncMock()) as ensure, \
-                patch("custom_components.netvue_local.NetvueCoordinator",
-                      return_value=coordinator):
+                                      async_refresh=unittest.mock.AsyncMock(),
+                                      camera=SimpleNamespace(
+                                          async_reconcile=unittest.mock.AsyncMock()))
+        with patch("custom_components.netvue_local.NetvueCoordinator",
+                   return_value=coordinator):
             self.assertTrue(await async_setup_entry(hass, entry))
-            ensure.assert_awaited_once_with(hass, "192.168.10.2", "a")
+            coordinator.camera.async_reconcile.assert_awaited_once_with()
         camera = NetvueCamera(entry, coordinator)
         self.assertEqual(await camera.stream_source(), entry.data["stream_url"])
         self.assertTrue(camera.available)
@@ -248,12 +180,218 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         stop.assert_awaited_once_with(hass, "192.168.10.2")
         entries.async_unload_platforms.assert_awaited_once()
 
+    async def test_unload_preserves_entry_when_bridge_cannot_delete_camera(self):
+        entry = SimpleNamespace(
+            data={
+                "host": "192.168.10.2",
+                "stream_name": "a",
+                "stream_url": "rtsp://127.0.0.1:8554/a",
+            },
+            options={},
+        )
+        entries = SimpleNamespace(
+            async_unload_platforms=unittest.mock.AsyncMock(return_value=True)
+        )
+        hass = SimpleNamespace(config_entries=entries)
+        with patch(
+            "custom_components.netvue_local.async_stop_camera",
+            new=unittest.mock.AsyncMock(side_effect=BridgeError("offline")),
+        ) as stop:
+            self.assertFalse(await async_unload_entry(hass, entry))
+        stop.assert_awaited_once_with(hass, "192.168.10.2")
+        entries.async_unload_platforms.assert_not_awaited()
+
     async def test_setup_rejects_entry_without_managed_stream_name(self):
         entry = SimpleNamespace(data={"host": "192.168.10.2",
                                       "stream_url": "rtsp://127.0.0.1:8554/legacy"},
                                 options={})
         with self.assertRaisesRegex(ConfigEntryNotReady, "unsupported configuration"):
             await async_setup_entry(SimpleNamespace(), entry)
+
+class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.host = "192.168.10.2"
+        self.name = "netvue_192_168_10_2"
+        self.record = {
+            "host": self.host, "stream_name": self.name,
+            "rtsp_url": f"rtsp://127.0.0.1:8554/{self.name}", "state": "running",
+        }
+        self.current = None
+        self.requests = []
+        self.post_started = asyncio.Event()
+        self.post_continue = asyncio.Event()
+        self.delay_post = False
+        self.get_started = asyncio.Event()
+        self.get_continue = asyncio.Event()
+        self.delay_get = False
+        self.post_status = 202
+        self.invalid_json = False
+        self.status = {}
+        self.body = None
+
+        async def handler(request):
+            self.requests.append((request.method, request.path))
+            status = self.status.get(request.method)
+            if status is not None:
+                return web.Response(status=status)
+            if request.method == "GET":
+                self.get_started.set()
+                if self.delay_get:
+                    await self.get_continue.wait()
+                if self.current is None:
+                    return web.Response(status=404)
+                if self.invalid_json:
+                    return web.Response(text="{", content_type="application/json")
+                return web.json_response(self.current)
+            if request.method == "POST":
+                self.body = await request.json()
+                self.post_started.set()
+                if self.delay_post:
+                    await self.post_continue.wait()
+                self.current = dict(self.record)
+                return web.json_response(self.current, status=self.post_status)
+            existed = self.current is not None
+            self.current = None
+            return web.Response(status=200 if existed else 404)
+
+        app = web.Application()
+        app.router.add_route("*", "/api/v1/cameras", handler)
+        app.router.add_route("*", "/api/v1/cameras/{host}", handler)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, "127.0.0.1", 0)
+        await self.site.start()
+        port = self.site._server.sockets[0].getsockname()[1]
+        self.client = ClientSession()
+        self.hass = SimpleNamespace(data={})
+        self.api_patch = patch("custom_components.netvue_local.bridge_api.API_URL",
+                               f"http://127.0.0.1:{port}/api/v1")
+        self.session_patch = patch(
+            "custom_components.netvue_local.bridge_api.async_get_clientsession",
+            return_value=self.client,
+        )
+        self.api_patch.start()
+        self.session_patch.start()
+        self.camera = ManagedCamera(self.hass, self.host, self.name)
+
+    async def asyncTearDown(self):
+        self.post_continue.set()
+        self.get_continue.set()
+        await self.client.close()
+        await self.runner.cleanup()
+        self.session_patch.stop()
+        self.api_patch.stop()
+
+    async def test_restore_after_restart_and_do_not_restart_existing_states(self):
+        await self.camera.async_reconcile()
+        self.assertEqual(self.body, {"host": self.host, "stream_name": self.name})
+        self.assertEqual([method for method, _ in self.requests], ["GET", "POST"])
+        for state in ("running", "stopped", "failed"):
+            self.current["state"] = state
+            await self.camera.async_reconcile()
+        self.assertEqual([method for method, _ in self.requests],
+                         ["GET", "POST", "GET", "GET", "GET"])
+        self.current = None  # The manager restarted.
+        await self.camera.async_reconcile()
+        await self.camera.async_reconcile()
+        self.assertEqual([method for method, _ in self.requests][-3:],
+                         ["GET", "POST", "GET"])
+
+    async def test_delayed_post_then_delete_and_waiting_refresh(self):
+        self.delay_post = True
+        refresh = asyncio.create_task(self.camera.async_reconcile())
+        await asyncio.wait_for(self.post_started.wait(), 2)
+        delete = asyncio.create_task(async_stop_camera(self.hass, self.host))
+        await asyncio.sleep(0)
+        waiting_refresh = asyncio.create_task(self.camera.async_reconcile())
+        await asyncio.sleep(0)
+        self.assertFalse(delete.done())
+        self.post_continue.set()
+        await asyncio.gather(refresh, delete, waiting_refresh)
+        await self.camera.async_reconcile()
+        self.assertIsNone(self.current)
+        self.assertEqual([method for method, _ in self.requests], ["GET", "POST", "DELETE"])
+        await async_stop_camera(self.hass, self.host)  # 404 is idempotent.
+
+    async def test_delete_after_get_removes_session_and_invalidates_refresh(self):
+        self.delay_get = True
+        refresh = asyncio.create_task(self.camera.async_reconcile())
+        await asyncio.wait_for(self.get_started.wait(), 2)
+        delete = asyncio.create_task(async_stop_camera(self.hass, self.host))
+        await asyncio.sleep(0)
+        self.get_continue.set()
+        await asyncio.gather(refresh, delete)
+        self.assertIsNone(self.current)
+        await self.camera.async_reconcile()
+        self.assertEqual(
+            [method for method, _ in self.requests],
+            ["GET", "POST", "DELETE"],
+        )
+
+    async def test_post_200_and_bad_json(self):
+        self.post_status = 200
+        await self.camera.async_reconcile()
+        self.invalid_json = True
+        with self.assertRaisesRegex(BridgeError, "invalid camera JSON"):
+            await self.camera.async_reconcile()
+
+    async def test_errors_and_inconsistent_json_are_visible(self):
+        self.status["GET"] = 503
+        with self.assertRaisesRegex(BridgeError, "HTTP 503"):
+            await self.camera.async_reconcile()
+        self.status.clear()
+        self.current = {**self.record, "stream_name": "other"}
+        with self.assertRaisesRegex(BridgeError, "inconsistent"):
+            await self.camera.async_reconcile()
+        self.assertNotIn("POST", [method for method, _ in self.requests])
+        self.status["DELETE"] = 500
+        with self.assertRaisesRegex(BridgeError, "HTTP 500"):
+            await async_stop_camera(self.hass, self.host)
+
+    async def test_failed_delete_does_not_disable_future_reconciliation(self):
+        await self.camera.async_reconcile()
+        self.status["DELETE"] = 500
+        with self.assertRaisesRegex(BridgeError, "HTTP 500"):
+            await async_stop_camera(self.hass, self.host)
+
+        self.status.clear()
+        self.current = None
+        await self.camera.async_reconcile()
+        self.assertEqual(
+            [method for method, _ in self.requests],
+            ["GET", "POST", "DELETE", "GET", "POST"],
+        )
+
+    async def test_invalid_url_or_state_does_not_trigger_post(self):
+        for field, value in (("rtsp_url", "rtsp://127.0.0.1:8554/other"),
+                             ("state", ""), ("state", None)):
+            with self.subTest(field=field, value=value):
+                self.current = {**self.record, field: value}
+                with self.assertRaisesRegex(BridgeError, "inconsistent"):
+                    await self.camera.async_reconcile()
+        self.assertEqual([method for method, _ in self.requests], ["GET", "GET", "GET"])
+
+    async def test_each_coordinator_update_reconciles_then_probes(self):
+        url = self.record["rtsp_url"]
+        coordinator = SimpleNamespace(camera=self.camera, url=url)
+        with patch("custom_components.netvue_local.coordinator.async_probe_stream",
+                   new=unittest.mock.AsyncMock(return_value=True)) as probe:
+            self.assertTrue(await NetvueCoordinator._async_update_data(coordinator))
+            self.current = None
+            self.assertTrue(await NetvueCoordinator._async_update_data(coordinator))
+        self.assertEqual([method for method, _ in self.requests], ["GET", "POST", "GET", "POST"])
+        self.assertEqual(probe.await_count, 2)
+
+    async def test_coordinator_probes_sdp_even_if_manager_fails(self):
+        entry = SimpleNamespace(data={"stream_url": self.record["rtsp_url"]}, options={})
+        # Exercise the update method without constructing HA's scheduler.
+        coordinator = SimpleNamespace(camera=self.camera, url=entry.data["stream_url"])
+        self.status["GET"] = 503
+        with self.assertLogs("custom_components.netvue_local.coordinator", level="WARNING"), \
+                patch("custom_components.netvue_local.coordinator.async_probe_stream",
+                      new=unittest.mock.AsyncMock(return_value=True)) as probe:
+            self.assertTrue(await NetvueCoordinator._async_update_data(coordinator))
+        probe.assert_awaited_once_with(entry.data["stream_url"])
 
 if __name__ == "__main__":
     unittest.main()

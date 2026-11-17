@@ -1,5 +1,12 @@
 # Installation Netvue Bridge avec Portainer CE / Docker Swarm
 
+> Ce guide décrit l'ancienne stack Python avec gestionnaire et état persistant.
+> La version actuelle de l'intégration HA cible l'API Go, pas cette ancienne
+> stack. Pour la passerelle Go dynamique (un service pour toutes les caméras),
+> utilisez le [guide Go Portainer](./go-portainer.md) et
+> [go-stack.yaml](./go-stack.yaml). Les deux déploiements ne doivent pas être
+> démarrés simultanément sur le même nœud.
+
 ## Architecture et contraintes
 
 La stack contient deux services, tous deux limités au nœud Debian qui héberge

@@ -238,7 +238,7 @@ func generateSyntheticVideo(t *testing.T, ffmpeg, outputPath string) {
 	command := exec.Command(ffmpeg,
 		"-hide_banner", "-loglevel", "error",
 		"-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
-		"-frames:v", "30",
+		"-frames:v", "60",
 		"-pix_fmt", "yuv420p",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-x264-params", "keyint=10:min-keyint=10:repeat-headers=1",

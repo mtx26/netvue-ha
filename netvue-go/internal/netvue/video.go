@@ -378,7 +378,7 @@ func closeRTSPClient(client *gortsplib.Client) {
 
 func rtspStartupError(operation string, response *base.Response, err error) error {
 	if response != nil {
-		if response.StatusCode >= base.StatusInternalServerError && response.StatusCode < 600 {
+		if response.StatusCode == base.StatusServiceUnavailable {
 			return fmt.Errorf("%w: %s (RTSP status %d): %w", ErrVideoStartup, operation, response.StatusCode, err)
 		}
 		if response.StatusCode >= base.StatusBadRequest {

@@ -7,7 +7,7 @@ from homeassistant.const import Platform
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.core import HomeAssistant
 
-from .bridge_api import BridgeError, async_ensure_camera, async_stop_camera
+from .bridge_api import BridgeError, async_stop_camera
 from .const import CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL
 from .coordinator import NetvueCoordinator
 from .rtsp import stream_url_from_name
@@ -35,11 +35,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(
             "Camera entry uses an unsupported configuration; remove and add it again"
         ) from exc
+    coordinator = NetvueCoordinator(hass, entry, *camera)
     try:
-        await async_ensure_camera(hass, *camera)
+        await coordinator.camera.async_reconcile()
     except BridgeError as exc:
         raise ConfigEntryNotReady("Netvue Bridge session manager is unavailable") from exc
-    coordinator = NetvueCoordinator(hass, entry)
     await coordinator.async_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -47,11 +47,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     camera = _managed_camera(entry)
-    if unloaded:
-        try:
-            await async_stop_camera(hass, camera[0])
-        except BridgeError as exc:
-            _LOGGER.warning("Unable to stop the bridge session while unloading the entry: %s", exc)
-    return unloaded
+    try:
+        await async_stop_camera(hass, camera[0])
+    except BridgeError as exc:
+        _LOGGER.warning("Unable to stop the bridge session while unloading the entry: %s", exc)
+        return False
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

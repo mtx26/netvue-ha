@@ -2,24 +2,6 @@
   "config": {
     "step": {
       "user": {
-        "title": "Netvue Local",
-        "description": "Recherchez une caméra sur le réseau local ou ajoutez-la par adresse IP.",
-        "menu_options": {
-          "discover": "Rechercher des caméras",
-          "manual": "Ajouter manuellement"
-        }
-      },
-      "discover": {
-        "title": "Rechercher des caméras",
-        "description": "Choisissez l'interface locale. Une seule diffusion UDP est envoyée sur le sous-réseau sélectionné.",
-        "data": {"source": "Interface réseau"}
-      },
-      "select": {
-        "title": "Choisir une caméra détectée",
-        "description": "Sélectionnez une adresse détectée, puis donnez un nom à la caméra.",
-        "data": {"host": "Caméra détectée"}
-      },
-      "manual": {
         "title": "Ajouter une caméra",
         "description": "Indiquez le nom affiché et l'adresse IPv4. L'intégration crée un flux unique et demande au pont de le démarrer.",
         "data": {"name": "Nom affiché", "host": "Adresse IPv4 de la caméra"}
@@ -27,13 +9,9 @@
     },
     "error": {
       "invalid_input": "Adresse IPv4 ou nom affiché invalide.",
-      "already_configured": "Cette caméra est déjà configurée.",
-      "invalid_interface": "L'interface sélectionnée n'est plus disponible.",
-      "discovery_failed": "La recherche UDP a échoué. Vérifiez le réseau ou ajoutez la caméra manuellement.",
-      "no_devices": "Aucune caméra n'a répondu. Vous pouvez l'ajouter manuellement."
+      "already_configured": "Cette caméra est déjà configurée."
     },
     "abort": {
-      "no_interfaces": "Aucune interface IPv4 privée compatible n'est disponible.",
       "already_configured": "Cette caméra est déjà configurée."
     }
   },

@@ -1,7 +1,9 @@
 # Netvue Bridge en Go
 
 Cette implémentation est un nouveau programme séparé de la passerelle Python.
-Le Python et l'intégration Home Assistant existants ne sont pas modifiés.
+Le programme Go gère plusieurs caméras dans une seule instance ; l'intégration
+Python `netvue_local` reste l'interface Home Assistant. Pour préparer le
+déploiement, voir le [guide Docker/Portainer](../deployment/go-portainer.md).
 
 ## Prérequis
 
@@ -39,11 +41,11 @@ boucle locale. Ils ne contactent pas les caméras.
 ## Commandes
 
 `test` effectue une session bornée ; `run` supervise une session jusqu'à l'arrêt
-du programme. Les deux commandes appellent le même moteur de session. Elles
-envoient réellement une découverte LAN, ouvrent une connexion au endpoint
-annoncé, effectuent le login puis demandent le flux. À utiliser uniquement
-avec une autorisation spécifique pour l'appareil concerné ; aucun mode de
-simulation n'est présenté comme un accès réel.
+du programme. `serve` démarre un gestionnaire HTTP local et exécute une session
+supervisée indépendante par caméra ajoutée par Home Assistant. Toutes les
+commandes réutilisent le même moteur de session. L'ajout d'une caméra lance
+réellement sa découverte LAN, son login et sa demande de flux ; à utiliser
+uniquement après autorisation de contact.
 
 ```text
 netvue-bridge test \
@@ -60,6 +62,10 @@ netvue-bridge run \
   --rtsp rtsp://127.0.0.1:8554/netvue_test
 ```
 
+```text
+netvue-bridge serve --source 192.168.10.10
+```
+
 Les valeurs sont des exemples. `test` exige une durée explicite strictement
 positive, sans plafond maximal ; la session s'arrête à son échéance ou à
 l'annulation du contexte. `run` continue jusqu'à Ctrl+C ou SIGTERM ; il relance
@@ -68,8 +74,10 @@ au maximum.
 Après cinq minutes de fonctionnement d'une session, le délai repart à deux
 secondes. Les refus d'authentification, les configurations invalides et les
 erreurs critiques arrêtent le programme. Une seule session caméra est active
-à la fois. Le pont n'écrit pas de vidéo ni de clé sur disque et ne journalise
-pas la clé obtenue pendant la découverte.
+à la fois avec la commande `run`. Avec `serve`, chaque entrée HA possède sa
+propre session et son propre superviseur, en parallèle des autres caméras.
+Le pont n'écrit pas de vidéo ni de clé sur disque et ne journalise pas la clé
+obtenue pendant la découverte.
 
 L'URL RTSP de sortie doit avoir un hôte loopback, un port explicite et un
 chemin ; la publication force RTSP sur TCP.
@@ -88,9 +96,12 @@ cryptographique au transport caméra.
 
 ## Limites actuelles
 
-- Une caméra par processus. `run` fournit un seul superviseur et une reprise
-  séquentielle bornée ; pas de configuration multi-caméra, API de contrôle ou
-  intégration Home Assistant Go.
+- La liste des caméras du gestionnaire est volatile ; Home Assistant doit
+  conserver ses config entries et les réconcilier après un redémarrage du pont.
+- Le gestionnaire utilise MediaMTX sur `127.0.0.1:8554` et l'API HA sur
+  `127.0.0.1:8765` ; ces adresses font partie du contrat de déploiement.
+- Le contrôle HTTP et les flux RTSP restent accessibles dans le réseau local
+  de l'hôte ; ne publiez ni le port de contrôle ni RTSP.
 - Le démarrage attend SPS, PPS et IDR ; le SPS est contrôlé avant et après
   recadrage avec des calculs bornés. Un changement de paramètres ferme puis
   réouvre une publication RTSP à l'IDR suivant. Plusieurs changements
@@ -103,8 +114,31 @@ cryptographique au transport caméra.
   supérieur à dix secondes, elle avance de 1 ms (90 ticks RTP) au lieu de
   deviner une cadence. Les données brutes de l'anomalie historique manquent :
   cette règle garantit l'ordre de sortie, pas la continuité temporelle réelle.
-- La caméra 1, l'autonomie sans cloud, la stabilité prolongée et toute
-  compatibilité de déploiement ne sont pas établies par les tests synthétiques.
+- L'intégration HA demande une adresse IPv4 manuellement et n'implémente pas le
+  protocole Netvue. Seul Go effectue la découverte unicast au démarrage d'une
+  session.
+- La caméra 1, l'autonomie sans cloud, la stabilité prolongée et le déploiement
+  réel ne sont pas établis par les tests synthétiques.
+
+## Gestion multi-caméra
+
+`serve` écoute uniquement sur `127.0.0.1:8765` et publie vers le MediaMTX local
+sur `127.0.0.1:8554`. Son API JSON standard permet `GET /api/v1/status`,
+`GET /api/v1/cameras/{host}`, `POST /api/v1/cameras` avec `{host, stream_name}`,
+`POST /api/v1/cameras/{host}/start`, `POST /api/v1/cameras/{host}/stop` et
+`DELETE /api/v1/cameras/{host}`. L'ajout est idempotent et l'URL RTSP est
+renvoyée par le gestionnaire. Les noms de flux sont uniques.
+
+La liste Go est uniquement runtime et n'est pas persistée : les config entries
+Home Assistant sont la source de vérité. À son prochain refresh, HA réajoute
+une entrée absente après un redémarrage du pont ; une entrée déjà présente,
+y compris arrêtée ou en échec, n'est pas relancée implicitement. La suppression
+d'une entrée HA arrête et retire sa session Go.
+
+L'API n'ajoute pas d'authentification distincte : elle écoute seulement sur
+loopback. Ne publiez ni le port 8765 ni le flux RTSP. Des processus locaux
+pouvant joindre loopback peuvent appeler l'API ; Home Assistant et le pont
+doivent partager le réseau host du nœud.
 
 Voir le [plan Go](../docs/go-plan.md), la [synthèse du protocole](../docs/netvue-protocol.md)
-et le [rapport de phase 23](../findings/phase23-go-reprise.md).
+et le [bilan de phase 26](../findings/phase26-multicamera-go.md).
