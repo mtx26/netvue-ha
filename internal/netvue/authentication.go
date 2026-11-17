@@ -66,7 +66,7 @@ func authenticate(ctx context.Context, conn net.Conn, camera camera, timeout tim
 			return 0, fmt.Errorf("read authentication response: %w", err)
 		}
 		if response.Kind != packetCommand {
-			return 0, fmt.Errorf("%w: unexpected packet during authentication", ErrProtocol)
+			return 0, withReason("unexpected packet type", fmt.Errorf("%w: unexpected packet during authentication", ErrProtocol))
 		}
 		units, err := ParseUnits(response.Body)
 		if err != nil {
@@ -79,11 +79,11 @@ func authenticate(ctx context.Context, conn net.Conn, camera camera, timeout tim
 			}
 			version, versionOK := unitInt(unit, "V")
 			if !versionOK || (version != 1 && version != 2) {
-				return 0, fmt.Errorf("%w: unsupported authentication response version", ErrProtocol)
+				return 0, withReason("unsupported authentication response version", fmt.Errorf("%w: unsupported authentication response version", ErrProtocol))
 			}
 			result, resultOK := unitInt(unit, "C")
 			if !resultOK {
-				return 0, fmt.Errorf("%w: authentication response has no explicit result", ErrProtocol)
+				return 0, withReason("missing or invalid authentication result", fmt.Errorf("%w: authentication response has no explicit result", ErrProtocol))
 			}
 			if err := contextError(ctx); err != nil {
 				return 0, err
@@ -95,7 +95,7 @@ func authenticate(ctx context.Context, conn net.Conn, camera camera, timeout tim
 			return result, nil
 		}
 	}
-	return 0, fmt.Errorf("%w: authentication response not found", ErrProtocol)
+	return 0, withReason("authentication response not found", fmt.Errorf("%w: authentication response not found", ErrProtocol))
 }
 
 func contextError(ctx context.Context) error {

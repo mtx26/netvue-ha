@@ -73,7 +73,11 @@ func runCommand(
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return 0
 		}
-		slog.Error("Netvue service stopped", "error", err)
+		if command == "serve" {
+			slog.Error("Netvue service stopped", "error", err)
+		} else {
+			slog.Error("Netvue service stopped", "error", netvue.SessionDiagnostic(err))
+		}
 		return 1
 	}
 	if command == "serve" {

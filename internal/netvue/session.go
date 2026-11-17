@@ -56,33 +56,33 @@ func RunSession(ctx context.Context, source, target, rtspURL string, duration ti
 		return fmt.Errorf("%w: source and camera addresses must differ", ErrProtocol)
 	}
 	if err := checkRTSPListener(sessionCtx, rtspURL); err != nil {
-		return err
+		return atStage("RTSP preflight", err)
 	}
 
 	device, err := discover(sessionCtx, sourceIP.String(), targetIP.String())
 	if err != nil {
-		return fmt.Errorf("Netvue discovery failed: %w", err)
+		return atStage("discovery", fmt.Errorf("Netvue discovery failed: %w", err))
 	}
 	conn, err := (&net.Dialer{Timeout: connectTimeout}).DialContext(
 		sessionCtx, "tcp4", device.endpoint(),
 	)
 	if err != nil {
-		return fmt.Errorf("connect to discovered Netvue endpoint: %w", err)
+		return atStage("camera connection", fmt.Errorf("connect to discovered Netvue endpoint: %w", err))
 	}
 	defer conn.Close()
 
 	result, err := authenticate(sessionCtx, conn, device, loginTimeout)
 	if err != nil {
-		return err
+		return atStage("authentication", err)
 	}
 	if result != 0 {
-		return fmt.Errorf("%w: result_code=%d", ErrAuthenticationRejected, result)
+		return atStage("authentication", fmt.Errorf("%w: result_code=%d", ErrAuthenticationRejected, result))
 	}
 	if err := contextError(sessionCtx); err != nil {
 		return err
 	}
 	if err := sendLiveRequest(sessionCtx, conn); err != nil {
-		return err
+		return atStage("LIVE request", err)
 	}
 	publisher, err := newVideoPublisher(sessionCtx, rtspURL)
 	if err != nil {
@@ -195,7 +195,7 @@ func receiveLiveWithTimeouts(
 			return err
 		}
 		if publisher.CurrentPublicationFrames() == 0 && !now.Before(startupDeadline) {
-			return fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)
+			return atStage("H.264", withReason("no publication before startup deadline", fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)))
 		}
 		deadline := now.Add(silenceTimeout)
 		if !lastVideo.IsZero() {
@@ -211,7 +211,7 @@ func receiveLiveWithTimeouts(
 			if contextError(ctx) != nil {
 				continue
 			}
-			return fmt.Errorf("set Netvue read deadline: %w", err)
+			return atStage("LIVE packet", fmt.Errorf("set Netvue read deadline: %w", err))
 		}
 		packet, err := ReadPacket(conn)
 		if err != nil {
@@ -221,17 +221,17 @@ func receiveLiveWithTimeouts(
 			var networkError net.Error
 			if errors.As(err, &networkError) && networkError.Timeout() {
 				if publisher.CurrentPublicationFrames() == 0 && !time.Now().Before(startupDeadline) {
-					return fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)
+					return atStage("H.264", withReason("no publication before startup deadline", fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)))
 				}
-				return fmt.Errorf("%w: no video received before timeout", ErrStreamInterrupted)
+				return atStage("LIVE packet", withReason("no video received before timeout", fmt.Errorf("%w: no video received before timeout", ErrStreamInterrupted)))
 			}
-			return fmt.Errorf("read Netvue LIVE packet: %w", err)
+			return atStage("LIVE packet", fmt.Errorf("read Netvue LIVE packet: %w", err))
 		}
 		switch packet.Kind {
 		case packetCommand:
 			units, err := ParseUnits(packet.Body)
 			if err != nil {
-				return err
+				return atStage("LIVE response", err)
 			}
 			for _, unit := range units {
 				action, actionOK := unitInt(unit, "A")
@@ -240,24 +240,28 @@ func receiveLiveWithTimeouts(
 					continue
 				}
 				if !versionOK || (version != 1 && version != 2) {
-					return fmt.Errorf("%w: %w (present=%t, value=%d)", ErrProtocol, ErrLiveResponseVersion, versionOK, version)
+					reason := "unsupported version"
+					if !versionOK {
+						reason = "missing or invalid version"
+					}
+					return atStage("LIVE response", withReason(reason, fmt.Errorf("%w: %w (present=%t, value=%d)", ErrProtocol, ErrLiveResponseVersion, versionOK, version)))
 				}
 				result, resultOK := unitInt(unit, "C")
 				if !resultOK {
-					return fmt.Errorf("%w: LIVE response has no explicit result", ErrProtocol)
+					return atStage("LIVE response", withReason("missing or invalid result", fmt.Errorf("%w: LIVE response has no explicit result", ErrProtocol)))
 				}
 				if result != 0 {
-					return fmt.Errorf("%w: LIVE selection rejected, result_code=%d", ErrProtocol, result)
+					return atStage("LIVE response", withReason("selection rejected", fmt.Errorf("%w: LIVE selection rejected, result_code=%d", ErrProtocol, result)))
 				}
 				channelReady = true
 			}
 		case packetMedia:
 			if !channelReady {
-				return fmt.Errorf("%w: media arrived before LIVE confirmation", ErrProtocol)
+				return atStage("LIVE response", withReason("media before confirmation", fmt.Errorf("%w: media arrived before LIVE confirmation", ErrProtocol)))
 			}
 			frame, isVideo, err := parseMediaFrame(packet.Body)
 			if err != nil {
-				return err
+				return atStage("media frame", err)
 			}
 			if !isVideo {
 				continue
@@ -278,7 +282,7 @@ func receiveLiveWithTimeouts(
 				if contextError(ctx) != nil {
 					continue
 				}
-				return err
+				return atStage("H.264", err)
 			}
 			now = time.Now()
 			lastVideo = now
@@ -294,7 +298,7 @@ func receiveLiveWithTimeouts(
 					lastPublished = now
 				}
 				if !lastPublished.IsZero() && now.Sub(lastPublished) > silenceTimeout {
-					return fmt.Errorf("%w: no published H.264 image before timeout", ErrStreamInterrupted)
+					return atStage("H.264", withReason("no published image before timeout", fmt.Errorf("%w: no published H.264 image before timeout", ErrStreamInterrupted)))
 				}
 			} else {
 				lastPublished = time.Time{}
@@ -302,12 +306,12 @@ func receiveLiveWithTimeouts(
 					startupDeadline = now.Add(startupTimeout)
 				}
 				if !now.Before(startupDeadline) {
-					return fmt.Errorf("%w: no IDR after startup or parameter change", ErrVideoNotReady)
+					return atStage("H.264", withReason("no IDR after startup or parameter change", fmt.Errorf("%w: no IDR after startup or parameter change", ErrVideoNotReady)))
 				}
 			}
 
 		default:
-			return fmt.Errorf("%w: unexpected packet type during LIVE", ErrProtocol)
+			return atStage("LIVE packet", withReason("unexpected packet type", fmt.Errorf("%w: unexpected packet type during LIVE", ErrProtocol)))
 		}
 	}
 }

@@ -91,11 +91,18 @@ func newVideoPublisher(ctx context.Context, outputURL string) (*videoPublisher, 
 
 func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error {
 	if len(accessUnit) == 0 || len(accessUnit) > maxAccessUnitSize {
-		return fmt.Errorf("%w: access unit size out of range", ErrProtocol)
+		return withReason("access unit size out of range", fmt.Errorf("%w: access unit size out of range", ErrProtocol))
 	}
 	var annexB h264.AnnexB
 	if err := annexB.Unmarshal(accessUnit); err != nil {
-		return fmt.Errorf("%w: parse Annex B access unit: %w", ErrProtocol, err)
+		reason := "invalid Annex B access unit"
+		switch {
+		case errors.Is(err, h264.ErrAnnexBNoInitialDelimiter):
+			reason = "missing Annex B initial delimiter"
+		case errors.Is(err, h264.ErrAnnexBNoNALUs):
+			reason = "Annex B access unit contains no NAL units"
+		}
+		return withReason(reason, fmt.Errorf("%w: parse Annex B access unit: %w", ErrProtocol, err))
 	}
 
 	hasIDR := false
@@ -105,7 +112,7 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 	var accessUnitSPS, accessUnitPPS []byte
 	for _, nalu := range annexB {
 		if len(nalu) == 0 || nalu[0]&0x80 != 0 {
-			return fmt.Errorf("%w: invalid H.264 NAL unit", ErrProtocol)
+			return withReason("invalid NAL unit", fmt.Errorf("%w: invalid H.264 NAL unit", ErrProtocol))
 		}
 		switch h264.NALUType(nalu[0] & 0x1f) {
 		case h264.NALUTypeNonIDR:
@@ -115,12 +122,12 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 			hasIDR = true
 		case h264.NALUTypeSPS:
 			if accessUnitSPS != nil && !bytes.Equal(accessUnitSPS, nalu) {
-				return fmt.Errorf("%w: multiple SPS values in one access unit", ErrProtocol)
+				return withReason("conflicting SPS in one access unit", fmt.Errorf("%w: multiple SPS values in one access unit", ErrProtocol))
 			}
 			accessUnitSPS = nalu
 			var parsed h264.SPS
 			if err := parsed.Unmarshal(nalu); err != nil {
-				return fmt.Errorf("%w: parse H.264 SPS: %w", ErrProtocol, err)
+				return withReason("invalid SPS", fmt.Errorf("%w: parse H.264 SPS: %w", ErrProtocol, err))
 			}
 			if err := validateH264SPS(parsed); err != nil {
 				return err
@@ -131,11 +138,11 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 			}
 		case h264.NALUTypePPS:
 			if accessUnitPPS != nil && !bytes.Equal(accessUnitPPS, nalu) {
-				return fmt.Errorf("%w: multiple PPS values in one access unit", ErrProtocol)
+				return withReason("conflicting PPS in one access unit", fmt.Errorf("%w: multiple PPS values in one access unit", ErrProtocol))
 			}
 			accessUnitPPS = nalu
 			if len(nalu) < 2 {
-				return fmt.Errorf("%w: truncated H.264 PPS", ErrProtocol)
+				return withReason("truncated PPS", fmt.Errorf("%w: truncated H.264 PPS", ErrProtocol))
 			}
 			if !bytes.Equal(pps, nalu) {
 				parametersChanged = parametersChanged || pps != nil
@@ -161,10 +168,10 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 			return nil
 		}
 		if len(publisher.sps) == 0 || len(publisher.pps) == 0 {
-			return fmt.Errorf("%w: IDR arrived before SPS/PPS", ErrVideoNotReady)
+			return withReason("IDR arrived before SPS/PPS", fmt.Errorf("%w: IDR arrived before SPS/PPS", ErrVideoNotReady))
 		}
 		if err := publisher.start(); err != nil {
-			return err
+			return atStage("RTSP publication", err)
 		}
 		annexB = prependParameters(annexB, publisher.sps, publisher.pps)
 	}
@@ -177,7 +184,7 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 	for _, packet := range packets {
 		packet.Timestamp = rtpTimestamp
 		if err := publisher.client.WritePacketRTP(publisher.media, packet); err != nil {
-			return fmt.Errorf("write RTSP RTP packet: %w", err)
+			return atStage("RTSP publication", fmt.Errorf("write RTSP RTP packet: %w", err))
 		}
 	}
 	publisher.published++
@@ -201,7 +208,7 @@ func validateH264SPS(sps h264.SPS) error {
 	codedHeight := heightInMapUnits * 16 * frameHeightFactor
 	if codedWidth > maxCodedH264Width || codedHeight > maxCodedH264Height ||
 		codedWidth*codedHeight > maxCodedH264Pixels {
-		return fmt.Errorf("%w: coded H.264 dimensions exceed configured limit", ErrProtocol)
+		return withReason("coded dimensions exceed configured limit", fmt.Errorf("%w: coded H.264 dimensions exceed configured limit", ErrProtocol))
 	}
 
 	chromaArrayType := sps.ChromaFormatIdc
@@ -218,7 +225,7 @@ func validateH264SPS(sps h264.SPS) error {
 	case 3:
 		cropUnitX, cropUnitY = 1, frameHeightFactor
 	default:
-		return fmt.Errorf("%w: unsupported H.264 chroma format", ErrProtocol)
+		return withReason("unsupported chroma format", fmt.Errorf("%w: unsupported H.264 chroma format", ErrProtocol))
 	}
 	if sps.FrameCropping != nil {
 		cropWidth := (uint64(sps.FrameCropping.LeftOffset) +
@@ -226,14 +233,14 @@ func validateH264SPS(sps h264.SPS) error {
 		cropHeight := (uint64(sps.FrameCropping.TopOffset) +
 			uint64(sps.FrameCropping.BottomOffset)) * cropUnitY
 		if cropWidth >= codedWidth || cropHeight >= codedHeight {
-			return fmt.Errorf("%w: invalid H.264 frame cropping", ErrProtocol)
+			return withReason("invalid frame cropping", fmt.Errorf("%w: invalid H.264 frame cropping", ErrProtocol))
 		}
 		codedWidth -= cropWidth
 		codedHeight -= cropHeight
 	}
 	if codedWidth > maxH264Width || codedHeight > maxH264Height ||
 		codedWidth*codedHeight > maxH264Pixels {
-		return fmt.Errorf("%w: displayed H.264 dimensions exceed configured limit", ErrProtocol)
+		return withReason("displayed dimensions exceed configured limit", fmt.Errorf("%w: displayed H.264 dimensions exceed configured limit", ErrProtocol))
 	}
 	return nil
 }

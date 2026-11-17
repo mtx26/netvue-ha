@@ -44,14 +44,14 @@ func EncodeCommand(units []map[string]any) ([]byte, error) {
 
 func ParseDatagram(data []byte) (Packet, error) {
 	if len(data) < headerSize {
-		return Packet{}, fmt.Errorf("%w: truncated datagram header", ErrProtocol)
+		return Packet{}, withReason("truncated packet header", fmt.Errorf("%w: truncated datagram header", ErrProtocol))
 	}
 	length, kind, err := validateHeader(data[:headerSize])
 	if err != nil {
 		return Packet{}, err
 	}
 	if len(data)-headerSize != length {
-		return Packet{}, fmt.Errorf("%w: datagram body length mismatch", ErrProtocol)
+		return Packet{}, withReason("datagram length mismatch", fmt.Errorf("%w: datagram body length mismatch", ErrProtocol))
 	}
 	return Packet{Kind: kind, Body: data[headerSize:]}, nil
 }
@@ -81,14 +81,14 @@ func ReadPacket(reader io.Reader) (Packet, error) {
 func ParseUnits(body []byte) ([]map[string]json.RawMessage, error) {
 	var units []map[string]json.RawMessage
 	if err := json.Unmarshal(body, &units); err != nil {
-		return nil, fmt.Errorf("%w: invalid command JSON: %v", ErrProtocol, err)
+		return nil, withReason("invalid command JSON", fmt.Errorf("%w: invalid command JSON: %v", ErrProtocol, err))
 	}
 	if units == nil {
-		return nil, fmt.Errorf("%w: command list is not an array", ErrProtocol)
+		return nil, withReason("command list is not an array", fmt.Errorf("%w: command list is not an array", ErrProtocol))
 	}
 	for _, unit := range units {
 		if unit == nil {
-			return nil, fmt.Errorf("%w: command list contains a non-object", ErrProtocol)
+			return nil, withReason("command list contains a non-object", fmt.Errorf("%w: command list contains a non-object", ErrProtocol))
 		}
 	}
 	return units, nil
@@ -108,16 +108,16 @@ func unitInt(unit map[string]json.RawMessage, field string) (int64, bool) {
 
 func validateHeader(header []byte) (int, uint16, error) {
 	if len(header) != headerSize {
-		return 0, 0, fmt.Errorf("%w: invalid header size", ErrProtocol)
+		return 0, 0, withReason("invalid packet header size", fmt.Errorf("%w: invalid header size", ErrProtocol))
 	}
 	length := binary.LittleEndian.Uint32(header[0:4])
 	flag := binary.LittleEndian.Uint16(header[12:14])
 	kind := binary.LittleEndian.Uint16(header[14:16])
 	if length == 0 || length >= maxBody {
-		return 0, 0, fmt.Errorf("%w: body length out of range", ErrProtocol)
+		return 0, 0, withReason("packet body length out of range", fmt.Errorf("%w: body length out of range", ErrProtocol))
 	}
 	if flag != 0 {
-		return 0, 0, fmt.Errorf("%w: flagged packets are unsupported", ErrProtocol)
+		return 0, 0, withReason("unsupported packet flags", fmt.Errorf("%w: flagged packets are unsupported", ErrProtocol))
 	}
 	return int(length), kind, nil
 }

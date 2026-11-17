@@ -21,8 +21,13 @@ historiques locales peuvent rester dans `findings/` (ignoré par Git).
   et la demande LIVE ont réussi ; du H.264 a été reçu et une publication
   RTSP/TCP décodée.
 - La caméra 2 a répondu à une demande LIVE version 2 avec une confirmation
-  de version 1. Le pont accepte les confirmations versions 1 et 2, avec
-  résultat explicite égal à zéro.
+  `V=1` et un résultat explicite égal à zéro. Le code accepte `V=1` et `V=2`,
+  mais seule la réponse `V=1` est documentée comme observée sur une caméra.
+  Le code Android analysé utilise lui aussi `V` pour choisir un décodeur
+  d’ACK version 1 ou 2 sur le chemin LAN classique. Il mappe une version absente
+  ou inconnue vers un paquet non reconnu. Conserver les deux valeurs admises
+  et rejeter les versions absentes ou inconnues ; les tests hors ligne couvrent
+  ces cas. Cette observation APK ne décrit pas la branche CameraII.
 
 ## Probable ou limité
 

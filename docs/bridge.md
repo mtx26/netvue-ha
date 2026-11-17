@@ -56,6 +56,16 @@ programme. Une session est active par commande `run` ; `serve` permet une
 session/superviseur par caméra, en parallèle. L'annulation ferme les connexions
 Netvue et RTSP.
 
+En cas d'arrêt, l'API et les journaux distinguent protocole, trame média,
+traitement H.264, connexion et publication, avec une étape et une raison
+prédéfinies lorsque disponibles. Les erreurs récupérables produisent un
+avertissement avant chaque tentative avec son délai ; l'état HA reste
+`supervising` pendant ces reprises. Les erreurs de protocole ou de trame
+restent fatales et nécessitent une reprise explicite : ne pas les ignorer
+ou les réessayer indéfiniment sans preuve de leur caractère transitoire.
+Les diagnostics ne contiennent ni données brutes ni erreur système reçue ;
+l'adresse IPv4 de la caméra figure cependant dans les journaux.
+
 L'URL de sortie exige hôte loopback, port explicite et chemin ; RTSP utilise
 TCP. Le pont n'écrit ni vidéo ni clé sur disque et ne journalise pas la clé
 reçue à la découverte. Le login Netvue observé n'est pas chiffré : la clé

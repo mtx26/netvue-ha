@@ -1,11 +1,36 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-copilot-phase1/internal/netvue"
 )
+
+func TestRunCommandSanitizesSessionErrors(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	runTest := func(context.Context, string, string, string, time.Duration) error {
+		return fmt.Errorf("%w: secret payload", netvue.ErrProtocol)
+	}
+	code := runCommand(context.Background(), []string{
+		"test", "--source", "192.0.2.10", "--camera", "192.0.2.20",
+		"--rtsp", "rtsp://127.0.0.1:8554/test", "--duration", "1s",
+	}, runTest, nil, nil)
+	if code != 1 || !strings.Contains(logs.String(), "Invalid Netvue protocol data") ||
+		strings.Contains(logs.String(), "secret payload") {
+		t.Fatalf("exit = %d, log = %q", code, logs.String())
+	}
+}
 
 func TestRunCommandUsesBoundedSessionForTest(t *testing.T) {
 	called := false

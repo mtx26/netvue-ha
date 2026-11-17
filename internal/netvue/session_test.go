@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,7 +60,94 @@ func TestReceiveLiveRejectsMediaBeforeConfirmation(t *testing.T) {
 	}
 }
 
-func TestReceiveLiveVersionOneConfirmation(t *testing.T) {
+func TestReceiveLiveDiagnostics(t *testing.T) {
+	tests := []struct {
+		name       string
+		packets    [][]byte
+		closeAfter bool
+		want       string
+		wantError  error
+	}{
+		{
+			name:      "protocol header",
+			packets:   [][]byte{makePacket(1, 1, []byte{0})},
+			want:      "Invalid Netvue protocol data [LIVE packet]: unsupported packet flags",
+			wantError: ErrProtocol,
+		},
+		{
+			name:      "malformed command",
+			packets:   [][]byte{makePacket(7, 0, []byte(`secret!`))},
+			want:      "Invalid Netvue protocol data [LIVE response]: invalid command JSON",
+			wantError: ErrProtocol,
+		},
+		{
+			name:      "media before confirmation",
+			packets:   [][]byte{mediaPacket(1, []byte{1})},
+			want:      "Invalid Netvue protocol data [LIVE response]: media before confirmation",
+			wantError: ErrProtocol,
+		},
+		{
+			name:      "invalid media",
+			packets:   [][]byte{liveConfirmationPacket(t), makePacketKind(6, 0, packetMedia, []byte{0xf0, 0, 0, 0, 0, 1})},
+			want:      "Invalid Netvue media frame [media frame]: unsupported frame type",
+			wantError: ErrMediaFrame,
+		},
+		{
+			name:      "invalid H264",
+			packets:   [][]byte{liveConfirmationPacket(t), mediaPacket(1, []byte("secret"))},
+			want:      "Invalid H.264 data [H.264]: missing Annex B initial delimiter",
+			wantError: ErrProtocol,
+		},
+		{
+			name:       "closed connection",
+			packets:    [][]byte{{1}},
+			closeAfter: true,
+			want:       "Connection error [LIVE packet]",
+			wantError:  ErrConnectionClosed,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, server := testPipe(t)
+			publisher, err := newVideoPublisher(context.Background(), "rtsp://127.0.0.1:8554/netvue")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer publisher.Close()
+			go func() {
+				for _, packet := range test.packets {
+					if writeFull(server, packet) != nil {
+						return
+					}
+				}
+				if test.closeAfter {
+					_ = server.Close()
+				}
+			}()
+			err = receiveLive(contextWithTimeout(t), client, publisher)
+			if !errors.Is(err, test.wantError) {
+				t.Fatalf("error = %v, want %v", err, test.wantError)
+			}
+			if got := SessionDiagnostic(err); got != test.want || strings.Contains(got, "secret") {
+				t.Fatalf("diagnostic = %q, want %q", got, test.want)
+			}
+			if retryableSessionError(err) != test.closeAfter {
+				t.Fatalf("unexpected retry policy for %v", err)
+			}
+		})
+	}
+}
+
+func liveConfirmationPacket(t *testing.T) []byte {
+	t.Helper()
+	packet, err := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packet
+}
+
+func TestReceiveLiveConfirmationVersions(t *testing.T) {
 	tests := []struct {
 		name        string
 		unit        map[string]any
@@ -67,6 +155,7 @@ func TestReceiveLiveVersionOneConfirmation(t *testing.T) {
 		wantVersion bool
 	}{
 		{name: "version one accepted", unit: map[string]any{"A": 3, "V": 1, "C": 0}, wantSuccess: true},
+		{name: "version two accepted", unit: map[string]any{"A": 3, "V": 2, "C": 0}, wantSuccess: true},
 		{name: "missing result rejected", unit: map[string]any{"A": 3, "V": 1}},
 		{name: "failure result rejected", unit: map[string]any{"A": 3, "V": 1, "C": 1}},
 		{name: "unknown version rejected", unit: map[string]any{"A": 3, "V": 3, "C": 0}, wantVersion: true},
@@ -87,7 +176,7 @@ func TestReceiveLiveVersionOneConfirmation(t *testing.T) {
 			err := receiveLive(ctx, client, publisher)
 			if test.wantSuccess {
 				if err != nil || publisher.CurrentPublicationFrames() == 0 {
-					t.Fatalf("version one did not publish video: %v", err)
+					t.Fatalf("valid LIVE confirmation did not publish video: %v", err)
 				}
 			} else if !errors.Is(err, ErrProtocol) || errors.Is(err, ErrLiveResponseVersion) != test.wantVersion {
 				t.Fatalf("unexpected LIVE response error: %v", err)

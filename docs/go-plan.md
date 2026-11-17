@@ -61,6 +61,10 @@ dans [architecture.md](./architecture.md) et [bridge.md](./bridge.md).
   à jour avec la correction.
 - **Tests et documentation simplifiés :** scénarios Go conservés ; tests Go,
   détecteur de courses, `go vet` et intégrations MediaMTX/FFmpeg réussis.
+- **Diagnostics Go :** protocole, média, H.264 et connexion différenciés par
+  étape et motif prédéfini ; avertissement assaini avant reprise. La cause
+  exacte du message historique générique reste inconnue sans diagnostic
+  provenant de la version exécutée.
 - **Installation préparée :** stack Portainer avec deux variables obligatoires ;
   intégration HACS configurée pour le dépôt. Le dépôt GitHub doit être public
   pour HACS, et le package GHCR pour un téléchargement sans authentification.

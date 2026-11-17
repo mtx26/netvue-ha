@@ -4,8 +4,7 @@
 
 Le projet développe une passerelle locale Netvue Vigil vers RTSP et Home Assistant.
 
-La passerelle principale est en Go. Python est conservé pour l'intégration
-Home Assistant ; l'ancienne passerelle est isolée dans `archive/python-bridge/`.
+La passerelle principale est en Go. Python est conservé pour l'intégration Home Assistant ; l'ancienne passerelle est isolée dans `archive/python-bridge/`.
 
 Le but est d'obtenir un logiciel :
 
@@ -36,6 +35,8 @@ Ne pas reproduire automatiquement les anciennes architectures, budgets, supervis
 
 Les anciennes compatibilités expérimentales ne sont pas obligatoires.
 
+Ne pas modifier du code uniquement pour le rendre différent. Toute refactorisation doit apporter un bénéfice concret : simplicité, fiabilité, performance, lisibilité ou maintenabilité.
+
 ## Autonomie
 
 L'agent peut, sans nouvelle confirmation :
@@ -53,6 +54,8 @@ L'agent peut, sans nouvelle confirmation :
 Les demandes d'implémentation autorisent les modifications locales nécessaires.
 
 Ne pas s'arrêter à un simple diagnostic lorsqu'une implémentation est demandée.
+
+Vérifier les modifications Git existantes avant de travailler. Préserver les changements de l'utilisateur et éviter toute suppression accidentelle de travail non commité.
 
 ## Sécurité
 
@@ -84,6 +87,8 @@ Une autorisation explicite reste nécessaire pour :
 - Modifier Home Assistant installé.
 - Supprimer ou remplacer des données réelles.
 
+Les autorisations de tests réels doivent désigner les caméras concernées, les opérations permises et les limites des essais. Elles peuvent être accordées pour une tâche ou une phase entière.
+
 Les anciennes données expérimentales doivent être préservées tant qu'aucun abandon autorisé n'a été effectué.
 
 Ne jamais contourner les restrictions d'accès.
@@ -104,6 +109,8 @@ Pour les tâches importantes :
 6. Corriger.
 7. Vérifier le résultat.
 
+Lorsqu'une fonctionnalité concerne plusieurs composants, vérifier également leur intégration. Tester les erreurs, les cas limites et les comportements concurrents pertinents.
+
 Utiliser des sous-agents lorsque cela améliore réellement le travail.
 
 Poursuivre les étapes sûres et autorisées tant qu'elles permettent d'atteindre l'objectif.
@@ -116,7 +123,7 @@ Maintenir un plan principal du projet.
 
 Pour chaque phase importante, créer ou actualiser :
 
-findings/phaseXX-description.md
+`findings/phaseXX-description.md`
 
 Le document doit présenter :
 
@@ -128,6 +135,8 @@ Le document doit présenter :
 - Les limites restantes.
 
 Ne pas multiplier les rapports.
+
+Privilégier une documentation concise, claire et utile. Éviter les répétitions entre fichiers.
 
 ## Communication
 
@@ -143,4 +152,4 @@ Donner des bilans courts, précis et orientés résultat.
 
 Concevoir et développer la solution la plus simple qui répond correctement aux besoins du projet.
 
-La qualité et la fiabilité sont prioritaires.
+**La qualité et la fiabilité sont prioritaires.**

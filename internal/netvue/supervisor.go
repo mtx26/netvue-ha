@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"time"
@@ -23,14 +24,19 @@ var continuousRetryPolicy = retryPolicy{
 
 // RunContinuous retries recoverable session failures until ctx is canceled.
 func RunContinuous(ctx context.Context, source, target, rtspURL string) error {
+	cameraLabel := "invalid address"
+	if ip, err := validateLANIPv4(target); err == nil {
+		cameraLabel = ip.String()
+	}
 	runSession := func(ctx context.Context) error {
 		return RunSession(ctx, source, target, rtspURL, 0)
 	}
-	return supervise(ctx, runSession, continuousRetryPolicy, waitForRetry)
+	return supervise(ctx, cameraLabel, runSession, continuousRetryPolicy, waitForRetry)
 }
 
 func supervise(
 	ctx context.Context,
+	target string,
 	runSession func(context.Context) error,
 	policy retryPolicy,
 	wait func(context.Context, time.Duration) bool,
@@ -54,6 +60,7 @@ func supervise(
 		if time.Since(started) >= policy.stableAfter {
 			delay = policy.initialDelay
 		}
+		slog.Warn("Camera session will retry", "camera", target, "error", SessionDiagnostic(err), "delay", delay)
 		if !wait(ctx, delay) {
 			return nil
 		}

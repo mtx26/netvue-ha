@@ -89,14 +89,14 @@ func parseDiscovery(data []byte, source, expected string) (camera, error) {
 	}
 	sourceIP := net.ParseIP(source)
 	if sourceIP == nil || !sourceIP.Equal(expectedIP) {
-		return camera{}, fmt.Errorf("%w: discovery response from unexpected host", ErrProtocol)
+		return camera{}, withReason("response from unexpected host", fmt.Errorf("%w: discovery response from unexpected host", ErrProtocol))
 	}
 	packet, err := ParseDatagram(data)
 	if err != nil {
 		return camera{}, err
 	}
 	if packet.Kind != packetCommand {
-		return camera{}, fmt.Errorf("%w: unexpected discovery packet type", ErrProtocol)
+		return camera{}, withReason("unexpected packet type", fmt.Errorf("%w: unexpected discovery packet type", ErrProtocol))
 	}
 	units, err := ParseUnits(packet.Body)
 	if err != nil {
@@ -111,31 +111,31 @@ func parseDiscovery(data []byte, source, expected string) (camera, error) {
 		if _, hasCode := unit["C"]; hasCode {
 			code, ok := unitInt(unit, "C")
 			if !ok || code != 0 {
-				return camera{}, fmt.Errorf("%w: discovery response reported failure", ErrProtocol)
+				return camera{}, withReason("discovery response reported failure", fmt.Errorf("%w: discovery response reported failure", ErrProtocol))
 			}
 		}
 		rawParams, ok := unit["P"]
 		if !ok {
-			return camera{}, fmt.Errorf("%w: discovery parameters are missing", ErrProtocol)
+			return camera{}, withReason("discovery parameters are missing", fmt.Errorf("%w: discovery parameters are missing", ErrProtocol))
 		}
 		var params []json.RawMessage
 		if err := json.Unmarshal(rawParams, &params); err != nil || len(params) < 5 {
-			return camera{}, fmt.Errorf("%w: invalid discovery parameters", ErrProtocol)
+			return camera{}, withReason("invalid discovery parameters", fmt.Errorf("%w: invalid discovery parameters", ErrProtocol))
 		}
 		var host, key string
 		var port int
 		if json.Unmarshal(params[2], &host) != nil ||
 			json.Unmarshal(params[3], &port) != nil ||
 			json.Unmarshal(params[4], &key) != nil {
-			return camera{}, fmt.Errorf("%w: invalid discovery endpoint", ErrProtocol)
+			return camera{}, withReason("invalid discovery endpoint", fmt.Errorf("%w: invalid discovery endpoint", ErrProtocol))
 		}
 		hostIP := net.ParseIP(host)
 		if hostIP == nil || !hostIP.Equal(expectedIP) || port < 1 || port > 65535 || key == "" {
-			return camera{}, fmt.Errorf("%w: discovery endpoint does not match target", ErrProtocol)
+			return camera{}, withReason("invalid or mismatched discovery endpoint", fmt.Errorf("%w: discovery endpoint does not match target", ErrProtocol))
 		}
 		return camera{host: expectedIP.String(), port: port, key: key}, nil
 	}
-	return camera{}, fmt.Errorf("%w: no supported discovery response", ErrProtocol)
+	return camera{}, withReason("no supported discovery response", fmt.Errorf("%w: no supported discovery response", ErrProtocol))
 }
 
 func validateLANIPv4(value string) (net.IP, error) {

@@ -21,7 +21,7 @@ type videoFrame struct {
 
 func parseMediaFrame(body []byte) (videoFrame, bool, error) {
 	if len(body) < mediaHeaderSize+1 {
-		return videoFrame{}, false, fmt.Errorf("%w: truncated frame header", ErrMediaFrame)
+		return videoFrame{}, false, withReason("truncated frame header or empty payload", fmt.Errorf("%w: truncated frame header", ErrMediaFrame))
 	}
 	switch body[0] >> 4 {
 	case videoFrameType:
@@ -32,6 +32,6 @@ func parseMediaFrame(body []byte) (videoFrame, bool, error) {
 	case otherFrameType:
 		return videoFrame{}, false, nil
 	default:
-		return videoFrame{}, false, fmt.Errorf("%w: unsupported frame type", ErrMediaFrame)
+		return videoFrame{}, false, withReason("unsupported frame type", fmt.Errorf("%w: unsupported frame type", ErrMediaFrame))
 	}
 }

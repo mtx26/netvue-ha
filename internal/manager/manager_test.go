@@ -303,14 +303,15 @@ func TestSessionErrorDiagnosticsDoNotExposeUnderlyingErrors(t *testing.T) {
 	}{
 		{fmt.Errorf("%w: secret", netvue.ErrAuthenticationRejected), "Camera authentication rejected"},
 		{fmt.Errorf("%w: secret", netvue.ErrLiveResponseVersion), "Unsupported Netvue LIVE response version"},
-		{fmt.Errorf("%w: secret", netvue.ErrProtocol), "Invalid Netvue protocol or video data"},
-		{fmt.Errorf("%w: secret", netvue.ErrMediaFrame), "Invalid Netvue protocol or video data"},
+		{fmt.Errorf("%w: secret", netvue.ErrProtocol), "Invalid Netvue protocol data"},
+		{fmt.Errorf("%w: secret", netvue.ErrMediaFrame), "Invalid Netvue media frame"},
+		{fmt.Errorf("%w: secret", netvue.ErrConnectionClosed), "Connection error"},
 		{fmt.Errorf("%w: secret", netvue.ErrVideoFatal), "Video publication failed"},
 		{errors.New("secret"), "Unexpected camera session error"},
 	}
 	for _, test := range tests {
-		if got := sessionError(test.err); got != test.want {
-			t.Errorf("sessionError() = %q, want %q", got, test.want)
+		if got := netvue.SessionDiagnostic(test.err); got != test.want {
+			t.Errorf("SessionDiagnostic() = %q, want %q", got, test.want)
 		}
 	}
 }
@@ -332,6 +333,28 @@ func TestFailedSessionDoesNotLogSensitiveError(t *testing.T) {
 	if !found || camera.Error != "Unexpected camera session error" ||
 		strings.Contains(logs.String(), "sensitive detail") {
 		t.Fatalf("unsafe session diagnostic or log: camera=%+v log=%s", camera, logs.String())
+	}
+}
+
+func TestFailedSessionExposesSafeProtocolReason(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	manager := newTestManager(t, func(context.Context, string, string, string) error {
+		_, err := netvue.ParseUnits([]byte("secret-payload"))
+		return err
+	})
+	if _, _, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, manager, "192.168.10.20", stateFailed)
+	response := request(t, manager.Handler(), http.MethodGet, "/api/v1/cameras/192.168.10.20", "", http.StatusOK)
+	for _, output := range []string{response.Body.String(), logs.String()} {
+		if !strings.Contains(output, "invalid command JSON") || strings.Contains(output, "secret-payload") {
+			t.Fatalf("unsafe or missing diagnostic: %s", output)
+		}
 	}
 }
 

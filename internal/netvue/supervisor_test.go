@@ -1,11 +1,15 @@
 package netvue
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,7 +167,7 @@ func TestSuperviseRetriesSequentiallyAndResetsAfterStableRun(t *testing.T) {
 		return ctx.Err() == nil
 	}
 
-	if err := supervise(ctx, run, policy, wait); err != nil {
+	if err := supervise(ctx, "192.168.10.20", run, policy, wait); err != nil {
 		t.Fatalf("supervise() error = %v", err)
 	}
 	if attempts != 3 {
@@ -175,12 +179,16 @@ func TestSuperviseRetriesSequentiallyAndResetsAfterStableRun(t *testing.T) {
 }
 
 func TestSuperviseReturnsAfterSuccessfulReconnect(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
 	attempts := 0
 	waited := 0
-	err := supervise(context.Background(), func(context.Context) error {
+	err := supervise(context.Background(), "192.168.10.20", func(context.Context) error {
 		attempts++
 		if attempts == 1 {
-			return io.EOF
+			return atStage("camera connection", fmt.Errorf("%w: secret", io.EOF))
 		}
 		return nil
 	}, retryPolicy{initialDelay: time.Millisecond, maxDelay: time.Second}, func(context.Context, time.Duration) bool {
@@ -190,6 +198,10 @@ func TestSuperviseReturnsAfterSuccessfulReconnect(t *testing.T) {
 	if err != nil || attempts != 2 || waited != 1 {
 		t.Fatalf("supervise() = %v, attempts = %d, waits = %d", err, attempts, waited)
 	}
+	if !strings.Contains(logs.String(), "Connection error [camera connection]") ||
+		!strings.Contains(logs.String(), "192.168.10.20") || strings.Contains(logs.String(), "secret") {
+		t.Fatalf("unsafe or missing retry diagnostic: %s", logs.String())
+	}
 }
 
 func TestSuperviseStopsOnFatalErrors(t *testing.T) {
@@ -197,7 +209,7 @@ func TestSuperviseStopsOnFatalErrors(t *testing.T) {
 		t.Run(failure.Error(), func(t *testing.T) {
 			attempts := 0
 			waited := false
-			err := supervise(context.Background(), func(context.Context) error {
+			err := supervise(context.Background(), "192.168.10.20", func(context.Context) error {
 				attempts++
 				return failure
 			}, retryPolicy{initialDelay: time.Millisecond, maxDelay: time.Second}, func(context.Context, time.Duration) bool {
@@ -217,7 +229,7 @@ func TestSuperviseStopsDuringBackoff(t *testing.T) {
 	defer timer.Stop()
 	attempts := 0
 	started := time.Now()
-	err := supervise(ctx, func(context.Context) error {
+	err := supervise(ctx, "192.168.10.20", func(context.Context) error {
 		attempts++
 		return ErrDiscoveryTimeout
 	}, retryPolicy{initialDelay: time.Hour, maxDelay: time.Hour}, waitForRetry)

@@ -179,8 +179,21 @@ func TestPublisherRejectsMalformedAnnexB(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer publisher.Close()
-	if err := publisher.Push([]byte{1, 2, 3}, 1); !errors.Is(err, ErrProtocol) {
-		t.Fatalf("expected ErrProtocol, got %v", err)
+	for _, test := range []struct {
+		accessUnit []byte
+		want       string
+	}{
+		{[]byte{1, 2, 3}, "Invalid H.264 data [H.264]: missing Annex B initial delimiter"},
+		{[]byte{0, 0, 1}, "Invalid H.264 data [H.264]: Annex B access unit contains no NAL units"},
+	} {
+		err := publisher.Push(test.accessUnit, 1)
+		if err == nil {
+			t.Fatal("malformed Annex B accepted")
+		}
+		err = atStage("H.264", err)
+		if !errors.Is(err, ErrProtocol) || SessionDiagnostic(err) != test.want {
+			t.Fatalf("diagnostic = %q, error = %v, want %q", SessionDiagnostic(err), err, test.want)
+		}
 	}
 }
 
