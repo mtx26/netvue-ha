@@ -1,6 +1,7 @@
 # Les analyses restent privées ; le rapport de phase révisé est explicitement suivi.
 input/
 findings/*
+!findings/phase22-refactoring-global.md
 captures/
 firmware/
 tools/

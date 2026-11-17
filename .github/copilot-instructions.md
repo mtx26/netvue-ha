@@ -2,177 +2,197 @@
 
 ## Projet
 
-Ce dépôt développe une passerelle locale **Netvue Vigil LAN → H.264/RTSP → Home Assistant**.
-L'utilisateur possède deux caméras Netvue Vigil et un serveur Debian avec Docker,
-Portainer et Home Assistant. Le projet a dépassé l'analyse statique de l'APK.
+Le projet consiste à développer une passerelle locale permettant de récupérer les flux vidéo des caméras Netvue Vigil et de les utiliser dans Home Assistant.
 
-Les travaux déjà démontrés comprennent la découverte LAN, une authentification
-locale autorisée sur la caméra 2, la réception H.264 et une publication RTSP
-lisible. Cela **ne prouve pas** la stabilité 24 h/24, la compatibilité de la
-caméra 1, ni la disponibilité permanente du flux.
+L'objectif est de créer une solution :
 
-Objectifs : stabiliser le pont, obtenir une intégration Home Assistant simple,
-préparer une stack Portainer facile à installer et, plus tard, permettre
-l'enregistrement et la consultation d'historique.
+- Simple à comprendre et à maintenir.
+- Fiable et performante.
+- Économe en ressources.
+- Facile à installer avec Portainer.
+- Compatible avec plusieurs caméras.
+- Sécurisée sans complexité excessive.
 
-## Priorités de développement
+La nouvelle passerelle sera développée principalement en **Go**.
 
-1. Livrer le comportement demandé avec un code lisible, simple et testable.
-2. **Remplacer puis retirer** les anciennes implémentations devenues inutiles :
-   ne pas accumuler plusieurs superviseurs, budgets, wrappers ou variantes
-   pour une même responsabilité sans nécessité démontrée.
-3. Préférer les fonctions et mécanismes déjà présents aux nouvelles couches
-   d'abstraction. Éviter la duplication, les états excessifs et le code mort.
-4. Modifier directement le code dans le périmètre autorisé. Ne pas s'arrêter
-   au diagnostic ou au plan si la demande porte sur une implémentation.
-5. Conserver les fonctionnalités existantes lors du refactoring et caractériser
-   les comportements sensibles par des tests avant de les remplacer.
-6. Mesurer la simplification avec des éléments concrets (responsabilités,
-   fichiers obsolètes retirés, duplications éliminées), **pas seulement** avec
-   le nombre de lignes. Ne jamais supprimer une protection utile pour atteindre
-   artificiellement un objectif de réduction.
+Home Assistant et MediaMTX pourront utiliser leurs technologies habituelles.
 
-## Méthode
+L'ancien projet Python constitue une référence technique, mais **son architecture ne doit pas être reproduite automatiquement**.
 
-- Lire uniquement les modules, tests et rapports pertinents ; ne pas refaire
-  l'analyse statique déjà terminée.
-- Définir les critères de réussite de la tâche, implémenter, tester, corriger
-  puis enlever le code remplacé. Continuer tant que des étapes sûres et
-  autorisées permettent d'atteindre ces critères.
-- Exécuter les tests hors ligne adaptés et signaler honnêtement les échecs
-  intermittents ; ne pas transformer des réussites au rejeu en preuve
-  d'absence de défaut.
-- Séparer **code terminé et testé hors ligne** de **déploiement et validation
-  réelle encore à effectuer**. Ne pas qualifier toute la refonte d'inachevée
-  seulement parce qu'un test caméra ou une mise en production reste à autoriser.
-- En cas de vrai blocage, préciser le fait bloquant et ce qui a été terminé.
-  Ne jamais déclarer réussie une vérification non exécutée.
-- Pour une tâche complexe, utiliser des sous-agents si disponibles : analyses
-  indépendantes en parallèle, modifications par zones de fichiers distinctes,
-  intégration et validation sous la responsabilité de l'agent principal.
+Le projet n'étant pas encore officiellement publié, aucune compatibilité avec les anciennes versions expérimentales n'est exigée, sauf demande explicite.
 
-## Sécurité et autorisations
+## Priorité actuelle : conception
 
-**Autorisés sans nouvelle confirmation pour les tâches de développement :**
-lecture et modification des fichiers du dépôt, suppression de code obsolète
-après vérification, tests purement locaux ou synthétiques, dépendances
-installées uniquement dans le projet, diagnostics passifs et lecture des états
-Docker/SSH accessibles avec les droits déjà configurés.
+Avant de développer la nouvelle passerelle, réaliser un audit de conception.
 
-**Autorisation explicite distincte nécessaire avant :**
+Examiner :
 
-- Tout contact actif avec les caméras réelles (préciser caméra, opérations,
-  nombre maximal de tentatives et durée).
-- Accès aux comptes Netvue ou utilisation de leurs identifiants.
-- Modification du firmware ou réinitialisation d'une caméra.
-- Modification ou redémarrage de Home Assistant, Docker/Swarm, des services,
-  du réseau ou du serveur de production.
-- Migration appliquée aux états/budgets persistants réels ou autre opération
-  qui supprime, écrase ou rend difficilement récupérables des données.
+1. Les fonctionnalités réellement nécessaires.
+2. Les technologies et bibliothèques disponibles.
+3. Les méthodes les plus simples pour récupérer et transmettre la vidéo.
+4. Les différentes architectures possibles.
+5. Les protections de sécurité justifiées.
+6. Les possibilités de supprimer des composants ou mécanismes.
+7. Les méthodes de déploiement et de configuration.
+8. Les besoins réels de Home Assistant.
 
-## Gestion des états expérimentaux
+Comparer les solutions lorsque plusieurs approches sont possibles.
 
-Ne jamais réinitialiser silencieusement un budget bloqué
-appartenant à une installation active.
+Ne pas supposer que les choix de l'ancienne version restent les meilleurs.
 
-Toutefois, le propriétaire peut décider explicitement
-d'abandonner une ancienne installation expérimentale.
+**Privilégier la meilleure conception globale plutôt que la réutilisation du code existant.**
 
-Dans ce cas, après vérification :
+L'audit de conception précède l'implémentation. Une fois une conception validée, le développement peut avancer de manière autonome dans le périmètre autorisé.
 
-1. Arrêter les anciennes sessions et services concernés.
-2. Sauvegarder les anciens états.
-3. Vérifier que les sauvegardes sont exploitables.
-4. Retirer les anciennes données du chemin actif.
-5. Préparer un nouvel état propre pour la nouvelle installation.
+## Principes de développement
 
-Les anciens budgets restent archivés et inchangés.
+- Privilégier un code simple, lisible et direct.
+- Éviter les abstractions et dépendances inutiles.
+- Éviter les duplications et les responsabilités mélangées.
+- Utiliser des bibliothèques éprouvées lorsqu'elles simplifient réellement le projet.
+- Ne pas réimplémenter des fonctionnalités déjà correctement prises en charge par les outils existants.
+- Ajouter uniquement les fonctionnalités nécessaires.
+- Ajouter des commentaires lorsqu'ils expliquent un comportement non évident.
+- Favoriser la fiabilité et la facilité de maintenance.
+- Évaluer les performances lorsque cela est pertinent.
 
-Cette opération constitue l'abandon volontaire d'un ancien
-pilote, et non le déblocage automatique d'une session active.
+Le nombre de lignes n'est pas un objectif en soi.
 
-Aucune connexion caméra ne doit être déclenchée sans
-autorisation distincte.
+**La simplicité doit être évaluée sur l'ensemble du fonctionnement, pas uniquement sur les fichiers individuels.**
 
-Le propriétaire décide quelles anciennes versions
-expérimentales doivent être conservées ou abandonnées.
+Lorsqu'une demande porte sur une implémentation, effectuer les modifications et les tests nécessaires, sans s'arrêter à un simple plan.
 
-Ne pas exposer le flux sur Internet ;
-privilégier RTSP sur loopback et des accès locaux contrôlés. Conserver les
-limitations raisonnables de ressources, les verrous de session, les délais de
-reconnexion et le traitement explicite des erreurs critiques. Pas de brute
-force, d'exploitation de vulnérabilité ou de contournement des permissions.
+## Autonomie
 
-Ne jamais publier de secrets, tokens, cookies, MAC complètes, identifiants
-matériels ou captures brutes sensibles. Expurger les journaux avant partage.
-Les ports 5555 des caméras ne prouvent **pas** à eux seuls un protocole donné ;
-le chipset de ces exemplaires n'est pas confirmé.
+L'agent est autorisé à :
 
-## Code, déploiement et documentation
+- Examiner et modifier le code du projet.
+- Supprimer les anciennes implémentations obsolètes après vérification.
+- Créer une nouvelle architecture dans le dépôt.
+- Exécuter des tests locaux et synthétiques.
+- Installer les outils et dépendances dans le projet.
+- Consulter les documentations officielles.
+- Effectuer des diagnostics passifs sur les services accessibles.
+- Utiliser des sous-agents pour les tâches complexes.
 
-- Respecter les contrats publics utiles : CLI, flux RTSP, entités Home
-  Assistant et configuration déployée. Une compatibilité interne obsolète peut
-  être retirée après mise à jour des appelants et des tests.
-- La passerelle et MediaMTX sont des services distincts de Home Assistant ;
-  préparer une stack Portainer reproductible, sans modifier les autres stacks.
-- Utiliser les sources officielles pour les faits externes, sans transformer
-  chaque tâche de code en recherche générale.
-- Mettre à jour les documents actifs (`README.md`, `docs/`, guide de
-  déploiement) plutôt que créer systématiquement un nouveau rapport `findings/`.
-  Préserver les preuves historiques utiles et les sauvegardes utilisateur.
-- À la fin, donner un bilan **court et concret** : comportement livré, ancien
-  code supprimé ou fusionné, tests exécutés, limites non vérifiées et seule
-  prochaine action réellement nécessaire.
+L'agent peut choisir les solutions techniques lorsqu'aucun choix précis n'a été imposé par l'utilisateur.
 
-Écrire en français clair. Pour les conclusions techniques importantes,
-distinguer **observé**, **déduit** et **non vérifié** ; citer les chemins du
-code source quand cela éclaire la décision.
+Ne pas demander de confirmation pour chaque modification locale ordinaire.
 
-## Documentation obligatoire des phases
+Préserver les modifications préexistantes de l'utilisateur.
 
-À la fin de chaque phase de développement, créer ou mettre
-à jour un fichier Markdown dans le dossier findings/.
+Ne pas effectuer de commit, push ou publication sans demande explicite.
 
-Nom du fichier :
-findings/phaseXX-description-courte.md
+## Sécurité
 
-Chaque document doit expliquer :
+Adopter une sécurité proportionnée aux risques réels.
 
-1. OBJECTIF
-   - Pourquoi cette phase était nécessaire.
-   - Quel résultat était attendu.
+Conserver notamment :
 
-2. MODIFICATIONS
-   - Ce qui a été ajouté, modifié ou supprimé.
-   - Les principales décisions techniques.
-   - Pourquoi ces solutions ont été choisies.
+- L'authentification nécessaire auprès des caméras.
+- La protection des identifiants et secrets.
+- Des connexions réseau limitées aux besoins.
+- La prévention des sessions concurrentes dangereuses.
+- Des délais d'attente raisonnables.
+- Des reconnexions contrôlées.
+- Des limites adaptées de mémoire et de ressources.
+- La gestion correcte des interruptions et erreurs critiques.
 
-3. FONCTIONNEMENT
-   - Comment fonctionnent les mécanismes développés.
-   - Les fichiers et fonctions principaux concernés.
+Ne pas ajouter des protections uniquement par précaution théorique.
 
-4. TESTS
-   - Tests exécutés et résultats.
-   - Problèmes détectés et corrigés.
-   - Éléments non vérifiés.
+Une protection doit avoir une utilité identifiable.
 
-5. ÉTAT FINAL
-   - Fonctionnalités terminées.
-   - Limites éventuelles.
-   - Prochaine étape.
+Les mécanismes redondants, disproportionnés ou inutiles peuvent être supprimés après analyse.
 
-RÈGLES :
-- Un seul document principal par phase.
-- Mettre à jour le document existant si la phase continue.
-- Ne pas multiplier les rapports intermédiaires.
-- Rédiger en français clair et compréhensible.
-- Rester technique, précis et relativement concis.
-- Ne jamais inventer de tests ou de résultats.
-- Ne pas inclure de secrets ou d'informations sensibles.
-- La documentation doit refléter le code réellement présent.
+Les anciens systèmes de budgets, migrations, blocages permanents et superviseurs ne constituent pas des exigences pour la nouvelle architecture.
 
-Cette documentation est obligatoire, même lorsque
-la phase est entièrement terminée et sans problème.
+Ne pas les réintroduire automatiquement.
 
-La rédaction du document fait partie des critères
-de réussite de chaque phase.
+## Autorisations nécessaires
+
+Une autorisation explicite reste nécessaire pour :
+
+- Contacter activement les caméras réelles.
+- Accéder aux comptes Netvue.
+- Modifier le firmware ou réinitialiser un appareil.
+- Modifier ou redémarrer des services de production.
+- Modifier le réseau ou la configuration du serveur.
+- Supprimer ou remplacer des données persistantes réelles.
+
+Les tests caméra doivent respecter les limites de durée et de tentatives autorisées.
+
+Les anciennes données expérimentales peuvent être archivées puis retirées d'une installation abandonnée sur décision du propriétaire.
+
+Ne jamais supprimer silencieusement les états d'une installation active.
+
+Ne pas exposer les flux vidéo sur Internet sans autorisation.
+
+Ne jamais divulguer de secrets ou de données sensibles.
+
+## Tests
+
+Choisir les tests adaptés aux risques des modifications.
+
+Privilégier :
+
+- Les tests unitaires.
+- Les caméras simulées.
+- Les données vidéo synthétiques.
+- Les tests d'intégration isolés.
+- Les vérifications de performance utiles.
+
+Distinguer les résultats vérifiés des hypothèses.
+
+Ne jamais inventer une réussite.
+
+Une fonctionnalité terminée et testée hors ligne peut être déclarée terminée même si son déploiement réel reste à effectuer.
+
+Ne pas bloquer les travaux indépendants à cause d'une validation réelle encore non autorisée.
+
+## Documentation
+
+Pour chaque phase importante, créer ou actualiser un document :
+
+`findings/phaseXX-description.md`
+
+Le document présente brièvement :
+
+1. L'objectif.
+2. Les choix techniques.
+3. Les modifications effectuées.
+4. Les tests et leurs résultats.
+5. L'état final et la prochaine étape.
+
+Un seul document principal par phase.
+
+Ne pas multiplier les rapports intermédiaires.
+
+Les documents doivent être concis et correspondre au fonctionnement réel.
+
+Mettre également à jour les guides actifs lorsque nécessaire.
+
+## Communication
+
+Répondre en français clair.
+
+Être direct et orienté résultat.
+
+Expliquer les décisions techniques importantes, leurs avantages et leurs limites.
+
+Distinguer les faits vérifiés des hypothèses lorsque cela influence une décision.
+
+Ne pas répéter systématiquement toutes les précautions historiques du projet.
+
+Ne pas recommencer inutilement les analyses déjà validées, sauf lorsqu'elles sont nécessaires à une nouvelle décision.
+
+## Principe fondamental
+
+**Concevoir la solution la plus simple qui répond correctement aux besoins réels.**
+
+Ne pas reproduire la complexité du projet précédent.
+
+Ne pas conserver une technologie, une architecture ou une protection simplement parce qu'elle était présente auparavant.
+
+Prendre les décisions à partir des besoins, des preuves disponibles et des tests.
+
+La qualité, la simplicité et la fiabilité du résultat sont prioritaires.

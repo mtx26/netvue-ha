@@ -62,7 +62,11 @@ class RtspTests(unittest.TestCase):
         self.assertNotIn("NETVUE_TARGET", stack)
         self.assertIn("netvue_bridge.manager", (root / "deployment/Dockerfile")
                       .read_text(encoding="utf-8"))
-        self.assertFalse((root / "deployment/.env.example").exists())
+        example = (root / "deployment/.env.example").read_text(encoding="utf-8")
+        for name in ("NETVUE_NODE", "NETVUE_SOURCE", "NETVUE_BRIDGE_IMAGE",
+                     "NETVUE_MEDIAMTX_CONFIG", "NETVUE_STATE_DIR"):
+            with self.subTest(example=name):
+                self.assertRegex(example, rf"(?m)^{name}=.+$")
 
     def test_ghcr_workflow_publishes_the_stack_image(self):
         root = Path(__file__).resolve().parents[1]

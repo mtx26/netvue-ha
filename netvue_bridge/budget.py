@@ -14,12 +14,11 @@ from .discovery import validate_lan_ipv4
 
 DEFAULT_RETRY_DELAYS = (5, 15, 60, 300, 900)
 _BUDGET_STATUSES = frozenset({"ready", "in_progress", "blocked"})
-_STAGES = {"READY", "CONNECTING", "AUTHENTICATING", "WAITING_VIDEO",
-           "STREAMING", "RECONNECT_WAIT", "BLOCKED"}
-_IN_PROGRESS_STAGES = frozenset(
-    {"CONNECTING", "AUTHENTICATING", "WAITING_VIDEO", "STREAMING"}
-)
+RETRYABLE_STAGES = ("discovery", "connect", "live", "video")
+_IN_PROGRESS_STAGES = ("CONNECTING", "AUTHENTICATING", "WAITING_VIDEO", "STREAMING")
 _READY_STAGES = frozenset({"READY", "RECONNECT_WAIT"})
+_STAGES = frozenset((*_IN_PROGRESS_STAGES, *_READY_STAGES, "BLOCKED"))
+_LAST_ERRORS = (None, *RETRYABLE_STAGES)
 
 
 def validate_retry_delays(delays: tuple[int, ...]) -> None:
@@ -191,8 +190,7 @@ class Budget:
                 or type(state["total"]) is not int or state["total"] < 0):
             raise ValueError("Budget state or endpoint is invalid")
         if ((state["last_reconnect"] is not None and not number(state["last_reconnect"]))
-                or state["last_error"] not in
-                    (None, "discovery", "connect", "live", "video")
+                or state["last_error"] not in _LAST_ERRORS
                 or not all(number(state[key]) for key in ("wait_until", "wall", "boot"))
                 or state["wait_until"] > state["boot"] + 1800):
             raise ValueError("Budget state or endpoint is invalid")
@@ -238,11 +236,8 @@ class Budget:
         if state["status"] == "ready" and not rebooted:
             return False
         if state["status"] == "in_progress":
-            streak = min(state["streak"] + 1, 1000000)
             error = "connect" if state["stage"] in ("CONNECTING", "AUTHENTICATING") else "live"
-            wait_until = boot + retry_delay(streak, self.retry_delays, self.retry_jitter)
-            state.update(status="ready", stage="RECONNECT_WAIT", streak=streak,
-                         last_error=error, wait_until=wait_until)
+            self._set_retry_wait(state, error, boot)
         else:
             remaining = max(0.0, state["wait_until"] - state["boot"])
             state["wait_until"] = boot + remaining
@@ -267,7 +262,7 @@ class Budget:
         state, wall, boot = self.checked()
         if state["status"] != "in_progress":
             raise ValueError("No attempt in progress")
-        if stage not in ("CONNECTING", "AUTHENTICATING", "WAITING_VIDEO", "STREAMING"):
+        if stage not in _IN_PROGRESS_STAGES:
             raise ValueError("Invalid session stage")
         state.update(stage=stage, wall=wall, boot=boot)
         self._write(state)
@@ -276,14 +271,18 @@ class Budget:
         state, wall, boot = self.checked()
         if state["status"] != "in_progress":
             raise ValueError("No attempt in progress")
-        if stage not in ("discovery", "connect", "live", "video"):
+        if stage not in RETRYABLE_STAGES:
             raise ValueError("Invalid retryable stage")
+        self._set_retry_wait(state, stage, boot)
+        state.update(wall=wall, boot=boot)
+        self._write(state)
+
+    def _set_retry_wait(self, state: dict, stage: str, boot: float) -> None:
+        """Apply the retry transition to an already validated in-progress state."""
         streak = min(state["streak"] + 1, 1000000)
         state.update(status="ready", stage="RECONNECT_WAIT", streak=streak,
                      last_error=stage, wait_until=boot + retry_delay(
-                         streak, self.retry_delays, self.retry_jitter),
-                     wall=wall, boot=boot)
-        self._write(state)
+                         streak, self.retry_delays, self.retry_jitter))
 
     def block(self) -> None:
         state, wall, boot = self.checked()

@@ -13,7 +13,7 @@ from unittest.mock import patch
 if os.name == "posix":
     from netvue_bridge.budget import Budget, retry_delay
     from netvue_bridge.continuous import (
-        active_session_pids, main, resource_snapshot, run_bounded, run_worker, supervise,
+        active_session_pids, main, resource_snapshot, run_bounded, run_worker, supervise, worker,
     )
 
 
@@ -81,6 +81,7 @@ class SupervisorTests(unittest.TestCase):
             valid = budget.read()
             invalid_updates = (
                 {"status": []},
+                {"last_error": []},
                 {"status": "in_progress", "stage": "READY"},
                 {"status": "ready", "stage": "WAITING_VIDEO"},
                 {"stage": "RECONNECT_WAIT"},
@@ -237,6 +238,127 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual((state["status"], state["streak"], state["total"]),
                          ("ready", 1, 1))
         self.assertEqual(state["last_error"], "connect")
+
+    def test_interrupted_stages_recover_with_the_same_retry_policy(self):
+        for stage, error in (("CONNECTING", "connect"), ("AUTHENTICATING", "connect"),
+                             ("WAITING_VIDEO", "live"), ("STREAMING", "live")):
+            for rebooted in (False, True):
+                with self.subTest(stage=stage, rebooted=rebooted), \
+                     tempfile.TemporaryDirectory() as directory:
+                    self.wall, self.boot, self.boot_id = 1700000000.0, 1000000.0, "test-boot"
+                    with Budget(Path(directory), self.source, self.target,
+                                retry_delays=(2, 4, 8, 16, 32)) as budget:
+                        budget.initialize()
+                        budget.reserve()
+                        budget.stage(stage)
+                        original = budget.read()
+                        original["streak"] = 2
+                        budget._write(original)
+                        self.advance(10)
+                        if rebooted:
+                            self.boot, self.boot_id = 3.0, "new-boot"
+                        self.assertTrue(budget.recover_after_restart())
+                        expected = original | {
+                            "status": "ready", "stage": "RECONNECT_WAIT", "streak": 3,
+                            "last_error": error, "wait_until": self.boot + 8,
+                            "wall": self.wall, "boot": self.boot, "boot_id": self.boot_id,
+                        }
+                        self.assertEqual(budget.read(), expected)
+
+    def test_finish_retryable_validates_before_writing_and_caps_streak(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            with self.assertRaisesRegex(ValueError, "No attempt in progress"):
+                budget.finish_retryable("connect")
+            budget.reserve()
+            state = budget.read()
+            state["streak"] = 1000000
+            budget._write(state)
+            for invalid in ("blocked", "authentication", None, []):
+                with self.subTest(invalid=invalid):
+                    with self.assertRaisesRegex(ValueError, "Invalid retryable stage"):
+                        budget.finish_retryable(invalid)
+                    self.assertEqual(budget.read(), state)
+            budget.finish_retryable("discovery")
+            self.assertEqual(budget.read()["streak"], 1000000)
+            self.assertEqual(budget.read()["wait_until"], self.boot + 900)
+
+    def test_restart_same_boot_rejects_ambiguous_clock_without_writing(self):
+        with Budget(self.path, self.source, self.target) as budget:
+            budget.initialize()
+            budget.reserve()
+            original = budget.path.read_bytes()
+            self.wall += 100
+            with self.assertRaisesRegex(ValueError, "CLOCK_AMBIGUOUS"):
+                budget.recover_after_restart()
+            self.assertEqual(budget.path.read_bytes(), original)
+
+    def test_supervisor_retry_outcomes_and_unknown_outcome(self):
+        for outcome in ("discovery", "connect", "live", "video", "unknown"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                with Budget(Path(directory), self.source, self.target) as budget:
+                    budget.initialize()
+                    with patch("netvue_bridge.continuous.wait_for_rtsp", return_value=True), \
+                         patch("netvue_bridge.continuous.run_worker", return_value=outcome), \
+                         patch("builtins.print"):
+                        result = supervise(budget, self.rtsp, max_attempts=1)
+                    state = budget.read()
+                    if outcome == "unknown":
+                        self.assertEqual((result, state["status"], state["last_error"]),
+                                         (1, "in_progress", None))
+                    else:
+                        self.assertEqual((result, state["status"], state["last_error"]),
+                                         (0, "ready", outcome))
+
+    def test_worker_outcome_contract(self):
+        for outcome in ("discovery", "connect", "live", "video", "blocked", "unknown", None):
+            with self.subTest(outcome=outcome):
+                read_fd, write_fd = os.pipe()
+                try:
+                    with patch("netvue_bridge.continuous.ctypes.CDLL") as libc, \
+                         patch("netvue_bridge.continuous.signal.signal"), \
+                         patch("netvue_bridge.continuous.run_session", return_value=outcome):
+                        libc.return_value.prctl.return_value = 0
+                        if outcome == "unknown":
+                            with self.assertRaisesRegex(RuntimeError, "Unknown session outcome"):
+                                worker(self.source, self.target, self.rtsp, write_fd, os.getppid())
+                        else:
+                            result = worker(self.source, self.target, self.rtsp,
+                                            write_fd, os.getppid())
+                            self.assertEqual(result, 0 if outcome is None else 1)
+                    raw = os.read(read_fd, 1024)
+                    if outcome in ("unknown", None):
+                        self.assertEqual(raw, b"")
+                    elif outcome == "blocked":
+                        self.assertEqual(json.loads(raw), {"event": "blocked"})
+                    else:
+                        self.assertEqual(json.loads(raw), {"event": "retryable", "stage": outcome})
+                finally:
+                    os.close(read_fd)
+
+    def test_run_worker_accepts_only_known_retry_events(self):
+        original_popen = subprocess.Popen
+        for outcome in ("discovery", "connect", "live", "video", "unknown"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                with Budget(Path(directory), self.source, self.target) as budget:
+                    budget.initialize()
+                    budget.reserve()
+
+                    def launch(command, **kwargs):
+                        fd = command[command.index("--event-fd") + 1]
+                        script = ("import os,sys; "
+                                  "os.write(int(sys.argv[1]), sys.argv[2].encode()); "
+                                  "raise SystemExit(1)")
+                        event = json.dumps({"event": "retryable", "stage": outcome}) + "\n"
+                        return original_popen([sys.executable, "-c", script, fd, event], **kwargs)
+
+                    with patch("netvue_bridge.continuous.subprocess.Popen", side_effect=launch), \
+                         patch("netvue_bridge.continuous.resource_snapshot", return_value={
+                             "memory_bytes": 1, "memory_limit_bytes": 100, "cpu_usec": 1,
+                         }), patch("builtins.print"):
+                        self.assertEqual(run_worker(budget, self.rtsp),
+                                         "ambiguous" if outcome == "unknown" else outcome)
+                    self.assertEqual(budget.read()["status"], "in_progress")
 
     def test_active_old_session_prevents_restart_recovery(self):
         with Budget(self.path, self.source, self.target) as budget:

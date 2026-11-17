@@ -98,10 +98,14 @@ variables suivantes :
 
 Les variables sont saisies dans **Stack → Environment variables** et
 interpolées par Portainer ; aucun fichier `.env`, copie locale ou `env_file`
-n'est requis. Utilisez les chemins prévus sur l'hôte. Le fichier MediaMTX doit
-exister et être lisible ; le nouveau répertoire d'état doit être inscriptible
-par UID/GID 10001. Ne pointez jamais cette variable vers une archive ou un
-ancien répertoire d'état.
+n'est requis. Le fichier [.env.example](./.env.example) montre les valeurs
+du serveur Debian au moment du déploiement : vérifiez-les avant de les saisir,
+notamment l'adresse source qui peut changer avec DHCP. Ce fichier est un
+exemple et n'est pas chargé automatiquement par la stack.
+Utilisez les chemins prévus sur l'hôte. Le fichier MediaMTX doit exister et
+être lisible ; le nouveau répertoire d'état doit être inscriptible par
+UID/GID 10001. Ne pointez jamais cette variable vers une archive ou un ancien
+répertoire d'état.
 
 1. Dans **Stacks → Add stack → Upload**, chargez [stack.yaml](./stack.yaml).
 2. Saisissez les variables obligatoires, notamment `NETVUE_BRIDGE_IMAGE` avec

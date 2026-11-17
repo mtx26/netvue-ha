@@ -229,15 +229,27 @@ vide et indépendant.
 
 ## ÉTAT FINAL ET PROCHAINE ÉTAPE
 
-La préparation locale de la stack et de sa documentation est faite ; le
-comportement d'initialisation v4 d'un répertoire frais est couvert par le test
-du gestionnaire. Aucun état Debian n'a été modifié, archivé ou initialisé.
-Aucun déploiement Portainer, changement Home Assistant ou contact caméra n'a
-été effectué.
+Le 17 novembre 2026, les huit états ont été archivés et comparés aux originaux :
+contenus, modes et propriétaires concordent. Les originaux restent en place.
+Un nouveau répertoire d'état vide a été créé pour l'UID 10001.
 
-Le seul blocage technique immédiat est l'accès en lecture privilégié requis
-pour créer et vérifier l'archive tout en préservant les permissions. Une
-session administrateur autorisée doit archiver les huit répertoires d'état et
-vérifier l'archive ; le nouveau chemin persistant devra ensuite être créé avec
-UID/GID 10001. La validation du déploiement réel reste distincte et ne doit
-pas démarrer de caméra.
+La stack `netvue-bridge` a été déployée en Swarm : les deux services étaient
+`1/1`, les ports 8554 et 8765 écoutaient uniquement sur loopback et une requête
+RTSP OPTIONS locale a reçu `200 OK`. L'image du pont est référencée par digest.
+Le composant HA 0.2.0 a été installé après sauvegarde de la configuration et
+Home Assistant a été redémarré avec l'accord du propriétaire.
+
+Après ce redémarrage, une entrée HA existante a démarré une session caméra non
+anticipée ; une tentative a été enregistrée. La session a été arrêtée et le
+gestionnaire indiquait ensuite zéro caméra active. L'entrée HA reste activée :
+une nouvelle initialisation peut relancer une session. Le flux réel, sa
+stabilité et l'aperçu HA n'ont pas été validés. Un premier diagnostic selon
+lequel l'entrée était incompatible était incorrect.
+
+Le fichier [`.env.example`](../deployment/.env.example) documente les cinq
+variables Portainer du serveur observé, sans être chargé automatiquement.
+L'adresse LAN étant attribuée par DHCP, elle doit être revérifiée avant usage.
+Aucun autre changement du déploiement n'est effectué par l'ajout de cet exemple.
+Le rendu `docker stack config` avec les variables de l'exemple réussit sans
+déploiement ; les tests RTSP/stack sous WSL donnent 32 réussis et 4 ignorés
+faute d'outils vidéo ou de cgroup v2.

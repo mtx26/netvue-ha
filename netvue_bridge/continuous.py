@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import budget as budget_module
-from .budget import Budget, DEFAULT_RETRY_DELAYS, parse_retry_delays, retry_delay
+from .budget import Budget, DEFAULT_RETRY_DELAYS, RETRYABLE_STAGES, parse_retry_delays, retry_delay
 from .rtsp import validate_local_rtsp_url
 from .stream import run_session
 
@@ -181,7 +181,7 @@ def worker(source: str, target: str, rtsp: str, fd: int, parent: int,
             return 0
         if outcome == "blocked":
             send({"event": "blocked"})
-        elif outcome in ("discovery", "connect", "live", "video"):
+        elif outcome in RETRYABLE_STAGES:
             send({"event": "retryable", "stage": outcome})
         else:
             raise RuntimeError("Unknown session outcome")
@@ -296,7 +296,7 @@ def run_worker(budget: Budget, rtsp: str, video_timeout: float | None = None) ->
                 outcome = event["stage"]
             elif event["event"] == "blocked":
                 outcome = "blocked"
-        if process.returncode == 1 and outcome in ("discovery", "connect", "live", "video"):
+        if process.returncode == 1 and outcome in RETRYABLE_STAGES:
             print("continuous: retryable interruption at " + outcome, flush=True)
             return outcome
         if process.returncode == 1 and outcome == "blocked":
@@ -365,7 +365,7 @@ def supervise(budget: Budget, rtsp: str, video_timeout: float = 30,
         print(f"continuous: reserved attempt {count}; "
               f"reconnections={max(0, count - 1)}", flush=True)
         result = run_worker(budget, rtsp, video_timeout)
-        if result in ("discovery", "connect", "live", "video"):
+        if result in RETRYABLE_STAGES:
             budget.finish_retryable(result)
             if max_attempts is not None and attempts >= max_attempts:
                 return 0
