@@ -1,198 +1,147 @@
-# Instructions permanentes — Netvue Bridge
+# Netvue — Instructions permanentes
 
 ## Projet
 
-Le projet consiste à développer une passerelle locale permettant de récupérer les flux vidéo des caméras Netvue Vigil et de les utiliser dans Home Assistant.
+Le projet développe une passerelle locale Netvue Vigil vers RTSP et Home Assistant.
 
-L'objectif est de créer une solution :
+La nouvelle version est développée principalement en Go.
 
-- Simple à comprendre et à maintenir.
-- Fiable et performante.
+L'ancien projet Python est conservé comme référence technique.
+
+Le but est d'obtenir un logiciel :
+
+- Simple et lisible.
+- Fiable et performant.
 - Économe en ressources.
+- Facile à configurer.
 - Facile à installer avec Portainer.
 - Compatible avec plusieurs caméras.
-- Sécurisée sans complexité excessive.
+- Facile à maintenir et à faire évoluer.
 
-La nouvelle passerelle sera développée principalement en **Go**.
+## Principes
 
-Home Assistant et MediaMTX pourront utiliser leurs technologies habituelles.
+Privilégier la simplicité de l'architecture et du code.
 
-L'ancien projet Python constitue une référence technique, mais **son architecture ne doit pas être reproduite automatiquement**.
+Utiliser des bibliothèques fiables lorsqu'elles évitent des implémentations personnalisées.
 
-Le projet n'étant pas encore officiellement publié, aucune compatibilité avec les anciennes versions expérimentales n'est exigée, sauf demande explicite.
+Ne pas reproduire automatiquement les anciennes architectures, budgets, superviseurs et mécanismes expérimentaux.
 
-## Priorité actuelle : conception
+Éviter :
 
-Avant de développer la nouvelle passerelle, réaliser un audit de conception.
+- La duplication.
+- Les abstractions inutiles.
+- Les dépendances disproportionnées.
+- Les états excessifs.
+- Le code mort.
+- Les commentaires inutiles.
 
-Examiner :
-
-1. Les fonctionnalités réellement nécessaires.
-2. Les technologies et bibliothèques disponibles.
-3. Les méthodes les plus simples pour récupérer et transmettre la vidéo.
-4. Les différentes architectures possibles.
-5. Les protections de sécurité justifiées.
-6. Les possibilités de supprimer des composants ou mécanismes.
-7. Les méthodes de déploiement et de configuration.
-8. Les besoins réels de Home Assistant.
-
-Comparer les solutions lorsque plusieurs approches sont possibles.
-
-Ne pas supposer que les choix de l'ancienne version restent les meilleurs.
-
-**Privilégier la meilleure conception globale plutôt que la réutilisation du code existant.**
-
-L'audit de conception précède l'implémentation. Une fois une conception validée, le développement peut avancer de manière autonome dans le périmètre autorisé.
-
-## Principes de développement
-
-- Privilégier un code simple, lisible et direct.
-- Éviter les abstractions et dépendances inutiles.
-- Éviter les duplications et les responsabilités mélangées.
-- Utiliser des bibliothèques éprouvées lorsqu'elles simplifient réellement le projet.
-- Ne pas réimplémenter des fonctionnalités déjà correctement prises en charge par les outils existants.
-- Ajouter uniquement les fonctionnalités nécessaires.
-- Ajouter des commentaires lorsqu'ils expliquent un comportement non évident.
-- Favoriser la fiabilité et la facilité de maintenance.
-- Évaluer les performances lorsque cela est pertinent.
-
-Le nombre de lignes n'est pas un objectif en soi.
-
-**La simplicité doit être évaluée sur l'ensemble du fonctionnement, pas uniquement sur les fichiers individuels.**
-
-Lorsqu'une demande porte sur une implémentation, effectuer les modifications et les tests nécessaires, sans s'arrêter à un simple plan.
+Les anciennes compatibilités expérimentales ne sont pas obligatoires.
 
 ## Autonomie
 
-L'agent est autorisé à :
+L'agent peut, sans nouvelle confirmation :
 
-- Examiner et modifier le code du projet.
-- Supprimer les anciennes implémentations obsolètes après vérification.
-- Créer une nouvelle architecture dans le dépôt.
+- Lire et modifier le dépôt.
+- Développer de nouvelles fonctionnalités.
+- Créer ou supprimer des fichiers du projet.
+- Installer des outils dans l'environnement de développement.
+- Effectuer des recherches techniques.
 - Exécuter des tests locaux et synthétiques.
-- Installer les outils et dépendances dans le projet.
-- Consulter les documentations officielles.
-- Effectuer des diagnostics passifs sur les services accessibles.
-- Utiliser des sous-agents pour les tâches complexes.
+- Créer des tests et des documentations.
+- Utiliser des sous-agents.
+- Corriger les problèmes identifiés.
 
-L'agent peut choisir les solutions techniques lorsqu'aucun choix précis n'a été imposé par l'utilisateur.
+Les demandes d'implémentation autorisent les modifications locales nécessaires.
 
-Ne pas demander de confirmation pour chaque modification locale ordinaire.
-
-Préserver les modifications préexistantes de l'utilisateur.
-
-Ne pas effectuer de commit, push ou publication sans demande explicite.
+Ne pas s'arrêter à un simple diagnostic lorsqu'une implémentation est demandée.
 
 ## Sécurité
 
-Adopter une sécurité proportionnée aux risques réels.
+Conserver des protections proportionnées aux risques réels.
 
-Conserver notamment :
+Protéger :
 
-- L'authentification nécessaire auprès des caméras.
-- La protection des identifiants et secrets.
-- Des connexions réseau limitées aux besoins.
-- La prévention des sessions concurrentes dangereuses.
-- Des délais d'attente raisonnables.
-- Des reconnexions contrôlées.
-- Des limites adaptées de mémoire et de ressources.
-- La gestion correcte des interruptions et erreurs critiques.
+- L'authentification des caméras.
+- Les identifiants et secrets.
+- Les connexions réseau.
+- Les sessions concurrentes.
+- Les ressources.
+- Les processus.
+- Les erreurs critiques.
 
-Ne pas ajouter des protections uniquement par précaution théorique.
+Éviter les protections redondantes ou inutilement complexes.
 
-Une protection doit avoir une utilité identifiable.
+Les anciens budgets persistants ne constituent pas une obligation pour la nouvelle architecture.
 
-Les mécanismes redondants, disproportionnés ou inutiles peuvent être supprimés après analyse.
-
-Les anciens systèmes de budgets, migrations, blocages permanents et superviseurs ne constituent pas des exigences pour la nouvelle architecture.
-
-Ne pas les réintroduire automatiquement.
-
-## Autorisations nécessaires
+## Opérations réelles
 
 Une autorisation explicite reste nécessaire pour :
 
-- Contacter activement les caméras réelles.
+- Contacter les caméras réelles.
 - Accéder aux comptes Netvue.
-- Modifier le firmware ou réinitialiser un appareil.
-- Modifier ou redémarrer des services de production.
-- Modifier le réseau ou la configuration du serveur.
-- Supprimer ou remplacer des données persistantes réelles.
+- Modifier le firmware.
+- Modifier ou redémarrer les services de production.
+- Déployer ou remplacer une stack Portainer.
+- Modifier Home Assistant installé.
+- Supprimer ou remplacer des données réelles.
 
-Les tests caméra doivent respecter les limites de durée et de tentatives autorisées.
+Les anciennes données expérimentales doivent être préservées tant qu'aucun abandon autorisé n'a été effectué.
 
-Les anciennes données expérimentales peuvent être archivées puis retirées d'une installation abandonnée sur décision du propriétaire.
+Ne jamais contourner les restrictions d'accès.
 
-Ne jamais supprimer silencieusement les états d'une installation active.
+Ne pas publier de secrets.
 
 Ne pas exposer les flux vidéo sur Internet sans autorisation.
 
-Ne jamais divulguer de secrets ou de données sensibles.
+## Travail
 
-## Tests
+Pour les tâches importantes :
 
-Choisir les tests adaptés aux risques des modifications.
+1. Comprendre le problème.
+2. Identifier les besoins.
+3. Choisir une solution adaptée.
+4. Implémenter.
+5. Tester.
+6. Corriger.
+7. Vérifier le résultat.
 
-Privilégier :
+Utiliser des sous-agents lorsque cela améliore réellement le travail.
 
-- Les tests unitaires.
-- Les caméras simulées.
-- Les données vidéo synthétiques.
-- Les tests d'intégration isolés.
-- Les vérifications de performance utiles.
+Poursuivre les étapes sûres et autorisées tant qu'elles permettent d'atteindre l'objectif.
 
-Distinguer les résultats vérifiés des hypothèses.
-
-Ne jamais inventer une réussite.
-
-Une fonctionnalité terminée et testée hors ligne peut être déclarée terminée même si son déploiement réel reste à effectuer.
-
-Ne pas bloquer les travaux indépendants à cause d'une validation réelle encore non autorisée.
+Ne pas multiplier les demandes de confirmation pour les choix techniques ordinaires.
 
 ## Documentation
 
-Pour chaque phase importante, créer ou actualiser un document :
+Maintenir un plan principal du projet.
 
-`findings/phaseXX-description.md`
+Pour chaque phase importante, créer ou actualiser :
 
-Le document présente brièvement :
+findings/phaseXX-description.md
 
-1. L'objectif.
-2. Les choix techniques.
-3. Les modifications effectuées.
-4. Les tests et leurs résultats.
-5. L'état final et la prochaine étape.
+Le document doit présenter :
 
-Un seul document principal par phase.
+- L'objectif.
+- Les décisions.
+- Les modifications.
+- Les tests.
+- L'état final.
+- Les limites restantes.
 
-Ne pas multiplier les rapports intermédiaires.
-
-Les documents doivent être concis et correspondre au fonctionnement réel.
-
-Mettre également à jour les guides actifs lorsque nécessaire.
+Ne pas multiplier les rapports.
 
 ## Communication
 
 Répondre en français clair.
 
-Être direct et orienté résultat.
+Distinguer les faits vérifiés des hypothèses importantes.
 
-Expliquer les décisions techniques importantes, leurs avantages et leurs limites.
+Ne jamais inventer de résultat.
 
-Distinguer les faits vérifiés des hypothèses lorsque cela influence une décision.
+Donner des bilans courts, précis et orientés résultat.
 
-Ne pas répéter systématiquement toutes les précautions historiques du projet.
+## Objectif fondamental
 
-Ne pas recommencer inutilement les analyses déjà validées, sauf lorsqu'elles sont nécessaires à une nouvelle décision.
+Concevoir et développer la solution la plus simple qui répond correctement aux besoins du projet.
 
-## Principe fondamental
-
-**Concevoir la solution la plus simple qui répond correctement aux besoins réels.**
-
-Ne pas reproduire la complexité du projet précédent.
-
-Ne pas conserver une technologie, une architecture ou une protection simplement parce qu'elle était présente auparavant.
-
-Prendre les décisions à partir des besoins, des preuves disponibles et des tests.
-
-La qualité, la simplicité et la fiabilité du résultat sont prioritaires.
+La qualité et la fiabilité sont prioritaires.
