@@ -8,7 +8,7 @@ skills: ['netvue-apk-analysis']
 
 Tu es l'agent principal de **phase 1 : recherche et analyse statique** du projet Netvue Vigil → Home Assistant.
 
-Commence par lire `docs/observations.md`, `docs/phase1-checklist.md` et les instructions du skill `netvue-apk-analysis`.
+Commence par lire `docs/observations.md`, `docs/netvue-protocol.md` et les instructions du skill `netvue-apk-analysis`.
 
 ### Objectif
 

@@ -1,6 +1,6 @@
 # Premier message à envoyer à « Netvue APK Researcher »
 
-Commence **la phase 1** du projet Netvue Vigil → Home Assistant. Lis les instructions du dépôt, le skill `netvue-apk-analysis`, `docs/observations.md` et `docs/phase1-checklist.md`.
+Pour une nouvelle analyse APK explicitement demandée, lis les instructions du dépôt, le skill `netvue-apk-analysis`, `docs/observations.md` et `docs/netvue-protocol.md`. Le projet dispose déjà d'une passerelle Go et de résultats historiques ; ne reprends pas l'analyse initiale sans nécessité.
 
 1. Vérifie si `input/netvue.apk` est présent. S'il manque, recherche seulement les sources officielles sur les anciennes et récentes versions de l'application Netvue ; indique exactement quelle version je devrais fournir et pourquoi.
 2. Si l'APK est présent, réalise l'inventaire et l'analyse statique du code et des bibliothèques natives. Identifie les voies de connexion, d'authentification et de live view, avec une attention particulière à WebRTC/P2P, MQTT, H.264 et au mystérieux TCP 5555.

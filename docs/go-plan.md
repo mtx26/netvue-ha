@@ -200,6 +200,18 @@ service Go et un MediaMTX. Les détails sont dans `deployment/go-portainer.md`.
   les tests Go, la construction et le démarrage d'aide de l'image, ainsi que
   `docker stack config` ont réussi ; aucune publication ni aucun déploiement
   n'a été effectué.
+- **Phase 28 — réorganisation Go :** le module et l'image Go sont à la racine ;
+  les sources, tests et déploiement Python historiques sont archivés dans
+  `archive/python-bridge/` hors des workflows actifs. L'intégration HA et ses
+  tests restent actifs. Les chemins de build et de publication, les guides et
+  le contexte Docker ont été adaptés. Après stabilisation de l'arborescence,
+  tests Go, détecteur de courses, `go vet`, compilation, build Docker et rendu
+  de la stack ont réussi ; les 20 tests HA et le scénario vidéo HA synthétique
+  ont réussi dans Docker. Les deux tests vidéo Go MediaMTX/FFmpeg ont réussi.
+  Les commandes Go du workflow ont réussi dans son image Linux, sur une copie
+  locale minimale sans réseau ; le workflow de publication n'a pas été lancé.
+  Un premier `go vet` lancé pendant le déplacement a échoué sur un répertoire
+  disparu ; le rejeu après déplacement a réussi.
 - **Prochaine étape :** vérifier la disponibilité et la visibilité souhaitée
   du package GHCR, puis déclencher manuellement sa publication uniquement
   après autorisation. La stack sur le nœud cible reste à valider avant tout

@@ -2,10 +2,11 @@
 
 Ce document est une synthèse des preuves déjà présentes dans le dépôt et du
 code historique. Il ne constitue pas une spécification fabricant ni une
-garantie de compatibilité entre modèles. Voir l'analyse [LAN](../findings/lan-protocol-analysis.md),
-la [faisabilité du login](../findings/lan-login-feasibility.md). Le code actif
-est dans `internal/netvue/` ; la passerelle Python historique est archivée sous
-`archive/python-bridge/` et reste aussi accessible dans l'historique Git.
+garantie de compatibilité entre modèles. Les analyses LAN historiques peuvent
+être conservées localement dans `findings/`, dossier ignoré par Git. Le code
+actif est dans `internal/netvue/` ; la passerelle Python historique est
+archivée sous `archive/python-bridge/` et reste aussi accessible dans
+l'historique Git.
 
 ## Confirmé
 

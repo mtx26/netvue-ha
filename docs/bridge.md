@@ -141,5 +141,5 @@ loopback. Ne publiez ni le port 8765 ni le flux RTSP. Des processus locaux
 pouvant joindre loopback peuvent appeler l'API ; Home Assistant et le pont
 doivent partager le réseau host du nœud.
 
-Voir le [plan Go](./go-plan.md), la [synthèse du protocole](./netvue-protocol.md)
-et le [bilan de phase 26](../findings/phase26-multicamera-go.md).
+Voir le [plan Go](./go-plan.md) et la
+[synthèse du protocole](./netvue-protocol.md).
