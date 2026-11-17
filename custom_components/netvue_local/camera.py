@@ -36,7 +36,8 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
 
     @property
     def available(self) -> bool:
-        return super().available and self.coordinator.data is True
+        return (super().available and self.coordinator.data is not None
+                and self.coordinator.data.rtsp_available)
 
     @property
     def use_stream_for_stills(self) -> bool:

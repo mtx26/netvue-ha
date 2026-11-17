@@ -1,6 +1,7 @@
 """Loopback API client for the Netvue Bridge session manager."""
 
 import asyncio
+from typing import NamedTuple
 from urllib.parse import quote
 from weakref import WeakValueDictionary
 
@@ -19,6 +20,11 @@ class BridgeError(Exception):
     """The local bridge could not accept the requested camera session."""
 
 
+class SessionStatus(NamedTuple):
+    state: str
+    error: str | None
+
+
 class _CameraState:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
@@ -33,7 +39,7 @@ def _camera_state(hass: HomeAssistant, host: str) -> _CameraState:
     return state
 
 
-async def _camera_response(response, host: str, stream_name: str) -> None:
+async def _camera_response(response, host: str, stream_name: str) -> SessionStatus:
     try:
         data = await response.json()
     except (ValueError, ClientError) as exc:
@@ -41,8 +47,10 @@ async def _camera_response(response, host: str, stream_name: str) -> None:
     if (not isinstance(data, dict) or data.get("host") != host
             or data.get("stream_name") != stream_name
             or data.get("rtsp_url") != stream_url_from_name(stream_name)
-            or not isinstance(data.get("state"), str) or not data["state"]):
+            or data.get("state") not in ("supervising", "stopping", "stopped", "failed")
+            or ("error" in data and not isinstance(data["error"], str))):
         raise BridgeError("Bridge returned inconsistent camera settings")
+    return SessionStatus(data["state"], data.get("error"))
 
 
 class ManagedCamera:
@@ -56,7 +64,7 @@ class ManagedCamera:
         self._state.generation += 1
         self._generation = self._state.generation
 
-    async def async_reconcile(self) -> None:
+    async def async_reconcile(self) -> SessionStatus | None:
         state = self._state
         async with state.lock:
             if self._generation != state.generation:
@@ -68,8 +76,7 @@ class ManagedCamera:
                         f"{API_URL}/cameras/{quote(self.host, safe='.')}"
                     ) as response:
                         if response.status == 200:
-                            await _camera_response(response, self.host, self.stream_name)
-                            return
+                            return await _camera_response(response, self.host, self.stream_name)
                         if response.status != 404:
                             raise BridgeError(f"Bridge returned HTTP {response.status}")
                     # A newer coordinator may replace this entry while GET is in flight.
@@ -81,7 +88,24 @@ class ManagedCamera:
                     ) as response:
                         if response.status not in (200, 202):
                             raise BridgeError(f"Bridge returned HTTP {response.status}")
-                        await _camera_response(response, self.host, self.stream_name)
+                        return await _camera_response(response, self.host, self.stream_name)
+            except (ClientError, TimeoutError) as exc:
+                raise BridgeError("Cannot reach the local bridge manager") from exc
+
+    async def async_start(self) -> SessionStatus:
+        state = self._state
+        async with state.lock:
+            if self._generation != state.generation:
+                raise BridgeError("Camera entry has been removed or replaced")
+            session = async_get_clientsession(self.hass)
+            try:
+                async with asyncio.timeout(REQUEST_TIMEOUT):
+                    async with session.post(
+                        f"{API_URL}/cameras/{quote(self.host, safe='.')}/start"
+                    ) as response:
+                        if response.status not in (200, 202):
+                            raise BridgeError(f"Bridge returned HTTP {response.status}")
+                        return await _camera_response(response, self.host, self.stream_name)
             except (ClientError, TimeoutError) as exc:
                 raise BridgeError("Cannot reach the local bridge manager") from exc
 

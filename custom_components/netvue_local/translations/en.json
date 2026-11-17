@@ -35,6 +35,20 @@
   "entity": {
     "binary_sensor": {
       "rtsp_available": {"name": "RTSP H.264 stream available"}
+    },
+    "sensor": {
+      "session": {
+        "name": "Session status",
+        "state": {
+          "supervising": "Supervising",
+          "stopping": "Stopping",
+          "stopped": "Stopped",
+          "failed": "Failed"
+        }
+      }
+    },
+    "button": {
+      "restart_session": {"name": "Restart session"}
     }
   }
 }

@@ -31,6 +31,13 @@ relancer une session existante arrêtée ou en échec. La suppression HA retire
 la session. La saisie de l'IPv4 caméra est manuelle ; il n'y a pas de
 recherche de candidats LAN depuis HA.
 
+Le gestionnaire expose l'état de chaque superviseur et une catégorie d'erreur
+non sensible en cas d'échec définitif. HA les affiche dans un capteur de
+diagnostic et propose un bouton de reprise explicite pour les sessions en
+échec ou arrêtées. Le capteur RTSP reste indépendant : une session supervisée
+peut être en attente de reconnexion et ne garantit pas un flux disponible.
+Les causes des erreurs transitoires réessayées ne sont pas encore exposées.
+
 L'API écoute sur `127.0.0.1:8765` et MediaMTX sur `127.0.0.1:8554`, sans
 authentification distincte : les processus partageant le réseau hôte peuvent
 y accéder. Le protocole Netvue observé n'est pas chiffré. Voir le

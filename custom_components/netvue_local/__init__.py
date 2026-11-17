@@ -14,7 +14,7 @@ from .rtsp import stream_url_from_name
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.CAMERA, Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON]
 
 
 def _managed_camera(entry: ConfigEntry) -> tuple[str, str]:

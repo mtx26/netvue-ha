@@ -39,9 +39,18 @@ Il n'y a pas de nombre maximal codé en dur. La capacité pratique dépend des
 ressources disponibles et des caméras et MediaMTX.
 
 L'entité caméra lit le flux via Home Assistant Stream. Un capteur binaire
-indique si l'annonce SDP RTSP/H.264 est disponible. L'indisponibilité peut
-signifier que le pont démarre, que MediaMTX est en panne ou que la session
-caméra échoue ; elle ne permet pas à elle seule d'en déterminer la cause.
+indique si l'annonce SDP RTSP/H.264 est disponible. Le capteur de diagnostic
+**Session** présente séparément l'état du superviseur : en cours de
+supervision, en cours d'arrêt, arrêté ou en échec. En cas d'échec définitif,
+son attribut `error` indique une catégorie d'erreur non sensible, en anglais.
+Le bouton **Redémarrer la session** est disponible lorsque la session est en
+échec ou arrêtée ; il ne redémarre que cette caméra et ne garantit pas que son
+flux sera immédiatement disponible.
+
+La supervision ne signifie pas que le flux fonctionne : le superviseur peut
+réessayer après une erreur transitoire, dont la cause n'est pas encore exposée
+dans Home Assistant. Le capteur RTSP indique séparément la disponibilité de
+l'annonce vidéo ; consultez également les journaux du pont si nécessaire.
 
 ## Modifier ou supprimer
 
@@ -61,6 +70,9 @@ n'est ni convertie ni réécrite automatiquement.
   `127.0.0.1:8765`. L'entrée est réessayée par Home Assistant.
 - **Flux indisponible** : vérifiez MediaMTX sur `127.0.0.1:8554`, l'état de
   l'entrée dans le gestionnaire et les journaux du pont.
+- **Session en échec** : consultez l'attribut `error` du capteur de session,
+  corrigez la cause, puis utilisez **Redémarrer la session**. La session en
+  échec n'est pas redémarrée automatiquement par Home Assistant.
 - L'API du pont n'a pas d'authentification distincte et n'écoute que sur
   loopback. Les processus partageant le réseau hôte peuvent l'appeler ; ne
   publiez pas son port et gardez les services locaux dignes de confiance.

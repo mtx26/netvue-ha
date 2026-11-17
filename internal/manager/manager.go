@@ -306,8 +306,10 @@ func (manager *Manager) run(ctx context.Context, session *cameraSession, done ch
 	err := manager.runSession(ctx, manager.source, session.Host, session.RTSPURL)
 	canceled := ctx.Err() != nil
 	session.cancel()
+	var diagnostic string
 	if err != nil && !canceled {
-		slog.Error("Camera supervisor stopped", "camera", session.Host, "error", err)
+		diagnostic = sessionError(err)
+		slog.Error("Camera supervisor stopped", "camera", session.Host, "error", diagnostic)
 	}
 
 	manager.mu.Lock()
@@ -318,7 +320,7 @@ func (manager *Manager) run(ctx context.Context, session *cameraSession, done ch
 			session.Error = ""
 		case err != nil:
 			session.State = stateFailed
-			session.Error = err.Error()
+			session.Error = diagnostic
 		default:
 			session.State = stateStopped
 			session.Error = ""
@@ -327,6 +329,19 @@ func (manager *Manager) run(ctx context.Context, session *cameraSession, done ch
 	close(done)
 	manager.mu.Unlock()
 	manager.wg.Done()
+}
+
+func sessionError(err error) string {
+	switch {
+	case errors.Is(err, netvue.ErrAuthenticationRejected):
+		return "Camera authentication rejected"
+	case errors.Is(err, netvue.ErrProtocol), errors.Is(err, netvue.ErrMediaFrame):
+		return "Invalid Netvue protocol or video data"
+	case errors.Is(err, netvue.ErrVideoFatal):
+		return "Video publication failed"
+	default:
+		return "Unexpected camera session error"
+	}
 }
 
 func normalizeCameraHost(host string) (string, error) {

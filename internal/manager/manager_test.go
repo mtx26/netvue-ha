@@ -1,10 +1,12 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-copilot-phase1/internal/netvue"
 )
 
 func TestManagerRunsFiveIndependentCameras(t *testing.T) {
@@ -241,9 +245,15 @@ func TestDeleteSerializesWithConcurrentRestart(t *testing.T) {
 func TestManagerFatalSessionCanBeRestartedExplicitly(t *testing.T) {
 	var starts atomic.Int32
 	started := make(chan struct{}, 1)
-	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+	secondStarted := make(chan struct{}, 1)
+	manager := newTestManager(t, func(ctx context.Context, _, host, _ string) error {
+		if host == "192.168.10.21" {
+			secondStarted <- struct{}{}
+			<-ctx.Done()
+			return nil
+		}
 		if starts.Add(1) == 1 {
-			return errors.New("authentication denied")
+			return fmt.Errorf("%w: sensitive detail", netvue.ErrAuthenticationRejected)
 		}
 		started <- struct{}{}
 		<-ctx.Done()
@@ -253,17 +263,87 @@ func TestManagerFatalSessionCanBeRestartedExplicitly(t *testing.T) {
 	if _, _, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := manager.AddCamera("192.168.10.21", "second_camera"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second camera session did not start")
+	}
 	waitForState(t, manager, "192.168.10.20", stateFailed)
+	failed, found := manager.Camera("192.168.10.20")
+	if !found || failed.Error != "Camera authentication rejected" {
+		t.Fatalf("failed camera diagnostic = %+v, found %v", failed, found)
+	}
+	get := httptest.NewRecorder()
+	manager.Handler().ServeHTTP(get, newRequest(http.MethodGet, "/api/v1/cameras/192.168.10.20", ""))
+	if strings.Contains(get.Body.String(), "sensitive detail") {
+		t.Fatalf("camera response contains sensitive detail: %s", get.Body.String())
+	}
 	if _, added, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil || added {
 		t.Fatalf("duplicate add restarted failed camera: added %v, error %v", added, err)
 	}
-	if _, startedAgain, err := manager.StartCamera("192.168.10.20"); err != nil || !startedAgain {
-		t.Fatalf("StartCamera() = started %v, error %v", startedAgain, err)
+	start := httptest.NewRecorder()
+	manager.Handler().ServeHTTP(start, newRequest(http.MethodPost, "/api/v1/cameras/192.168.10.20/start", ""))
+	var camera Camera
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("restart status = %d, body = %s", start.Code, start.Body.String())
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &camera); err != nil || camera.Error != "" || camera.State != stateSupervising {
+		t.Fatalf("restart response = %+v, error %v", camera, err)
 	}
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("explicit restart did not start a new session")
+	}
+	other, found := manager.Camera("192.168.10.21")
+	if !found || other.State != stateSupervising {
+		t.Fatalf("other camera after restart = %+v, found %v", other, found)
+	}
+	select {
+	case <-secondStarted:
+		t.Fatal("restarting the first camera restarted the second")
+	default:
+	}
+}
+
+func TestSessionErrorDiagnosticsDoNotExposeUnderlyingErrors(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("%w: secret", netvue.ErrAuthenticationRejected), "Camera authentication rejected"},
+		{fmt.Errorf("%w: secret", netvue.ErrProtocol), "Invalid Netvue protocol or video data"},
+		{fmt.Errorf("%w: secret", netvue.ErrMediaFrame), "Invalid Netvue protocol or video data"},
+		{fmt.Errorf("%w: secret", netvue.ErrVideoFatal), "Video publication failed"},
+		{errors.New("secret"), "Unexpected camera session error"},
+	}
+	for _, test := range tests {
+		if got := sessionError(test.err); got != test.want {
+			t.Errorf("sessionError() = %q, want %q", got, test.want)
+		}
+	}
+}
+
+func TestFailedSessionDoesNotLogSensitiveError(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	manager := newTestManager(t, func(context.Context, string, string, string) error {
+		return errors.New("sensitive detail")
+	})
+	if _, _, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, manager, "192.168.10.20", stateFailed)
+	camera, found := manager.Camera("192.168.10.20")
+	if !found || camera.Error != "Unexpected camera session error" ||
+		strings.Contains(logs.String(), "sensitive detail") {
+		t.Fatalf("unsafe session diagnostic or log: camera=%+v log=%s", camera, logs.String())
 	}
 }
 

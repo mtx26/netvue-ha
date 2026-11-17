@@ -35,6 +35,20 @@
   "entity": {
     "binary_sensor": {
       "rtsp_available": {"name": "Flux RTSP H.264 disponible"}
+    },
+    "sensor": {
+      "session": {
+        "name": "État de la session",
+        "state": {
+          "supervising": "Supervision en cours",
+          "stopping": "Arrêt en cours",
+          "stopped": "Arrêtée",
+          "failed": "Échec"
+        }
+      }
+    },
+    "button": {
+      "restart_session": {"name": "Redémarrer la session"}
     }
   }
 }

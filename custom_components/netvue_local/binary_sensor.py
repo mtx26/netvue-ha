@@ -30,4 +30,4 @@ class NetvueStreamSensor(CoordinatorEntity[NetvueCoordinator], BinarySensorEntit
 
     @property
     def is_on(self) -> bool | None:
-        return self.coordinator.data
+        return self.coordinator.data.rtsp_available if self.coordinator.data is not None else None

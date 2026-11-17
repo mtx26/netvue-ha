@@ -212,6 +212,18 @@ service Go et un MediaMTX. Les détails sont dans `deployment/go-portainer.md`.
   locale minimale sans réseau ; le workflow de publication n'a pas été lancé.
   Un premier `go vet` lancé pendant le déplacement a échoué sur un répertoire
   disparu ; le rejeu après déplacement a réussi.
+- **Phase 29 — diagnostic et reprise HA vérifiés hors ligne :** chaque entrée
+  affiche l'état du superviseur et, en cas d'échec définitif, une catégorie
+  d'erreur non sensible ; un bouton permet une reprise explicite d'une session
+  arrêtée ou en échec. La disponibilité RTSP reste indépendante de l'état du
+  gestionnaire. Les tests Go, détecteur de courses, `go vet`, compilation et
+  23 tests HA en conteneur réussissent. Un scénario HA réel isolé avec faux
+  gestionnaire, deux caméras fictives et MediaMTX vérifie notamment diagnostic,
+  échec de reprise, reprise ciblée et panne du gestionnaire. Les erreurs
+  transitoires réessayées ne sont pas exposées. La relecture a également
+  relevé un cas préexistant : si la suppression de session réussit mais que
+  le déchargement des plateformes HA échoue, l'ancien coordinator ne réconcilie
+  plus la session ; une reprise sûre de ce cycle reste à concevoir.
 - **Prochaine étape :** vérifier la disponibilité et la visibilité souhaitée
   du package GHCR, puis déclencher manuellement sa publication uniquement
   après autorisation. La stack sur le nœud cible reste à valider avant tout
