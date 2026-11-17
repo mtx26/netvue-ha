@@ -153,10 +153,12 @@ func TestReceiveLiveConfirmationVersions(t *testing.T) {
 		unit        map[string]any
 		wantSuccess bool
 		wantVersion bool
+		diagnostic  string
 	}{
 		{name: "version one accepted", unit: map[string]any{"A": 3, "V": 1, "C": 0}, wantSuccess: true},
 		{name: "version two accepted", unit: map[string]any{"A": 3, "V": 2, "C": 0}, wantSuccess: true},
 		{name: "missing result rejected", unit: map[string]any{"A": 3, "V": 1}},
+		{name: "null result rejected", unit: map[string]any{"A": 3, "V": 1, "C": nil}, diagnostic: "Invalid Netvue protocol data [LIVE response]: missing or invalid result"},
 		{name: "failure result rejected", unit: map[string]any{"A": 3, "V": 1, "C": 1}},
 		{name: "unknown version rejected", unit: map[string]any{"A": 3, "V": 3, "C": 0}, wantVersion: true},
 		{name: "missing version rejected", unit: map[string]any{"A": 3, "C": 0}, wantVersion: true},
@@ -167,7 +169,7 @@ func TestReceiveLiveConfirmationVersions(t *testing.T) {
 			publisher := &generationTestPublisher{}
 			go func() {
 				ack, _ := EncodeCommand([]map[string]any{test.unit})
-				if writeFull(server, ack) == nil && test.wantSuccess {
+				if writeFull(server, ack) == nil {
 					_ = writeFull(server, mediaPacket(1, []byte{1}))
 				}
 			}()
@@ -180,6 +182,12 @@ func TestReceiveLiveConfirmationVersions(t *testing.T) {
 				}
 			} else if !errors.Is(err, ErrProtocol) || errors.Is(err, ErrLiveResponseVersion) != test.wantVersion {
 				t.Fatalf("unexpected LIVE response error: %v", err)
+			}
+			if !test.wantSuccess && publisher.CurrentPublicationFrames() != 0 {
+				t.Fatal("invalid LIVE confirmation published video")
+			}
+			if test.diagnostic != "" && SessionDiagnostic(err) != test.diagnostic {
+				t.Fatalf("diagnostic = %q, want %q", SessionDiagnostic(err), test.diagnostic)
 			}
 		})
 	}

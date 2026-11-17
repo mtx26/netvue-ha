@@ -65,6 +65,9 @@ dans [architecture.md](./architecture.md) et [bridge.md](./bridge.md).
   étape et motif prédéfini ; avertissement assaini avant reprise. La cause
   exacte du message historique générique reste inconnue sans diagnostic
   provenant de la version exécutée.
+- **Validations et supervision :** les résultats JSON `null` sont rejetés ;
+  un statut RTSP 503 renvoyé au démarrage est traité comme temporaire.
+  Ces défauts synthétiques ne démontrent pas la cause du journal historique.
 - **Installation préparée :** stack Portainer avec deux variables obligatoires ;
   intégration HACS configurée pour le dépôt. Le dépôt GitHub doit être public
   pour HACS, et le package GHCR pour un téléchargement sans authentification.

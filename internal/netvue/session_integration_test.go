@@ -10,6 +10,24 @@ import (
 )
 
 func TestRunSessionStopsAfterRejectedAuthentication(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     any
+		wantError  error
+		diagnostic string
+	}{
+		{name: "rejected", result: 5, wantError: ErrAuthenticationRejected, diagnostic: "Camera authentication rejected [authentication]"},
+		{name: "null", result: nil, wantError: ErrProtocol, diagnostic: "Invalid Netvue protocol data [authentication]: missing or invalid authentication result"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			testRunSessionStopsAfterAuthentication(t, test.result, test.wantError, test.diagnostic)
+		})
+	}
+}
+
+func testRunSessionStopsAfterAuthentication(t *testing.T, result any, wantError error, diagnostic string) {
+	t.Helper()
 	sourceIP := net.ParseIP("127.0.0.1").To4()
 	targetIP := net.ParseIP("127.0.0.2").To4()
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: targetIP, Port: discoveryPort})
@@ -74,7 +92,7 @@ func TestRunSessionStopsAfterRejectedAuthentication(t *testing.T) {
 			return
 		}
 		acknowledgment, err := EncodeCommand([]map[string]any{{
-			"A": 1, "V": 1, "C": 5,
+			"A": 1, "V": 1, "C": result,
 		}})
 		if err != nil {
 			outcome <- err
@@ -100,8 +118,11 @@ func TestRunSessionStopsAfterRejectedAuthentication(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	err = RunSession(ctx, sourceIP.String(), targetIP.String(), rtspURL, 3*time.Second)
-	if !errors.Is(err, ErrAuthenticationRejected) {
-		t.Fatalf("expected authentication rejection, got %v", err)
+	if !errors.Is(err, wantError) {
+		t.Fatalf("expected %v, got %v", wantError, err)
+	}
+	if got := SessionDiagnostic(err); got != diagnostic {
+		t.Fatalf("diagnostic = %q, want %q", got, diagnostic)
 	}
 	if err := <-outcome; err != nil {
 		t.Fatal(err)

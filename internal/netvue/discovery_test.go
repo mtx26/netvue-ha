@@ -64,6 +64,19 @@ func TestValidateLANIPv4RejectsPublicAndNonIPv4(t *testing.T) {
 	}
 }
 
+func TestParseDiscoveryRejectsNullResult(t *testing.T) {
+	packet, err := EncodeCommand([]map[string]any{{
+		"A": 8, "V": 2, "C": nil,
+		"P": []any{"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseDiscovery(packet, "192.168.10.2", "192.168.10.2"); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("expected ErrProtocol for null result, got %v", err)
+	}
+}
+
 func discoveryResponse(t *testing.T, host string, port int, key string, code int) []byte {
 	t.Helper()
 	packet, err := EncodeCommand([]map[string]any{{

@@ -74,6 +74,7 @@ func TestUnitIntRequiresJSONInteger(t *testing.T) {
 		{raw: `{"C":4}`, wantOkay: true},
 		{raw: `{"C":0.0}`},
 		{raw: `{"C":"0"}`},
+		{raw: `{"C":null}`},
 		{raw: `{}`},
 	} {
 		units, err := ParseUnits([]byte("[" + test.raw + "]"))

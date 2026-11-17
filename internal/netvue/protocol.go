@@ -99,11 +99,11 @@ func unitInt(unit map[string]json.RawMessage, field string) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	var value int64
-	if err := json.Unmarshal(raw, &value); err != nil {
+	var value *int64
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 		return 0, false
 	}
-	return value, true
+	return *value, true
 }
 
 func validateHeader(header []byte) (int, uint16, error) {

@@ -77,6 +77,47 @@ func TestPublisherRestartsRecordingAfterParameterChanges(t *testing.T) {
 	}
 }
 
+func TestPublisherClassifiesRTSPFailure(t *testing.T) {
+	for _, method := range []string{"ANNOUNCE", "SETUP", "RECORD"} {
+		for _, test := range []struct {
+			name      string
+			status    base.StatusCode
+			wantError error
+			retryable bool
+		}{
+			{name: "unavailable", status: base.StatusServiceUnavailable, wantError: ErrVideoStartup, retryable: true},
+			{name: "forbidden", status: base.StatusForbidden, wantError: ErrVideoFatal},
+		} {
+			t.Run(method+"/"+test.name, func(t *testing.T) {
+				handler := &publisherTestRTSPHandler{
+					recorded: make(chan struct{}, 1),
+					closed:   make(chan struct{}, 1),
+					failAt:   method,
+					status:   test.status,
+				}
+				server := &gortsplib.Server{Handler: handler, RTSPAddress: "127.0.0.1:0"}
+				handler.server = server
+				if err := server.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer server.Close()
+				port := server.NetListener().Addr().(*net.TCPAddr).Port
+				publisher, err := newVideoPublisher(context.Background(), fmt.Sprintf("rtsp://127.0.0.1:%d/test", port))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer publisher.Close()
+				publisher.sps = []byte{0x67, 0x42, 0, 0x1e, 0xf4, 0x21, 0x32}
+				publisher.pps = []byte{0x68, 0xc0}
+				err = publisher.start()
+				if !errors.Is(err, test.wantError) || retryableSessionError(err) != test.retryable {
+					t.Fatalf("%d at %s: error = %v, want %v (retryable=%t)", test.status, method, err, test.wantError, test.retryable)
+				}
+			})
+		}
+	}
+}
+
 func waitForPublisherRecord(t *testing.T, recorded <-chan struct{}, generation int) {
 	t.Helper()
 	select {
@@ -91,11 +132,16 @@ type publisherTestRTSPHandler struct {
 	stream   *gortsplib.ServerStream
 	recorded chan struct{}
 	closed   chan struct{}
+	failAt   string
+	status   base.StatusCode
 }
 
 func (handler *publisherTestRTSPHandler) OnAnnounce(
 	ctx *gortsplib.ServerHandlerOnAnnounceCtx,
 ) (*base.Response, error) {
+	if handler.failAt == "ANNOUNCE" {
+		return &base.Response{StatusCode: handler.status}, nil
+	}
 	handler.stream = &gortsplib.ServerStream{Server: handler.server, Desc: ctx.Description}
 	if err := handler.stream.Initialize(); err != nil {
 		return &base.Response{StatusCode: base.StatusInternalServerError}, err
@@ -106,12 +152,18 @@ func (handler *publisherTestRTSPHandler) OnAnnounce(
 func (handler *publisherTestRTSPHandler) OnSetup(
 	*gortsplib.ServerHandlerOnSetupCtx,
 ) (*base.Response, *gortsplib.ServerStream, error) {
+	if handler.failAt == "SETUP" {
+		return &base.Response{StatusCode: handler.status}, nil, nil
+	}
 	return &base.Response{StatusCode: base.StatusOK}, nil, nil
 }
 
 func (handler *publisherTestRTSPHandler) OnRecord(
 	*gortsplib.ServerHandlerOnRecordCtx,
 ) (*base.Response, error) {
+	if handler.failAt == "RECORD" {
+		return &base.Response{StatusCode: handler.status}, nil
+	}
 	handler.recorded <- struct{}{}
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }

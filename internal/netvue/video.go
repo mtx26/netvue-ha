@@ -17,6 +17,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
 
@@ -384,13 +385,18 @@ func closeRTSPClient(client *gortsplib.Client) {
 }
 
 func rtspStartupError(operation string, response *base.Response, err error) error {
-	if response != nil {
-		if response.StatusCode == base.StatusServiceUnavailable {
-			return fmt.Errorf("%w: %s (RTSP status %d): %w", ErrVideoStartup, operation, response.StatusCode, err)
-		}
-		if response.StatusCode >= base.StatusBadRequest {
-			return fmt.Errorf("%w: %s (RTSP status %d): %w", ErrVideoFatal, operation, response.StatusCode, err)
-		}
+	var status base.StatusCode
+	var statusErr liberrors.ErrClientBadStatusCode
+	if errors.As(err, &statusErr) {
+		status = statusErr.Code
+	} else if response != nil {
+		status = response.StatusCode
+	}
+	if status == base.StatusServiceUnavailable {
+		return fmt.Errorf("%w: %s (RTSP status %d): %w", ErrVideoStartup, operation, status, err)
+	}
+	if status >= base.StatusBadRequest {
+		return fmt.Errorf("%w: %s (RTSP status %d): %w", ErrVideoFatal, operation, status, err)
 	}
 	var networkError net.Error
 	if errors.As(err, &networkError) || errors.Is(err, context.DeadlineExceeded) {

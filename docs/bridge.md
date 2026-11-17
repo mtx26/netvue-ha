@@ -65,6 +65,8 @@ restent fatales et nécessitent une reprise explicite : ne pas les ignorer
 ou les réessayer indéfiniment sans preuve de leur caractère transitoire.
 Les diagnostics ne contiennent ni données brutes ni erreur système reçue ;
 l'adresse IPv4 de la caméra figure cependant dans les journaux.
+Une réponse RTSP 503 à ANNOUNCE, SETUP ou RECORD est considérée temporaire
+et suit le même backoff ; un refus 403 reste fatal.
 
 L'URL de sortie exige hôte loopback, port explicite et chemin ; RTSP utilise
 TCP. Le pont n'écrit ni vidéo ni clé sur disque et ne journalise pas la clé

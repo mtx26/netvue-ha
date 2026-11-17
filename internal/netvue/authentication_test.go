@@ -21,6 +21,7 @@ func TestAuthenticationRequiresExplicitResultAndSendsOnce(t *testing.T) {
 		{name: "rejected", response: map[string]any{"A": 1, "V": 2, "C": 5}, result: 5},
 		{name: "missing result", response: map[string]any{"A": 1, "V": 1}, wantErr: true},
 		{name: "invalid result type", response: map[string]any{"A": 1, "V": 1, "C": "0"}, wantErr: true},
+		{name: "null result", response: map[string]any{"A": 1, "V": 1, "C": nil}, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client, server := net.Pipe()

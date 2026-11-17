@@ -50,8 +50,9 @@ et codec caméra 1, audio, fragments génériques, B-frames et stabilité 24/7.
 
 - Accepter la découverte seulement si source et endpoint correspondent à
   l'adresse ciblée ; borner longueurs et délais.
-- Exiger un résultat explicite à chaque étape login/sélection LIVE ; rejeter
-  explicitement les paquets incomplets ou inattendus.
+- Exiger un résultat entier explicite à chaque étape login/sélection LIVE ;
+  rejeter `null` ainsi que les paquets incomplets ou inattendus. En découverte,
+  le résultat reste facultatif, mais doit être un entier nul s'il est présent.
 - Ne pas journaliser clé locale, identifiant, token, média ou trame brute.
 - Le login TCP observé envoie la clé locale sans chiffrement applicatif
   apparent ; l'implémentation Go conserve ce comportement nécessaire à
