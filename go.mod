@@ -1,4 +1,4 @@
-module github.com/mtx26/netvue-copilot-phase1
+module github.com/mtx26/netvue-ha
 
 go 1.26.0
 

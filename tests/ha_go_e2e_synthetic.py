@@ -9,6 +9,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -73,16 +74,15 @@ async def wait_port(port: int, process: subprocess.Popen) -> None:
     raise RuntimeError(f"Local test port {port} did not become ready")
 
 
-async def main():
-    component = Path(os.environ["NETVUE_TEST_COMPONENT"])
-    mediamtx = Path(os.environ["NETVUE_TEST_MEDIAMTX"])
-    config = Path(os.environ["NETVUE_TEST_MEDIAMTX_CONFIG"])
-    bridge = Path(os.environ["NETVUE_TEST_GO_BRIDGE"])
-    host = socket.gethostbyname(socket.gethostname())
-    if not any(ipaddress.ip_address(host) in ipaddress.ip_network(network) for network in
-               ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")):
-        raise RuntimeError("The synthetic camera must use this container's private IPv4")
+def private_ipv4(value: str) -> bool:
+    return any(ipaddress.ip_address(value) in ipaddress.ip_network(network) for network in
+               ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
+
+async def synthetic_camera() -> None:
+    host = os.environ["NETVUE_TEST_CAMERA_HOST"]
+    if not private_ipv4(host):
+        raise RuntimeError("The synthetic camera must use a private IPv4 address")
     video = subprocess.run([
         "/usr/bin/ffmpeg", "-v", "error", "-f", "lavfi", "-i",
         "testsrc=size=64x64:rate=10", "-frames:v", "1", "-pix_fmt", "yuv420p",
@@ -91,6 +91,92 @@ async def main():
     ], check=True, capture_output=True, timeout=20).stdout
     if not video:
         raise RuntimeError("Synthetic H.264 generation produced no frame")
+
+    writers = set()
+    login_count = 0
+
+    async def camera_handler(reader, writer):
+        nonlocal login_count
+        writers.add(writer)
+        try:
+            login = await read_command(reader)
+            if login.get("Q") != 1:
+                raise RuntimeError("Expected synthetic login")
+            login_count += 1
+            rejected = login_count == 1
+            writer.write(command({"A": 1, "V": 1, "C": 5 if rejected else 0}))
+            await writer.drain()
+            if rejected:
+                return
+            live = await read_command(reader)
+            if live.get("Q") != 3:
+                raise RuntimeError("Expected synthetic LIVE request")
+            writer.write(command({"A": 3, "V": 2, "C": 0}))
+            await writer.drain()
+            timestamp = 0
+            while True:
+                writer.write(packet(201, b"\x10" + struct.pack("<I", timestamp) + video))
+                await writer.drain()
+                timestamp += 100
+                await asyncio.sleep(0.1)
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writers.discard(writer)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionError:
+                pass
+
+    async def status_handler(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            body = json.dumps({"login_count": login_count}).encode()
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionError:
+                pass
+
+    tcp = await asyncio.start_server(camera_handler, "0.0.0.0", 5555)
+    status = await asyncio.start_server(status_handler, "0.0.0.0", 5556)
+    udp, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+        lambda: Discovery(host, 5555), local_addr=("0.0.0.0", 36868)
+    )
+    print(f"Synthetic camera ready at {host}:5555", flush=True)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        udp.close()
+        tcp.close()
+        status.close()
+        await tcp.wait_closed()
+        await status.wait_closed()
+        for writer in writers.copy():
+            writer.close()
+
+
+async def main():
+    component = Path(os.environ["NETVUE_TEST_COMPONENT"])
+    mediamtx = Path(os.environ["NETVUE_TEST_MEDIAMTX"])
+    config = Path(os.environ["NETVUE_TEST_MEDIAMTX_CONFIG"])
+    bridge = Path(os.environ["NETVUE_TEST_GO_BRIDGE"])
+    camera_host = os.environ["NETVUE_TEST_CAMERA_HOST"]
+    bridge_host = socket.gethostbyname(socket.gethostname())
+    if not private_ipv4(camera_host) or not private_ipv4(bridge_host):
+        raise RuntimeError("The synthetic bridge and camera must use private IPv4 addresses")
+    if camera_host == bridge_host:
+        raise RuntimeError("The synthetic camera must use an address distinct from the bridge")
 
     with tempfile.TemporaryDirectory(prefix="netvue-ha-go-") as directory:
         root = Path(directory)
@@ -101,54 +187,22 @@ async def main():
                                   stderr=subprocess.PIPE)
         bridge_process = None
         hass = None
-        tcp = None
-        udp = None
-        writers = set()
-        login_count = 0
-
-        async def camera_handler(reader, writer):
-            nonlocal login_count
-            writers.add(writer)
-            try:
-                login = await read_command(reader)
-                if login.get("Q") != 1:
-                    raise RuntimeError("Expected synthetic login")
-                login_count += 1
-                rejected = login_count == 1
-                writer.write(command({"A": 1, "V": 1, "C": 5 if rejected else 0}))
-                await writer.drain()
-                if rejected:
-                    return
-                live = await read_command(reader)
-                if live.get("Q") != 3:
-                    raise RuntimeError("Expected synthetic LIVE request")
-                writer.write(command({"A": 3, "V": 2, "C": 0}))
-                await writer.drain()
-                timestamp = 0
-                while True:
-                    writer.write(packet(201, b"\x10" + struct.pack("<I", timestamp) + video))
-                    await writer.drain()
-                    timestamp += 100
-                    await asyncio.sleep(0.1)
-            except (asyncio.IncompleteReadError, ConnectionError):
-                pass
-            finally:
-                writers.discard(writer)
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except ConnectionError:
-                    pass
 
         try:
             await wait_port(8554, server)
-            tcp = await asyncio.start_server(camera_handler, host, 0)
-            camera_port = tcp.sockets[0].getsockname()[1]
-            udp, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-                lambda: Discovery(host, camera_port), local_addr=(host, 36868)
-            )
+            for _ in range(100):
+                try:
+                    _, writer = await asyncio.open_connection(camera_host, 5555)
+                    writer.close()
+                    await writer.wait_closed()
+                    break
+                except OSError:
+                    await asyncio.sleep(0.1)
+            else:
+                raise RuntimeError("Synthetic camera did not become ready")
+
             bridge_process = subprocess.Popen(
-                [str(bridge), "serve", "--source", "127.0.0.1"],
+                [str(bridge), "serve", "--source", bridge_host],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
             await wait_port(8765, bridge_process)
@@ -160,9 +214,14 @@ async def main():
             await hass.async_start()
             flow = hass.config_entries.flow
             result = await flow.async_init("netvue_local", context={"source": "user"})
-            result = await flow.async_configure(result["flow_id"], {"next_step_id": "manual"})
             result = await flow.async_configure(
-                result["flow_id"], {"name": "Synthetic Netvue", "host": host}
+                result["flow_id"], {"next_step_id": "discovery"}
+            )
+            if result["type"] != "form" or result["step_id"] != "select":
+                raise RuntimeError(f"Synthetic LAN discovery failed: {result}")
+            result = await flow.async_configure(
+                result["flow_id"],
+                {"name": "Synthetic Netvue", "host": camera_host, "manual": False},
             )
             if result["type"] != "create_entry":
                 raise RuntimeError("Synthetic Home Assistant entry was not created")
@@ -192,15 +251,21 @@ async def main():
                     await asyncio.sleep(0.1)
                 raise RuntimeError(f"{entity} did not become {wanted}")
 
+            async def synthetic_login_count():
+                async with ClientSession() as session:
+                    async with session.get(f"http://{camera_host}:5556/status") as response:
+                        response.raise_for_status()
+                        return (await response.json())["login_count"]
+
             failed = await wait_state(session_sensor, "failed")
             if failed.attributes.get("error") != "Camera authentication rejected":
                 raise RuntimeError("Home Assistant did not show the Go manager diagnostic")
-            if login_count != 1:
+            if await synthetic_login_count() != 1:
                 raise RuntimeError("A failed session was retried without an explicit request")
             await hass.services.async_call("button", "press", {"entity_id": restart}, blocking=True)
             await wait_state(session_sensor, "supervising")
             await wait_state(stream_sensor, "on")
-            if login_count != 2:
+            if await synthetic_login_count() != 2:
                 raise RuntimeError("Explicit restart did not open exactly one new session")
             entity = camera.get_camera_from_entity_id(hass, camera_entity)
             entity.stream = await entity.async_create_stream()
@@ -213,21 +278,16 @@ async def main():
             if not await hass.config_entries.async_unload(entry.entry_id):
                 raise RuntimeError("Synthetic Home Assistant entry failed to unload")
             async with ClientSession() as session:
-                async with session.get(f"http://127.0.0.1:8765/api/v1/cameras/{host}") as response:
+                async with session.get(
+                    f"http://127.0.0.1:8765/api/v1/cameras/{camera_host}"
+                ) as response:
                     if response.status != 404:
                         raise RuntimeError("Go manager retained the unloaded camera")
-            print("HA -> Go manager -> synthetic Netvue -> MediaMTX -> HA JPEG: "
+            print("HA -> Go discovery -> synthetic Netvue -> Go -> MediaMTX -> HA JPEG: "
                   "failure diagnostic, explicit restart and unload verified", flush=True)
         finally:
             if hass is not None:
                 await hass.async_stop(force=True)
-            for writer in writers.copy():
-                writer.close()
-            if udp is not None:
-                udp.close()
-            if tcp is not None:
-                tcp.close()
-                await tcp.wait_closed()
             for process in (bridge_process, server):
                 if process is not None:
                     if process.poll() is None:
@@ -237,4 +297,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(asyncio.wait_for(main(), 120))
+    if sys.argv[1:] == ["--camera"]:
+        asyncio.run(synthetic_camera())
+    else:
+        asyncio.run(asyncio.wait_for(main(), 120))

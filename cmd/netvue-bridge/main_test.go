@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mtx26/netvue-copilot-phase1/internal/netvue"
+	"github.com/mtx26/netvue-ha/internal/netvue"
 )
 
 func TestRunCommandSanitizesSessionErrors(t *testing.T) {

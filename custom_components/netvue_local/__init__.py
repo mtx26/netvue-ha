@@ -1,5 +1,6 @@
 """Netvue Local integration for an existing local bridge."""
 
+import asyncio
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -49,17 +50,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     camera = _managed_camera(entry)
     unloaded = []
-    for platform in PLATFORMS:
-        if not await hass.config_entries.async_forward_entry_unload(entry, platform):
-            if unloaded:
-                await hass.config_entries.async_forward_entry_setups(entry, unloaded)
-            _LOGGER.warning("Unable to unload all Netvue platforms; the bridge session was retained")
-            return False
-        unloaded.append(platform)
+    cancelled = False
+
+    async def finish(operation):
+        nonlocal cancelled
+        task = asyncio.ensure_future(operation)
+        while True:
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+
     try:
-        await async_stop_camera(hass, camera[0])
-    except BridgeError as exc:
-        await hass.config_entries.async_forward_entry_setups(entry, unloaded)
+        for platform in PLATFORMS:
+            result = await finish(hass.config_entries.async_forward_entry_unload(entry, platform))
+            if result:
+                unloaded.append(platform)
+            if cancelled:
+                raise asyncio.CancelledError
+            if not result:
+                _LOGGER.warning("Unable to unload all Netvue platforms; the bridge session was retained")
+                break
+        else:
+            await finish(async_stop_camera(hass, camera[0]))
+            # Once deletion is confirmed, complete the unload rather than
+            # restoring an active entry whose bridge session no longer exists.
+            return True
+    except BaseException as exc:
+        if unloaded:
+            await finish(hass.config_entries.async_forward_entry_setups(entry, unloaded))
+        if cancelled:
+            raise asyncio.CancelledError from exc
+        if not isinstance(exc, BridgeError):
+            raise
         _LOGGER.warning("Unable to stop the bridge session while unloading the entry: %s", exc)
         return False
-    return True
+    if unloaded:
+        await finish(hass.config_entries.async_forward_entry_setups(entry, unloaded))
+    if cancelled:
+        raise asyncio.CancelledError
+    return False

@@ -135,11 +135,16 @@ class ManagedCamera:
                         f"{API_URL}/cameras",
                         json={"host": self.host, "stream_name": self.stream_name},
                     ) as response:
+                        if response.status not in (200, 202):
+                            if response.status in (400, 409, 503):
+                                # These responses are issued before insertion.
+                                state.add_uncertain = False
+                                _retain_uncertain_state(self.hass, self.host, state)
+                            raise BridgeError(f"Bridge returned HTTP {response.status}")
+                        result = await _camera_response(response, self.host, self.stream_name)
                         state.add_uncertain = False
                         _retain_uncertain_state(self.hass, self.host, state)
-                        if response.status not in (200, 202):
-                            raise BridgeError(f"Bridge returned HTTP {response.status}")
-                        return await _camera_response(response, self.host, self.stream_name)
+                        return result
             except (ClientError, TimeoutError) as exc:
                 raise BridgeError("Cannot reach the local bridge manager") from exc
 
