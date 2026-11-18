@@ -39,3 +39,18 @@ func TestParseMediaFrameRejectsTruncationAndUnknownType(t *testing.T) {
 		}
 	})
 }
+
+func FuzzParseMediaFrame(f *testing.F) {
+	f.Add([]byte{0x10, 0, 0, 0, 0, 0x67})
+	f.Add([]byte{0x20, 0, 0, 0, 0, 1})
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if len(body) > maxBody {
+			return
+		}
+		frame, video, err := parseMediaFrame(body)
+		if err == nil && video && len(frame.accessUnit) == 0 {
+			t.Fatal("video frame has an empty access unit")
+		}
+	})
+}

@@ -13,7 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from aiohttp import ClientSession
+from aiohttp import ClientConnectorError, ClientSession
 from homeassistant import bootstrap, core, loader
 from homeassistant.components import camera
 from homeassistant.helpers import entity_registry as er
@@ -94,16 +94,18 @@ async def synthetic_camera() -> None:
 
     writers = set()
     login_count = 0
+    forced_drops = 0
+    reject_initial_login = os.environ.get("NETVUE_TEST_REJECT_INITIAL_LOGIN", "1") == "1"
 
     async def camera_handler(reader, writer):
-        nonlocal login_count
+        nonlocal login_count, forced_drops
         writers.add(writer)
         try:
             login = await read_command(reader)
             if login.get("Q") != 1:
                 raise RuntimeError("Expected synthetic login")
             login_count += 1
-            rejected = login_count == 1
+            rejected = reject_initial_login and login_count == 1
             writer.write(command({"A": 1, "V": 1, "C": 5 if rejected else 0}))
             await writer.drain()
             if rejected:
@@ -118,6 +120,9 @@ async def synthetic_camera() -> None:
                 writer.write(packet(201, b"\x10" + struct.pack("<I", timestamp) + video))
                 await writer.drain()
                 timestamp += 100
+                if forced_drops:
+                    forced_drops -= 1
+                    return
                 await asyncio.sleep(0.1)
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
@@ -130,11 +135,24 @@ async def synthetic_camera() -> None:
                 pass
 
     async def status_handler(reader, writer):
+        nonlocal forced_drops
         try:
+            request_line = await reader.readline()
             await reader.readuntil(b"\r\n\r\n")
-            body = json.dumps({"login_count": login_count}).encode()
+            if request_line.startswith(b"POST /fail-next "):
+                forced_drops += 1
+                status_code, status_text = 202, "Accepted"
+                result = {"forced_drops": forced_drops}
+            elif request_line.startswith(b"GET /status "):
+                status_code, status_text = 200, "OK"
+                result = {"login_count": login_count}
+            else:
+                status_code, status_text = 404, "Not Found"
+                result = {"error": "not found"}
+            body = json.dumps(result).encode()
             writer.write(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                f"HTTP/1.1 {status_code} {status_text}\r\n".encode()
+                + b"Content-Type: application/json\r\n"
                 + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
                 + body
             )
@@ -166,17 +184,57 @@ async def synthetic_camera() -> None:
             writer.close()
 
 
+async def camera_login_count(host: str) -> int:
+    async with ClientSession() as session:
+        async with session.get(f"http://{host}:5556/status") as response:
+            response.raise_for_status()
+            return (await response.json())["login_count"]
+
+
+async def wait_camera_ready(host: str) -> None:
+    for _ in range(100):
+        try:
+            await camera_login_count(host)
+            return
+        except ClientConnectorError:
+            await asyncio.sleep(0.1)
+    raise RuntimeError(f"Synthetic camera status endpoint {host}:5556 did not become ready")
+
+
+async def wait_camera_login_count(host: str, minimum: int, timeout: float = 20) -> int:
+    async with asyncio.timeout(timeout):
+        while True:
+            count = await camera_login_count(host)
+            if count >= minimum:
+                return count
+            await asyncio.sleep(0.1)
+
+
+async def decode_rtsp_stream(stream_name: str) -> None:
+    command = [
+        "/usr/bin/ffmpeg", "-v", "error", "-rtsp_transport", "tcp",
+        "-i", f"rtsp://127.0.0.1:8554/{stream_name}",
+        "-frames:v", "1", "-f", "null", "-",
+    ]
+    result = await asyncio.to_thread(
+        subprocess.run, command, capture_output=True, text=True, timeout=20,
+    )
+    if result.returncode:
+        raise RuntimeError(f"Could not decode {stream_name}: {result.stderr}")
+
+
 async def main():
     component = Path(os.environ["NETVUE_TEST_COMPONENT"])
     mediamtx = Path(os.environ["NETVUE_TEST_MEDIAMTX"])
     config = Path(os.environ["NETVUE_TEST_MEDIAMTX_CONFIG"])
     bridge = Path(os.environ["NETVUE_TEST_GO_BRIDGE"])
     camera_host = os.environ["NETVUE_TEST_CAMERA_HOST"]
+    camera2_host = os.environ["NETVUE_TEST_CAMERA_2_HOST"]
     bridge_host = socket.gethostbyname(socket.gethostname())
-    if not private_ipv4(camera_host) or not private_ipv4(bridge_host):
-        raise RuntimeError("The synthetic bridge and camera must use private IPv4 addresses")
-    if camera_host == bridge_host:
-        raise RuntimeError("The synthetic camera must use an address distinct from the bridge")
+    if not all(private_ipv4(host) for host in (camera_host, camera2_host, bridge_host)):
+        raise RuntimeError("The synthetic bridge and cameras must use private IPv4 addresses")
+    if len({camera_host, camera2_host, bridge_host}) != 3:
+        raise RuntimeError("The synthetic cameras and bridge must use distinct addresses")
 
     with tempfile.TemporaryDirectory(prefix="netvue-ha-go-") as directory:
         root = Path(directory)
@@ -254,12 +312,6 @@ async def main():
                     await asyncio.sleep(0.1)
                 raise RuntimeError(f"{entity} did not become {wanted}")
 
-            async def synthetic_login_count():
-                async with ClientSession() as session:
-                    async with session.get(f"http://{camera_host}:5556/status") as response:
-                        response.raise_for_status()
-                        return (await response.json())["login_count"]
-
             failed = await wait_state(session_sensor, "failed")
             expected_error = "Camera authentication rejected [authentication]"
             actual_error = failed.attributes.get("error")
@@ -267,12 +319,12 @@ async def main():
                 raise RuntimeError(
                     f"Home Assistant diagnostic: expected {expected_error!r}, got {actual_error!r}"
                 )
-            if await synthetic_login_count() != 1:
+            if await camera_login_count(camera_host) != 1:
                 raise RuntimeError("A failed session was retried without an explicit request")
             await hass.services.async_call("button", "press", {"entity_id": restart}, blocking=True)
             await wait_state(session_sensor, "supervising")
             await wait_state(stream_sensor, "on")
-            if await synthetic_login_count() != 2:
+            if await camera_login_count(camera_host) != 2:
                 raise RuntimeError("Explicit restart did not open exactly one new session")
             entity = camera.get_camera_from_entity_id(hass, camera_entity)
             entity.stream = await entity.async_create_stream()
@@ -282,6 +334,61 @@ async def main():
                 wait_for_next_keyframe=True), 20)
             if not image or not image.startswith(b"\xff\xd8"):
                 raise RuntimeError("Home Assistant did not decode a synthetic JPEG")
+
+            await wait_camera_ready(camera2_host)
+            async with ClientSession() as session:
+                async with session.post(
+                    "http://127.0.0.1:8765/api/v1/cameras",
+                    json={"host": camera2_host, "stream_name": "synthetic-camera-b"},
+                ) as response:
+                    if response.status != 202:
+                        raise RuntimeError(f"Go manager did not add camera B: {response.status}")
+                async with session.get(
+                    f"http://127.0.0.1:8765/api/v1/cameras/{camera_host}"
+                ) as response:
+                    response.raise_for_status()
+                    camera_a = await response.json()
+                async with session.get(
+                    f"http://127.0.0.1:8765/api/v1/cameras/{camera2_host}"
+                ) as response:
+                    response.raise_for_status()
+                    camera_b = await response.json()
+            if camera_a["state"] != "supervising" or camera_b["state"] != "supervising":
+                raise RuntimeError("Both synthetic cameras must be supervised")
+            await wait_camera_login_count(camera2_host, 1)
+            await decode_rtsp_stream(camera_a["stream_name"])
+            await decode_rtsp_stream(camera_b["stream_name"])
+            stable_camera_a_logins = await camera_login_count(camera_host)
+            reconnect_count = await camera_login_count(camera2_host) + 1
+            async with ClientSession() as session:
+                async with session.post(f"http://{camera2_host}:5556/fail-next") as response:
+                    if response.status != 202:
+                        raise RuntimeError("Could not induce a synthetic camera B disconnect")
+            actual_reconnect_count = await wait_camera_login_count(camera2_host, reconnect_count)
+            if actual_reconnect_count != reconnect_count:
+                raise RuntimeError(
+                    f"Camera B opened {actual_reconnect_count - reconnect_count + 1} "
+                    "sessions after a single synthetic disconnect"
+                )
+            if await camera_login_count(camera_host) != stable_camera_a_logins:
+                raise RuntimeError("Camera A was interrupted by camera B's failure")
+            async with ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:8765/api/v1/cameras/{camera2_host}"
+                ) as response:
+                    response.raise_for_status()
+                    camera_b = await response.json()
+            if camera_b["state"] != "supervising":
+                raise RuntimeError("Camera B did not recover to the supervising state")
+            await decode_rtsp_stream(camera_a["stream_name"])
+            await decode_rtsp_stream(camera_b["stream_name"])
+            async with ClientSession() as session:
+                async with session.delete(
+                    f"http://127.0.0.1:8765/api/v1/cameras/{camera2_host}"
+                ) as response:
+                    if response.status != 200:
+                        raise RuntimeError("Go manager did not remove synthetic camera B")
+
             if not await hass.config_entries.async_unload(entry.entry_id):
                 raise RuntimeError("Synthetic Home Assistant entry failed to unload")
             async with ClientSession() as session:
@@ -292,6 +399,8 @@ async def main():
                         raise RuntimeError("Go manager retained the unloaded camera")
             print("HA -> Go discovery -> synthetic Netvue -> Go -> MediaMTX -> HA JPEG: "
                   "failure diagnostic, explicit restart and unload verified", flush=True)
+            print("Go multi-camera E2E: camera B failure isolated, reconnect and RTSP decode verified",
+                  flush=True)
         finally:
             if hass is not None:
                 await hass.async_stop(force=True)

@@ -33,14 +33,89 @@ jobs:
             "$GO_IMAGE" \
             sh -ec 'go test ./... && go test -race ./... && go vet ./...'
 
+      - name: Run bounded Netvue parser fuzz tests
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            "$GO_IMAGE" \
+            sh -ec '
+              for target in FuzzParseDatagram FuzzReadPacket FuzzParseUnits FuzzParseDiscovery FuzzParseMediaFrame; do
+                go test ./internal/netvue -run="^$" -fuzz="^${target}$" -fuzztime=2s -parallel=2
+              done
+            '
+
+      - name: Build and start the Docker image without publishing
+        run: |
+          set -euo pipefail
+          image="netvue-bridge:ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container="netvue-image-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker image rm "$image" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker build --file Dockerfile --tag "$image" .
+          docker run --detach --name "$container" --network host \
+            "$image" serve --source 127.0.0.1 --listen 127.0.0.1:18765
+
+          for attempt in $(seq 1 50); do
+            if response="$(curl --fail --silent http://127.0.0.1:18765/api/v1/status)"; then
+              printf '%s' "$response" | jq -e '.cameras == []' >/dev/null
+              exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container")" != "true" ]; then
+              docker logs "$container"
+              exit 1
+            fi
+            sleep 0.2
+          done
+          docker logs "$container"
+          echo "Docker image did not serve its status API" >&2
+          exit 1
+
+      - name: Run static Python checks
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ruff"
+          "$RUNNER_TEMP/ruff/bin/python" -m pip install --disable-pip-version-check ruff==0.14.6
+          "$RUNNER_TEMP/ruff/bin/ruff" check \
+            --select E4,E7,E9,F --target-version py313 \
+            custom_components/netvue_local tests scripts
+          python3 -m compileall -q custom_components/netvue_local tests scripts
+
       - name: Run Home Assistant integration tests
         run: |
-          docker run --rm --network none \
+          set -euo pipefail
+          output_file="$(mktemp)"
+          trap 'rm -f "$output_file"' EXIT
+          if ! docker run --rm --network none \
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --workdir /workspace --env PYTHONPATH=/workspace \
             --entrypoint python \
             "$HA_IMAGE" \
-            -B -m unittest discover -s tests -p 'test_*.py' -v
+            -B -m unittest discover -s tests -p 'test_*.py' -v \
+            >"$output_file" 2>&1; then
+            cat "$output_file"
+            exit 1
+          fi
+          cat "$output_file"
+          for test_name in \
+            test_offer_audio_direction_identifies_microphone_track \
+            test_microphone_offer_is_rejected_when_experimental_option_is_off \
+            test_microphone_offer_is_forwarded_when_experimental_option_is_on \
+            test_offer_candidates_events_and_close \
+            test_close_before_worker_starts_and_cancel_open \
+            test_rejection_bad_events_and_shutdown \
+            test_candidate_rejection_closes_and_wrong_camera_is_rejected \
+            test_single_peer_and_cancelled_shutdown_waits_for_delete \
+            test_cancel_candidate_closes_uncertain_session \
+            test_terminal_server_error_is_not_reflected_verbatim \
+            test_entity_registers_provider_only_when_opted_in \
+            test_real_ha_registry_selects_and_removes_provider; do
+            grep -F -- "$test_name (test_home_assistant_webrtc.ProviderTests.$test_name) ... ok" \
+              "$output_file" >/dev/null
+          done
 
       - name: Render the Swarm stack without deploying it
         env:
@@ -100,7 +175,30 @@ jobs:
             exit 1
           fi
           cat "$output_file"
-          for test_name in TestWebRTCEndToEndSynthetic TestAACToOpusRTPWithFFmpeg TestOpusAACNonSilentSignal; do
+          for test_name in \
+            TestWebRTCEndToEndSynthetic \
+            TestWebRTCVideoOnlyDoesNotRequireEncoder \
+            TestWebRTCCloseReservesCameraUntilWorkerFinishes \
+            TestWebRTCCloseActiveAtTombstoneLimit \
+            TestWebRTCCandidateLimit \
+            TestWebRTCEstablishmentTimeout \
+            TestWebRTCCameraIsAvailableAfterPeerWorkersStop \
+            TestStopCameraWaitsForItsPeerOnly \
+            TestOpenTalkbackCancellationWhileCameraStopping \
+            TestWebRTCEventsLongPollAndTombstone \
+            TestWebRTCOfferAudioDirections \
+            TestWebRTCAnswerAudioDirection \
+            TestTalkbackCameraIsolationAndLifecycle \
+            TestOpusAACStreamingFFmpeg \
+            TestOpusAACRealTimeFirstFrame \
+            TestOpusAACEncoderEarlyExit \
+            TestOpusAACNonSilentSignal \
+            TestOpusRTPReorderLossAndDTX \
+            TestOpusDTXDoesNotReplaySilence \
+            TestOpusIdleFlushesPendingPackets \
+            TestAACAccessUnitToADTS \
+            TestAACAccessUnitToADTSRejectsUnsupportedFormats \
+            TestAACToOpusRTPWithFFmpeg; do
             grep -F -- "--- PASS: $test_name" "$output_file" >/dev/null
             if grep -F -- "--- SKIP: $test_name" "$output_file" >/dev/null; then
               echo "$test_name was skipped; the integration job requires an actual pass" >&2
@@ -140,9 +238,11 @@ jobs:
           set -euo pipefail
           network="netvue-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           camera_container="${network}-camera"
+          camera2_container="${network}-camera-b"
           e2e_output="$(mktemp)"
           cleanup() {
             docker rm -f "$camera_container" >/dev/null 2>&1 || true
+            docker rm -f "$camera2_container" >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
             rm -f "$e2e_output"
           }
@@ -150,18 +250,26 @@ jobs:
           docker network create --internal "$network"
 
           subnet="$(docker network inspect "$network" --format '{{(index .IPAM.Config 0).Subnet}}')"
-          read -r camera_ip bridge_ip <<<"$(python3 -c '
+          read -r camera_ip bridge_ip camera2_ip <<<"$(python3 -c '
           import ipaddress, sys
           network = ipaddress.ip_network(sys.argv[1])
           if network.version != 4 or network.num_addresses < 8:
               raise SystemExit("Docker assigned an unusable IPv4 subnet")
-          print(network.network_address + 2, network.network_address + 3)
+          print(network.network_address + 2, network.network_address + 3,
+                network.network_address + 4)
           ' "$subnet")"
 
           docker run --detach --name "$camera_container" \
             --network "$network" --ip "$camera_ip" \
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --env NETVUE_TEST_CAMERA_HOST="$camera_ip" \
+            --entrypoint python "$HA_IMAGE" \
+            -B /workspace/tests/ha_go_e2e_synthetic.py --camera
+          docker run --detach --name "$camera2_container" \
+            --network "$network" --ip "$camera2_ip" \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --env NETVUE_TEST_CAMERA_HOST="$camera2_ip" \
+            --env NETVUE_TEST_REJECT_INITIAL_LOGIN=0 \
             --entrypoint python "$HA_IMAGE" \
             -B /workspace/tests/ha_go_e2e_synthetic.py --camera
 
@@ -175,13 +283,17 @@ jobs:
             --env NETVUE_TEST_MEDIAMTX_CONFIG=/workspace/deployment/mediamtx.yml \
             --env NETVUE_TEST_GO_BRIDGE=/integration/netvue-bridge \
             --env NETVUE_TEST_CAMERA_HOST="$camera_ip" \
+            --env NETVUE_TEST_CAMERA_2_HOST="$camera2_ip" \
             --entrypoint python "$HA_IMAGE" \
             -B /workspace/tests/ha_go_e2e_synthetic.py >"$e2e_output" 2>&1; then
             cat "$e2e_output"
             docker logs "$camera_container" >&2 || true
+            docker logs "$camera2_container" >&2 || true
             exit 1
           fi
           grep -F -- 'HA -> Go discovery -> synthetic Netvue -> Go -> MediaMTX -> HA JPEG:' \
+            "$e2e_output"
+          grep -F -- 'Go multi-camera E2E: camera B failure isolated, reconnect and RTSP decode verified' \
             "$e2e_output"
 
   publish:

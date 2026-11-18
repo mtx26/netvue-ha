@@ -90,6 +90,54 @@ func TestUnitIntRequiresJSONInteger(t *testing.T) {
 	}
 }
 
+func FuzzParseDatagram(f *testing.F) {
+	f.Add(makePacket(1, 0, []byte("x")))
+	f.Add(makePacket(1, 1, []byte("x")))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > headerSize+maxBody {
+			return
+		}
+		packet, err := ParseDatagram(data)
+		if err == nil && (len(packet.Body) == 0 || len(packet.Body) >= maxBody) {
+			t.Fatalf("ParseDatagram returned invalid body length %d", len(packet.Body))
+		}
+	})
+}
+
+func FuzzReadPacket(f *testing.F) {
+	f.Add(makePacket(5, 0, []byte("hello")))
+	f.Add([]byte{1, 2, 3})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > headerSize+maxBody {
+			return
+		}
+		packet, err := ReadPacket(bytes.NewReader(data))
+		if err == nil && (len(packet.Body) == 0 || len(packet.Body) >= maxBody) {
+			t.Fatalf("ReadPacket returned invalid body length %d", len(packet.Body))
+		}
+	})
+}
+
+func FuzzParseUnits(f *testing.F) {
+	f.Add([]byte(`[{"A":8,"V":2,"P":[]}]`))
+	f.Add([]byte(`[null]`))
+	f.Add([]byte(`{}`))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if len(body) >= maxBody {
+			return
+		}
+		units, err := ParseUnits(body)
+		if err == nil {
+			for i, unit := range units {
+				if unit == nil {
+					t.Fatalf("ParseUnits returned nil unit at index %d", i)
+				}
+			}
+		}
+	})
+}
+
 func makePacket(length uint32, flag uint16, body []byte) []byte {
 	return makePacketKind(length, flag, packetCommand, body)
 }

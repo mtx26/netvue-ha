@@ -126,6 +126,24 @@ func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 	}
 }
 
+func FuzzParseDiscovery(f *testing.F) {
+	valid, err := EncodeCommand([]map[string]any{{
+		"A": 8, "V": 2, "C": 0,
+		"P": []any{"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key"},
+	}})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(valid)
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 65535 {
+			return
+		}
+		_, _ = parseDiscovery(data, "192.168.10.2", "192.168.10.2")
+	})
+}
+
 func TestValidateLANIPv4RejectsPublicAndNonIPv4(t *testing.T) {
 	for _, test := range []struct {
 		address string
