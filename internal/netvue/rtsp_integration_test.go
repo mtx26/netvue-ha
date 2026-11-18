@@ -3,6 +3,7 @@ package netvue
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,15 +17,105 @@ import (
 
 	"github.com/bluenviron/gortsplib/v5"
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
 	tscodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
+	"github.com/pion/rtp"
 )
 
-func TestPublisherRestartsRecordingAfterParameterChanges(t *testing.T) {
+func TestPublisherRTPPresentationTimestampsOverRTSP(t *testing.T) {
+	handler := &publisherTestRTSPHandler{
+		recorded: make(chan struct{}, 1),
+		closed:   make(chan struct{}, 1),
+		packets:  make(chan observedRTP, 32),
+	}
+	server := &gortsplib.Server{Handler: handler, RTSPAddress: "127.0.0.1:0"}
+	handler.server = server
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	port := server.NetListener().Addr().(*net.TCPAddr).Port
+	publisher, err := newVideoPublisher(context.Background(), fmt.Sprintf("rtsp://127.0.0.1:%d/test", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publisher.Close()
+
+	au := &mpeg4audio.ADTSPacket{
+		Type:          mpeg4audio.ObjectTypeAACLC,
+		SampleRate:    8000,
+		ChannelConfig: 1,
+		AU:            []byte{1, 2, 3},
+	}
+	multi, err := (mpeg4audio.ADTSPackets{au, au}).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	single, err := (mpeg4audio.ADTSPackets{au}).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters := &audioParameters{sampleRate: 8000, channels: 1}
+	if err := publisher.PushAudio(audioFrame{timestamp: 1000, payload: multi}, parameters); err != nil {
+		t.Fatal(err)
+	}
+	idr := []byte{
+		0, 0, 0, 1, 0x67, 0x42, 0, 0x1e, 0xf4, 0x21, 0x32,
+		0, 0, 0, 1, 0x68, 0xc0,
+		0, 0, 0, 1, 0x65, 0x80,
+	}
+	if err := publisher.Push(idr, 1000); err != nil {
+		t.Fatal(err)
+	}
+	waitForPublisherRecord(t, handler.recorded, 1)
+	if err := publisher.PushAudio(audioFrame{timestamp: 1000, payload: multi}, parameters); err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PushAudio(audioFrame{timestamp: 1064, payload: single}, parameters); err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.Push([]byte{0, 0, 0, 1, 0x41, 0x80}, 1010); err != nil {
+		t.Fatal(err)
+	}
+
+	var video, audio []uint32
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for len(video) < 2 || len(audio) < 3 {
+		select {
+		case packet := <-handler.packets:
+			switch packet.media {
+			case description.MediaTypeVideo:
+				if packet.marker {
+					video = append(video, packet.timestamp)
+				}
+			case description.MediaTypeAudio:
+				audio = append(audio, packet.timestamp)
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out receiving RTP: video=%v audio=%v", video, audio)
+		}
+	}
+	if got := video[1] - video[0]; got != 900 {
+		t.Fatalf("video RTP PTS delta = %d, want 900 ticks (10 ms)", got)
+	}
+	for i := 1; i < len(audio); i++ {
+		if got := audio[i] - audio[i-1]; got != 1024 {
+			t.Fatalf("audio RTP PTS delta %d = %d, want 1024 samples", i, got)
+		}
+	}
+}
+
+func TestPublisherWaitsForIDRAfterParameterChangesWithoutRestart(t *testing.T) {
 	handler := &publisherTestRTSPHandler{
 		recorded: make(chan struct{}, 3),
 		closed:   make(chan struct{}, 3),
+		packets:  make(chan observedRTP, 32),
 	}
 	server := &gortsplib.Server{Handler: handler, RTSPAddress: "127.0.0.1:0"}
 	handler.server = server
@@ -42,6 +133,15 @@ func TestPublisherRestartsRecordingAfterParameterChanges(t *testing.T) {
 	defer publisher.Close()
 	publisher.sps = []byte{0x67, 0x42, 0x00, 0x1e, 0xf4, 0x21, 0x32}
 	publisher.pps = []byte{0x68, 0xc0}
+	au := &mpeg4audio.ADTSPacket{Type: mpeg4audio.ObjectTypeAACLC, SampleRate: 8000, ChannelConfig: 1, AU: []byte{1, 2, 3}}
+	audioPayload, err := (mpeg4audio.ADTSPackets{au}).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	audioParams := &audioParameters{sampleRate: 8000, channels: 1}
+	if err := publisher.PushAudio(audioFrame{payload: audioPayload}, audioParams); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := publisher.start(); err != nil {
 		t.Fatalf("complete RTSP ANNOUNCE/SETUP/RECORD: %v", err)
@@ -61,19 +161,64 @@ func TestPublisherRestartsRecordingAfterParameterChanges(t *testing.T) {
 		if err := publisher.Push(parameters, uint32((index+1)*33)); err != nil {
 			t.Fatalf("publish changed SPS/PPS: %v", err)
 		}
-		if publisher.started {
-			t.Fatal("publisher remained active after its SPS/PPS changed")
+		if !publisher.started || !publisher.waitingIDR || publisher.Generation() != 1 {
+			t.Fatal("publisher did not keep its session while waiting for IDR")
 		}
 		select {
 		case <-handler.closed:
+			t.Fatal("RTSP session closed after parameter change")
+		default:
+		}
+		before := publisher.PublishedFrames()
+		if err := publisher.Push([]byte{0, 0, 0, 1, 0x41, 0x80}, uint32((index+2)*33)); err != nil {
+			t.Fatalf("non-IDR while waiting: %v", err)
+		}
+		if publisher.PublishedFrames() != before || !publisher.waitingIDR {
+			t.Fatal("published non-IDR before the new IDR")
+		}
+		if err := publisher.PushAudio(audioFrame{timestamp: uint32((index + 2) * 33), payload: audioPayload}, audioParams); err != nil {
+			t.Fatalf("audio while waiting for IDR: %v", err)
+		}
+		select {
+		case packet := <-handler.packets:
+			if packet.media != description.MediaTypeAudio {
+				t.Fatal("non-IDR video was published while waiting")
+			}
 		case <-time.After(time.Second):
-			t.Fatalf("RTSP server did not observe closure for generation %d", index+1)
+			t.Fatal("audio stopped while waiting for IDR")
 		}
 
-		if err := publisher.Push([]byte{0, 0, 0, 1, 0x65, 0x80}, uint32((index+2)*33)); err != nil {
-			t.Fatalf("restart publication at IDR after parameter change: %v", err)
+		if err := publisher.Push([]byte{0, 0, 0, 1, 0x65, 0x80}, uint32((index+3)*33)); err != nil {
+			t.Fatalf("publish IDR after parameter change: %v", err)
 		}
-		waitForPublisherRecord(t, handler.recorded, index+2)
+		if publisher.waitingIDR || publisher.Generation() != 1 || publisher.PublishedFrames() != before+1 {
+			t.Fatal("IDR did not resume the existing publication")
+		}
+		decoder := &rtph264.Decoder{PacketizationMode: 1}
+		if err := decoder.Init(); err != nil {
+			t.Fatal(err)
+		}
+		var decoded [][]byte
+		deadline := time.After(time.Second)
+		for len(decoded) == 0 {
+			select {
+			case packet := <-handler.packets:
+				if packet.media != description.MediaTypeVideo {
+					t.Fatal("unexpected audio after IDR")
+				}
+				var decodeErr error
+				decoded, decodeErr = decoder.Decode(packet.packet)
+				if decodeErr != nil && !errors.Is(decodeErr, rtph264.ErrMorePacketsNeeded) {
+					t.Fatal(decodeErr)
+				}
+			case <-deadline:
+				t.Fatal("IDR not received")
+			}
+		}
+		if len(decoded) != 3 || !bytes.Equal(decoded[0], configuration.sps) ||
+			!bytes.Equal(decoded[1], configuration.pps) || decoded[2][0]&0x1f != 5 {
+			t.Fatalf("IDR did not carry current SPS/PPS: %x", decoded)
+		}
 	}
 }
 
@@ -132,8 +277,16 @@ type publisherTestRTSPHandler struct {
 	stream   *gortsplib.ServerStream
 	recorded chan struct{}
 	closed   chan struct{}
+	packets  chan observedRTP
 	failAt   string
 	status   base.StatusCode
+}
+
+type observedRTP struct {
+	media     description.MediaType
+	timestamp uint32
+	marker    bool
+	packet    *rtp.Packet
 }
 
 func (handler *publisherTestRTSPHandler) OnAnnounce(
@@ -159,10 +312,15 @@ func (handler *publisherTestRTSPHandler) OnSetup(
 }
 
 func (handler *publisherTestRTSPHandler) OnRecord(
-	*gortsplib.ServerHandlerOnRecordCtx,
+	ctx *gortsplib.ServerHandlerOnRecordCtx,
 ) (*base.Response, error) {
 	if handler.failAt == "RECORD" {
 		return &base.Response{StatusCode: handler.status}, nil
+	}
+	if handler.packets != nil {
+		ctx.Session.OnPacketRTPAny(func(media *description.Media, _ format.Format, packet *rtp.Packet) {
+			handler.packets <- observedRTP{media: media.Type, timestamp: packet.Timestamp, marker: packet.Marker, packet: packet.Clone()}
+		})
 	}
 	handler.recorded <- struct{}{}
 	return &base.Response{StatusCode: base.StatusOK}, nil
@@ -260,6 +418,172 @@ func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
 	}
 }
 
+func TestMediaMTXAudioVideoPublicationDecodesWithFFmpeg(t *testing.T) {
+	mediamtx := os.Getenv("NETVUE_TEST_MEDIAMTX")
+	ffmpeg := os.Getenv("NETVUE_TEST_FFMPEG")
+	ffprobe := os.Getenv("NETVUE_TEST_FFPROBE")
+	if mediamtx == "" || ffmpeg == "" {
+		t.Skip("set NETVUE_TEST_MEDIAMTX and NETVUE_TEST_FFMPEG to run the loopback integration test")
+	}
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "synthetic.ts")
+	audioPath := filepath.Join(dir, "synthetic.aac")
+	generateSyntheticVideo(t, ffmpeg, videoPath)
+	generateSyntheticAudio(t, ffmpeg, audioPath)
+	audioData, err := os.ReadFile(audioPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var adts mpeg4audio.ADTSPackets
+	if err := adts.Unmarshal(audioData); err != nil || len(adts) < 10 {
+		t.Fatalf("read synthetic AAC frames: count=%d err=%v", len(adts), err)
+	}
+	audioFrames := make([][]byte, len(adts))
+	for index, packet := range adts {
+		audioFrames[index], err = (mpeg4audio.ADTSPackets{packet}).Marshal()
+		if err != nil {
+			t.Fatalf("marshal synthetic AAC frame: %v", err)
+		}
+	}
+	port := startMediaMTX(t, mediamtx, filepath.Join(dir, "mediamtx.yml"))
+	publishURL := fmt.Sprintf("rtsp://127.0.0.1:%d/synthetic-av", port)
+	publisher, err := newVideoPublisher(context.Background(), publishURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publisher.Close()
+
+	audioParameters := &audioParameters{sampleRate: adts[0].SampleRate, sampleSize: 16, channels: adts[0].ChannelCount}
+
+	file, err := os.Open(videoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	type probeResult struct {
+		output string
+		err    error
+	}
+	probeDone := make(chan probeResult, 1)
+	ffprobeDone := make(chan probeResult, 1)
+	var probeStarted bool
+	startTime := time.Time{}
+	var firstPTS int64
+	timeDecoder := mpegts.NewTimeDecoder()
+	audioIndex := 0
+	err = readH264Frames(file, func(pts int64, data []byte) error {
+		pts = timeDecoder.Decode(pts)
+		if startTime.IsZero() {
+			startTime = time.Now()
+			firstPTS = pts
+		}
+		relativePTS := pts - firstPTS
+		targetTime := startTime.Add(time.Duration(relativePTS) * time.Second / 90_000)
+		if delay := time.Until(targetTime); delay > 0 {
+			time.Sleep(delay)
+		}
+		timestamp := uint32(relativePTS / 90)
+		if err := publisher.Push(data, timestamp); err != nil {
+			return err
+		}
+		for audioIndex < len(audioFrames) &&
+			int64(audioIndex*1024*1000/audioParameters.sampleRate) <= relativePTS/90 &&
+			publisher.CurrentPublicationFrames() > 0 {
+			audioTimeMS := uint32(audioIndex * 1024 * 1000 / audioParameters.sampleRate)
+			if err := publisher.PushAudio(audioFrame{
+				timestamp: audioTimeMS,
+				payload:   audioFrames[audioIndex],
+			}, audioParameters); err != nil {
+				return err
+			}
+			audioIndex++
+		}
+		if publisher.Generation() > 1 && publisher.CurrentPublicationFrames() > 0 && !probeStarted {
+			probeStarted = true
+			if ffprobe != "" {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+					defer cancel()
+					command := exec.CommandContext(ctx, ffprobe,
+						"-v", "error", "-rtsp_transport", "tcp",
+						"-analyzeduration", "500000", "-probesize", "32768",
+						"-show_entries", "stream=codec_name,codec_type", "-of", "json", publishURL,
+					)
+					output, err := command.CombinedOutput()
+					ffprobeDone <- probeResult{output: string(output), err: err}
+				}()
+			}
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				command := exec.CommandContext(ctx, ffmpeg,
+					"-hide_banner", "-loglevel", "info", "-progress", "pipe:1", "-nostats",
+					"-rtsp_transport", "tcp", "-analyzeduration", "500000", "-probesize", "32768",
+					"-i", publishURL,
+					"-map", "0:v:0", "-map", "0:a:0",
+					"-frames:v", "10", "-f", "null", "-",
+				)
+				output, err := command.CombinedOutput()
+				probeDone <- probeResult{output: string(output), err: err}
+			}()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read synthetic H.264 stream: %v", err)
+	}
+	if !probeStarted {
+		t.Fatal("the publisher did not start")
+	}
+	if audioIndex < 10 {
+		t.Fatalf("published only %d synthetic AAC frames", audioIndex)
+	}
+	if publisher.Generation() < 2 {
+		t.Fatal("late audio track configuration did not restart RTSP publication")
+	}
+	if ffprobe != "" {
+		select {
+		case result := <-ffprobeDone:
+			if result.err != nil {
+				t.Fatalf("FFprobe RTSP inspection failed: %v; output: %s", result.err, result.output)
+			}
+			var metadata struct {
+				Streams []struct {
+					CodecName string `json:"codec_name"`
+					CodecType string `json:"codec_type"`
+				} `json:"streams"`
+			}
+			if err := json.Unmarshal([]byte(result.output), &metadata); err != nil {
+				t.Fatalf("parse FFprobe output: %v; output: %s", err, result.output)
+			}
+			foundVideo, foundAudio := false, false
+			for _, stream := range metadata.Streams {
+				foundVideo = foundVideo || stream.CodecType == "video" && stream.CodecName == "h264"
+				foundAudio = foundAudio || stream.CodecType == "audio" && stream.CodecName == "aac"
+			}
+			if !foundVideo || !foundAudio {
+				t.Fatalf("FFprobe did not find both H.264 and AAC tracks: %s", result.output)
+			}
+		case <-time.After(9 * time.Second):
+			t.Fatal("timed out waiting for FFprobe")
+		}
+	}
+	publisher.Close()
+	select {
+	case result := <-probeDone:
+		if result.err != nil {
+			t.Fatalf("independent FFmpeg A/V decode failed: %v; output: %s", result.err, result.output)
+		}
+		if !strings.Contains(result.output, "frame=10") ||
+			!strings.Contains(result.output, "Audio: aac") ||
+			strings.Contains(result.output, "audio:0KiB") {
+			t.Fatalf("FFmpeg did not confirm decoded H.264 and AAC: %s", result.output)
+		}
+	case <-time.After(9 * time.Second):
+		t.Fatal("timed out waiting for the independent FFmpeg A/V reader")
+	}
+}
+
 // readH264Frames extracts Annex-B access units from a transport stream and
 // invokes onFrame synchronously as each frame is read.
 func readH264Frames(file *os.File, onFrame func(pts int64, accessUnit []byte) error) error {
@@ -309,6 +633,19 @@ func generateSyntheticVideo(t *testing.T, ffmpeg, outputPath string) {
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generate synthetic H.264: %v; output: %s", err, output)
+	}
+}
+
+func generateSyntheticAudio(t *testing.T, ffmpeg, outputPath string) {
+	t.Helper()
+	command := exec.Command(ffmpeg,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "sine=frequency=660:sample_rate=16000",
+		"-t", "6", "-c:a", "aac", "-profile:a", "aac_low", "-b:a", "24k",
+		"-ar", "16000", "-ac", "1", "-f", "adts", outputPath,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("generate synthetic AAC: %v; output: %s", err, output)
 	}
 }
 

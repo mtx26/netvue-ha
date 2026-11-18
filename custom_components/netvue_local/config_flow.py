@@ -8,7 +8,7 @@ from homeassistant.core import callback
 
 from .bridge_api import BridgeError, async_discover_cameras, async_stop_camera
 from .const import (
-    CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL,
+    CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL, CONF_WEBRTC_ENABLED,
     DEFAULT_NAME, DOMAIN,
 )
 from .rtsp import (
@@ -110,8 +110,10 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input=None):
         entry = self.config_entry
         default_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
+        default_webrtc = entry.options.get(CONF_WEBRTC_ENABLED, False)
         errors = {}
         if user_input is not None:
+            default_webrtc = user_input.get(CONF_WEBRTC_ENABLED, False)
             try:
                 host = validate_host(user_input[CONF_HOST])
             except (ValueError, KeyError):
@@ -132,11 +134,12 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                         return self.async_create_entry(
                             title="",
                             data={CONF_HOST: host, CONF_STREAM_NAME: stream_name,
-                                  CONF_STREAM_URL: url},
+                                  CONF_STREAM_URL: url, CONF_WEBRTC_ENABLED: default_webrtc},
                         )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
                 vol.Required(CONF_HOST, default=default_host): str,
+                vol.Required(CONF_WEBRTC_ENABLED, default=default_webrtc): bool,
             }), errors=errors,
         )

@@ -35,9 +35,9 @@
   "options": {
     "step": {
       "init": {
-        "title": "Change camera address",
-        "description": "The bridge will stop the old stream and start one for this address.",
-        "data": {"host": "Camera IPv4 address"}
+        "title": "Camera options",
+        "description": "The bridge will stop the old stream and start one for this address. Enable WebRTC only if the bridge supports this experimental API.",
+        "data": {"host": "Camera IPv4 address", "webrtc_enabled": "Experimental WebRTC signalling"}
       }
     },
     "error": {
@@ -51,7 +51,8 @@
   },
   "entity": {
     "binary_sensor": {
-      "rtsp_available": {"name": "RTSP H.264 stream available"}
+      "rtsp_available": {"name": "RTSP H.264 stream available"},
+      "camera_unavailable": {"name": "Camera unavailable"}
     },
     "sensor": {
       "session": {
@@ -61,6 +62,23 @@
           "stopping": "Stopping",
           "stopped": "Stopped",
           "failed": "Failed"
+        }
+      },
+      "diagnostic": {
+        "name": "Camera diagnosis",
+        "state": {
+          "healthy": "Operating normally",
+          "stream_unavailable": "Video stream unavailable",
+          "bridge_unavailable": "Netvue manager unavailable",
+          "authentication_failed": "Authentication rejected",
+          "connection_failed": "Unable to connect to camera",
+          "publication_failed": "Unable to publish RTSP stream",
+          "protocol_error": "Invalid camera data",
+          "video_interrupted": "Video stream interrupted or not ready",
+          "session_stopping": "Stopping",
+          "session_stopped": "Session stopped",
+          "session_failed": "Session failed",
+          "session_unknown": "Session status unknown"
         }
       }
     },

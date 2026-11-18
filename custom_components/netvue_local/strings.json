@@ -35,9 +35,9 @@
   "options": {
     "step": {
       "init": {
-        "title": "Modifier l'adresse de la caméra",
-        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse.",
-        "data": {"host": "Adresse IPv4 de la caméra"}
+        "title": "Options de la caméra",
+        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse. Activez WebRTC seulement si le pont prend en charge cette API expérimentale.",
+        "data": {"host": "Adresse IPv4 de la caméra", "webrtc_enabled": "Signalisation WebRTC expérimentale"}
       }
     },
     "error": {
@@ -51,7 +51,8 @@
   },
   "entity": {
     "binary_sensor": {
-      "rtsp_available": {"name": "Flux RTSP H.264 disponible"}
+      "rtsp_available": {"name": "Flux RTSP H.264 disponible"},
+      "camera_unavailable": {"name": "Caméra indisponible"}
     },
     "sensor": {
       "session": {
@@ -61,6 +62,23 @@
           "stopping": "Arrêt en cours",
           "stopped": "Arrêtée",
           "failed": "Échec"
+        }
+      },
+      "diagnostic": {
+        "name": "Diagnostic caméra",
+        "state": {
+          "healthy": "Fonctionnement normal",
+          "stream_unavailable": "Flux vidéo indisponible",
+          "bridge_unavailable": "Gestionnaire Netvue indisponible",
+          "authentication_failed": "Authentification refusée",
+          "connection_failed": "Connexion à la caméra impossible",
+          "publication_failed": "Publication RTSP impossible",
+          "protocol_error": "Données caméra invalides",
+          "video_interrupted": "Flux vidéo interrompu ou pas prêt",
+          "session_stopping": "Arrêt en cours",
+          "session_stopped": "Session arrêtée",
+          "session_failed": "Échec de la session",
+          "session_unknown": "État de session inconnu"
         }
       }
     },

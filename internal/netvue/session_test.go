@@ -44,6 +44,383 @@ func TestLiveRequestIsOneExplicitCommand(t *testing.T) {
 	}
 }
 
+func TestLiveRequestCanSelectAudioAndVideo(t *testing.T) {
+	client, server := testPipe(t)
+	result := make(chan [][]int, 1)
+	go func() {
+		packet, err := ReadPacket(server)
+		if err != nil {
+			result <- nil
+			return
+		}
+		units, err := ParseUnits(packet.Body)
+		if err != nil || len(units) != 1 {
+			result <- nil
+			return
+		}
+		var request []json.RawMessage
+		if json.Unmarshal(units[0]["P"], &request) != nil || len(request) != 3 {
+			result <- nil
+			return
+		}
+		var channels [][]int
+		if json.Unmarshal(request[1], &channels) != nil {
+			result <- nil
+			return
+		}
+		result <- channels
+	}()
+	if err := sendLiveRequestChannels(context.Background(), client, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; len(got) != 2 || got[0][0] != 1 || got[1][0] != 2 {
+		t.Fatalf("selected channels = %v, want video and audio", got)
+	}
+}
+
+func TestReceiveLiveRequestsReceiveOnlyAudioForSelectedChannel(t *testing.T) {
+	client, server := testPipe(t)
+	publisher := &audioTestPublisher{}
+	result := make(chan error, 1)
+	go func() {
+		ack, err := EncodeCommand([]map[string]any{{
+			"A": 3, "V": 1, "C": 0,
+			"P": [][]any{
+				{0, 1, 1, []any{}},
+				{1, 1, 2, []any{8000, 1, 1}},
+			},
+		}})
+		if err == nil {
+			err = writeFull(server, ack)
+		}
+		if err == nil {
+			var request Packet
+			request, err = ReadPacket(server)
+			if err == nil {
+				var units []map[string]json.RawMessage
+				units, err = ParseUnits(request.Body)
+				if err == nil && (len(units) != 1 || !commandHasValues(units[0], 5, 1, []int{1})) {
+					err = errors.New("audio direction request was not receive-only")
+				}
+			}
+		}
+		if err == nil {
+			err = writeFull(server, audioTestPacket(false, 40, []byte{1, 2, 3}))
+		}
+		if err == nil {
+			err = writeFull(server, mediaPacket(1, []byte{1}))
+		}
+		result <- err
+	}()
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, errSessionDurationElapsed)
+	defer cancel()
+	err := receiveLiveWithTimeoutsAndAudio(ctx, client, publisher, time.Second, time.Second, true)
+	if err != nil {
+		t.Fatalf("receive LIVE with selected audio: %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.audioFrames) != 1 || publisher.audioFrames[0].timestamp != 40 ||
+		publisher.audioParameters[0] != (audioParameters{sampleRate: 8000, sampleSize: 1, channels: 1}) {
+		t.Fatalf("audio frames/parameters = %+v / %+v", publisher.audioFrames, publisher.audioParameters)
+	}
+}
+
+func TestReceiveLiveContinuesVideoWithUnsupportedAudioParameters(t *testing.T) {
+	client, server := testPipe(t)
+	publisher := &audioTestPublisher{}
+	result := make(chan error, 1)
+	go func() {
+		ack, err := EncodeCommand([]map[string]any{{
+			"A": 3, "V": 1, "C": 0,
+			"P": [][]any{
+				{0, 1, 1, []any{}},
+				{1, 1, 2, []any{96000, 16, 1}},
+			},
+		}})
+		if err == nil {
+			err = writeFull(server, ack)
+		}
+		if err == nil {
+			err = writeFull(server, mediaPacket(0, []byte{1}))
+		}
+		if err == nil {
+			err = writeFull(server, audioTestPacket(false, 40, []byte{1, 2, 3}))
+		}
+		result <- err
+	}()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	received := make(chan error, 1)
+	go func() {
+		received <- receiveLiveWithTimeoutsAndAudio(ctx, client, publisher, 5*time.Second, 5*time.Second, true)
+	}()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case err := <-received:
+		t.Fatalf("LIVE stopped before packets were sent: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out sending LIVE packets")
+	}
+	// The following audio packet has been read, so the preceding video push
+	// has completed. End the bounded session without a scheduler-sensitive 100ms timer.
+	cancel(errSessionDurationElapsed)
+	if err := <-received; err != nil {
+		t.Fatalf("receive LIVE with unsupported audio parameters: %v", err)
+	}
+	if publisher.CurrentPublicationFrames() == 0 || len(publisher.audioFrames) != 0 {
+		t.Fatalf("video frames=%d, audio frames=%d; want video and no audio",
+			publisher.CurrentPublicationFrames(), len(publisher.audioFrames))
+	}
+}
+
+func TestReceiveLiveRestartsVideoAfterLateAudioTrackConfiguration(t *testing.T) {
+	client, server := testPipe(t)
+	publisher := &audioTestPublisher{resetVideo: true}
+	result := make(chan error, 1)
+	go func() {
+		ack, err := EncodeCommand([]map[string]any{{
+			"A": 3, "V": 1, "C": 0,
+			"P": [][]any{{1, 1, 2, []any{16000, 16, 1}}},
+		}})
+		if err == nil {
+			err = writeFull(server, ack)
+		}
+		if err == nil {
+			var request Packet
+			request, err = ReadPacket(server)
+			if err == nil {
+				units, parseErr := ParseUnits(request.Body)
+				if parseErr != nil || len(units) != 1 ||
+					!commandHasValues(units[0], 5, 1, []int{1}) {
+					err = errors.New("audio direction request was not receive-only")
+				}
+			}
+		}
+		if err == nil {
+			for _, packet := range [][]byte{
+				mediaPacket(0, []byte{1}),
+				mediaPacket(33, []byte{3}),
+				audioTestPacket(false, 40, []byte{1, 2, 3}),
+				mediaPacket(66, []byte{2}),
+			} {
+				if err = writeFull(server, packet); err != nil {
+					break
+				}
+			}
+		}
+		result <- err
+	}()
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, errSessionDurationElapsed)
+	defer cancel()
+	err := receiveLiveWithTimeoutsAndAudio(ctx, client, publisher, time.Second, time.Second, true)
+	if err != nil {
+		t.Fatalf("receive LIVE after late audio configuration: %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if publisher.Generation() != 2 || publisher.CurrentPublicationFrames() != 1 {
+		t.Fatalf("video publication did not restart after audio setup: generation=%d current=%d",
+			publisher.Generation(), publisher.CurrentPublicationFrames())
+	}
+}
+
+func TestReceiveLiveUnsupportedAudioDoesNotStopVideo(t *testing.T) {
+	client, server := testPipe(t)
+	publisher := &audioTestPublisher{audioErr: ErrAudioFrame}
+	result := make(chan error, 1)
+	go func() {
+		ack, err := EncodeCommand([]map[string]any{{
+			"A": 3, "V": 1, "C": 0,
+			"P": [][]any{{1, 1, 2, []any{8000, 8, 1}}},
+		}})
+		if err == nil {
+			err = writeFull(server, ack)
+		}
+		if err == nil {
+			var request Packet
+			request, err = ReadPacket(server)
+			if err == nil {
+				units, parseErr := ParseUnits(request.Body)
+				if parseErr != nil || len(units) != 1 ||
+					!commandHasValues(units[0], 5, 1, []int{1}) {
+					err = errors.New("audio direction request was not receive-only")
+				}
+			}
+		}
+		if err == nil {
+			for _, packet := range [][]byte{
+				mediaPacket(0, []byte{1}),
+				audioTestPacket(false, 40, []byte{0xff}),
+				audioTestPacket(false, 50, []byte{0xfe}),
+				mediaPacket(66, []byte{2}),
+			} {
+				if err = writeFull(server, packet); err != nil {
+					break
+				}
+			}
+		}
+		result <- err
+	}()
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, errSessionDurationElapsed)
+	defer cancel()
+	err := receiveLiveWithTimeoutsAndAudio(ctx, client, publisher, time.Second, time.Second, true)
+	if err != nil {
+		t.Fatalf("unsupported audio interrupted video: %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if publisher.CurrentPublicationFrames() == 0 {
+		t.Fatal("video was not kept active after unsupported audio")
+	}
+	if len(publisher.audioFrames) != 1 {
+		t.Fatalf("audio frames processed after disabling the track = %d, want 1", len(publisher.audioFrames))
+	}
+}
+
+func TestReceiveLiveKeepsVideoAfterRealOversizedAudioError(t *testing.T) {
+	client, server := testPipe(t)
+	publisher := &realAudioTestPublisher{secondVideo: make(chan struct{})}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	received := make(chan error, 1)
+	go func() {
+		received <- receiveLiveWithTimeoutsAndAudio(ctx, client, publisher, 5*time.Second, 5*time.Second, true)
+	}()
+	sent := make(chan error, 1)
+	go func() {
+		ack, err := EncodeCommand([]map[string]any{{
+			"A": 3, "V": 1, "C": 0,
+			"P": [][]any{{1, 1, 2, []any{8000, 1, 1}}},
+		}})
+		if err == nil {
+			err = writeFull(server, ack)
+		}
+		if err == nil {
+			var request Packet
+			request, err = ReadPacket(server)
+			if err == nil {
+				units, parseErr := ParseUnits(request.Body)
+				if parseErr != nil || len(units) != 1 || !commandHasValues(units[0], 5, 1, []int{1}) {
+					err = errors.New("audio direction request was not receive-only")
+				}
+			}
+		}
+		if err == nil {
+			for _, packet := range [][]byte{
+				mediaPacket(0, []byte{1}),
+				audioTestPacket(false, 40, make([]byte, audioMaxSize+1)),
+				audioTestPacket(false, 50, []byte{0xff}),
+				mediaPacket(66, []byte{2}),
+			} {
+				if err = writeFull(server, packet); err != nil {
+					break
+				}
+			}
+		}
+		sent <- err
+	}()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case err := <-received:
+		t.Fatalf("LIVE stopped before the second video frame: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out sending LIVE packets")
+	}
+	select {
+	case <-publisher.secondVideo:
+	case err := <-received:
+		t.Fatalf("LIVE stopped before processing the second video frame: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the second video frame")
+	}
+	cancel(errSessionDurationElapsed)
+	if err := <-received; err != nil {
+		t.Fatalf("oversized audio interrupted video: %v", err)
+	}
+	if publisher.audioCalls != 1 || !errors.Is(publisher.audioError, ErrAudioFrame) {
+		t.Fatalf("audio calls=%d, error=%v; want one real ErrAudioFrame",
+			publisher.audioCalls, publisher.audioError)
+	}
+	if publisher.Generation() != 2 || publisher.CurrentPublicationFrames() != 1 {
+		t.Fatalf("video did not continue after audio error: generation=%d frames=%d",
+			publisher.Generation(), publisher.CurrentPublicationFrames())
+	}
+}
+
+func TestAudioDiagnosticIsActionable(t *testing.T) {
+	err := atStage("audio", withReason("unsupported audio codec", ErrAudioFrame))
+	const want = "Unsupported or malformed Netvue audio [audio]: unsupported audio codec"
+	if got := SessionDiagnostic(err); got != want {
+		t.Fatalf("audio diagnostic = %q, want %q", got, want)
+	}
+
+	err = atStage(
+		"audio parameters",
+		withReason("audio channel parameters out of range", errors.Join(ErrProtocol, ErrUnsupportedAudioParameters)),
+	)
+	const wantParameters = "Unsupported Netvue audio parameters [audio parameters]: audio channel parameters out of range"
+	if got := SessionDiagnostic(err); got != wantParameters {
+		t.Fatalf("audio parameter diagnostic = %q, want %q", got, wantParameters)
+	}
+}
+
+func TestReceiveLiveFallsBackToVideoWhenAudioSelectionIsRejected(t *testing.T) {
+	client, server := testPipe(t)
+	publisher := &generationTestPublisher{}
+	result := make(chan error, 1)
+	go func() {
+		rejected, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 1}})
+		if err := writeFull(server, rejected); err != nil {
+			result <- err
+			return
+		}
+		fallback, err := ReadPacket(server)
+		if err == nil {
+			units, parseErr := ParseUnits(fallback.Body)
+			if parseErr != nil || len(units) != 1 {
+				err = errors.New("invalid video-only fallback request")
+			} else {
+				var selection [][]int
+				var params []json.RawMessage
+				if json.Unmarshal(units[0]["P"], &params) != nil || len(params) != 3 ||
+					json.Unmarshal(params[1], &selection) != nil || len(selection) != 1 ||
+					selection[0][0] != 1 {
+					err = errors.New("audio fallback did not select video only")
+				}
+			}
+		}
+		if err == nil {
+			accepted, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0}})
+			err = writeFull(server, accepted)
+		}
+		if err == nil {
+			err = writeFull(server, mediaPacket(1, []byte{1}))
+		}
+		result <- err
+	}()
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, errSessionDurationElapsed)
+	defer cancel()
+	if err := receiveLiveWithTimeoutsAndAudio(ctx, client, publisher, time.Second, time.Second, true); err != nil {
+		t.Fatalf("receive LIVE after video-only fallback: %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if publisher.CurrentPublicationFrames() == 0 {
+		t.Fatal("video was not published after the audio fallback")
+	}
+}
+
 func TestReceiveLiveRejectsMediaBeforeConfirmation(t *testing.T) {
 	client, server := testPipe(t)
 	publisher, err := newVideoPublisher(context.Background(), "rtsp://127.0.0.1:8554/netvue")
@@ -145,6 +522,27 @@ func liveConfirmationPacket(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return packet
+}
+
+func commandHasValues(unit map[string]json.RawMessage, action, version int, params []int) bool {
+	var gotAction, gotVersion int
+	var rawParams []int
+	return json.Unmarshal(unit["Q"], &gotAction) == nil && gotAction == action &&
+		json.Unmarshal(unit["V"], &gotVersion) == nil && gotVersion == version &&
+		json.Unmarshal(unit["P"], &rawParams) == nil &&
+		rawParamsEqual(rawParams, params)
+}
+
+func rawParamsEqual(left, right []int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestReceiveLiveConfirmationVersions(t *testing.T) {
@@ -399,6 +797,61 @@ type generationTestPublisher struct {
 	generation uint64
 	resetOnly  bool
 	pushed     chan struct{}
+}
+
+type audioTestPublisher struct {
+	generationTestPublisher
+	audioFrames     []audioFrame
+	audioParameters []audioParameters
+	audioErr        error
+	resetVideo      bool
+}
+
+// Exercise the real audio publisher while keeping the video side synthetic.
+type realAudioTestPublisher struct {
+	generationTestPublisher
+	audio       videoPublisher
+	audioCalls  int
+	audioError  error
+	secondVideo chan struct{}
+}
+
+func (publisher *realAudioTestPublisher) Push(accessUnit []byte, timestamp uint32) error {
+	err := publisher.generationTestPublisher.Push(accessUnit, timestamp)
+	if accessUnit[0] == 2 {
+		close(publisher.secondVideo)
+	}
+	return err
+}
+
+func (publisher *realAudioTestPublisher) PushAudio(frame audioFrame, parameters *audioParameters) error {
+	publisher.audioCalls++
+	publisher.audioError = publisher.audio.PushAudio(frame, parameters)
+	return publisher.audioError
+}
+
+func (publisher *audioTestPublisher) PushAudio(frame audioFrame, parameters *audioParameters) error {
+	publisher.audioFrames = append(publisher.audioFrames, frame)
+	publisher.audioParameters = append(publisher.audioParameters, *parameters)
+	if publisher.audioErr != nil {
+		return publisher.audioErr
+	}
+	if publisher.resetVideo && publisher.CurrentPublicationFrames() > 0 {
+		publisher.current = 0
+	}
+	return nil
+}
+
+func audioTestPacket(pcm bool, timestamp uint32, payload []byte) []byte {
+	header := byte(audioFrameType << 4)
+	if pcm {
+		header |= audioPCMFlag
+	}
+	body := make([]byte, mediaHeaderSize+len(payload))
+	body[0] = header
+	binary.LittleEndian.PutUint32(body[1:mediaHeaderSize], timestamp)
+	copy(body[mediaHeaderSize:], payload)
+	return makePacketKind(uint32(len(body)), 0, packetMedia, body)
 }
 
 func testPipe(t *testing.T) (net.Conn, net.Conn) {

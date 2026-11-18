@@ -26,6 +26,10 @@ func (manager *Manager) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cameras/{host}/start", manager.handleStartCamera)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/stop", manager.handleStopCamera)
 	mux.HandleFunc("DELETE /api/v1/cameras/{host}", manager.handleDeleteCamera)
+	mux.HandleFunc("PUT /api/v1/cameras/{host}/webrtc/{session_id}", manager.handleWebRTCOffer)
+	mux.HandleFunc("POST /api/v1/cameras/{host}/webrtc/{session_id}/candidates", manager.handleWebRTCCandidate)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/webrtc/{session_id}/events", manager.handleWebRTCEvents)
+	mux.HandleFunc("DELETE /api/v1/cameras/{host}/webrtc/{session_id}", manager.handleWebRTCClose)
 	return mux
 }
 

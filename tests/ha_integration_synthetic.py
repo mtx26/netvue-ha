@@ -161,10 +161,13 @@ async def main():
         registry = er.async_get(hass)
 
         def entity_id(config_entry, domain):
+            suffix = {"sensor": "session", "binary_sensor": "rtsp"}.get(domain)
             entries = [
                 entity.entity_id for entity in er.async_entries_for_config_entry(
                     registry, config_entry.entry_id
-                ) if entity.domain == domain
+                ) if entity.domain == domain and (
+                    suffix is None or entity.unique_id == f"{config_entry.entry_id}_{suffix}"
+                )
             ]
             if len(entries) != 1:
                 raise RuntimeError(f"Unexpected {domain} entities: {entries}")
@@ -179,6 +182,8 @@ async def main():
         entity = camera.get_camera_from_entity_id(hass, cameras[0])
         print(f"camera features={entity.supported_features} stream_stills={entity.use_stream_for_stills} "
               f"state={hass.states.get(cameras[0]).state}", flush=True)
+        if entity.camera_entity_capabilities.two_way_audio or entity.camera_capabilities.two_way_audio:
+            raise RuntimeError("Synthetic camera incorrectly advertises talkback")
         entity.stream = await entity.async_create_stream()
         if entity.stream is None:
             raise RuntimeError("Home Assistant did not create a Stream")

@@ -90,7 +90,7 @@ func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 		"A": 8,
 		"V": 2,
 		"C": 0,
-		"P": []any{"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key"},
+		"P": []any{"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key", []bool{true, false, false, false}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +101,9 @@ func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 	}
 	if result.host != "192.168.10.2" || result.port != 5555 {
 		t.Fatalf("unexpected camera: %s", result)
+	}
+	if !result.audio {
+		t.Fatal("audio capability was not parsed from discovery")
 	}
 	if fmt.Sprint(result) != "camera{192.168.10.2:5555}" {
 		t.Fatalf("camera string exposes unexpected information: %s", result)

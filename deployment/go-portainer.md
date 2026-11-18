@@ -12,6 +12,9 @@
 La stack utilise une passerelle Go et MediaMTX. L'API et RTSP écoutent sur
 `127.0.0.1`, sans authentification distincte ; les processus partageant le
 réseau host peuvent y accéder.
+Seul RTSP/TCP est activé dans MediaMTX ; les transports UDP, MoQ et les
+autres services sont désactivés. Pour un test manuel, utiliser
+[mediamtx.yml](./mediamtx.yml), pas la configuration par défaut de MediaMTX.
 
 ## 1. Ajouter la stack
 

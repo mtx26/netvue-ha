@@ -22,7 +22,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Multi-caméra | Sessions indépendantes |
 | 🧪 | Home Assistant | Intégration complète |
 | 🧪 | Découverte LAN | Découverte UDP réelle confirmée en [phase 35](../findings/phase35-decouverte-lan-ha.md) ; création depuis HA et autres modèles à valider |
-| ✅ | CI multi-composants | Go/race/vet, 39 tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) |
+| ✅ | CI multi-composants | Go/race/vet, tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) ; la publication A/V synthétique est désormais incluse |
 | ✅ | Validation réelle courte (phase 36) | 30 s de H.264 décodées depuis la session active de la caméra ; le digest déployé n'est pas relié au commit local ([rapport](../findings/phase36-validation-reelle.md)) |
 | ✅ | Endurance synthétique | Multi-caméra, caméra défaillante, churn, annulation et libération de goroutines testés dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) |
 | 🧪 | Stabilité réelle 24 h/24 | Protocole préparé dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) ; aucune validation réelle effectuée |
@@ -32,11 +32,11 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 💡 | Analyse APK audio | Comprendre les protocoles audio |
-| ⬜ | Réception audio | Récupérer le microphone |
-| ⬜ | RTSP audio/vidéo | Publier image et son synchronisés |
-| ⬜ | Audio bidirectionnel | Parler vers la caméra |
-| ⬜ | Intégration HA | Utiliser le microphone depuis HA |
+| 🧪 | Analyse APK audio | Analyse statique des trames et directions ; réception AAC confirmée sur la caméra 2, unité de `samplesize` inconnue |
+| 🧪 | Réception audio | AAC/ADTS 8 kHz mono décodé sur la caméra 2 ; PCM 16 bits non validé sur caméra |
+| 🧪 | RTSP audio/vidéo | H.264 et AAC décodés ensemble ; continuité d'un lecteur lors d'un changement de résolution réel confirmée, avertissement DTS restant à analyser en [phase 39](../findings/phase39-talkback.md) |
+| 🧪 | Audio bidirectionnel Go | Opus→AAC-LC/ADTS vers la session Netvue active, retour AAC caméra→Opus et fermeture/reprise après inactivité RTP implémentés ; tests média FFmpeg à exécuter, restitution réelle non prouvée ([phase 43](../findings/phase43-microphone-ha.md)) |
+| 🧪 | Microphone Home Assistant | Signalisation et transport WebRTC intégrés en opt-in ; `two_way_audio` reste désactivé jusqu'à confirmation acoustique ([phase 43](../findings/phase43-microphone-ha.md)) |
 
 ## 3. Enregistrement
 
@@ -63,9 +63,9 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| ⬜ | WebRTC | Réduire la latence |
+| 🧪 | WebRTC | Provider HA opt-in, RTSP/TCP H.264/AAC, ICE UDP limité à l'IPv4 source et conversion audio intégrés ; test synthétique arrêt/reprise ajouté, validation média CI et accès réseau externe à confirmer |
 | ⬜ | Configuration HA | Simplifier les réglages |
-| ⬜ | Alertes de panne | Signaler les caméras indisponibles |
+| 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |
 | ⬜ | Dashboard | Centraliser les informations |
 | 🧪 | Installation Portainer | Guide et stack disponibles ; déploiement réel non validé |
 

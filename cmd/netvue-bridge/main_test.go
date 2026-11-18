@@ -25,7 +25,7 @@ func TestRunCommandSanitizesSessionErrors(t *testing.T) {
 	code := runCommand(context.Background(), []string{
 		"test", "--source", "192.0.2.10", "--camera", "192.0.2.20",
 		"--rtsp", "rtsp://127.0.0.1:8554/test", "--duration", "1s",
-	}, runTest, nil, nil)
+	}, runTest, nil, nil, nil)
 	if code != 1 || !strings.Contains(logs.String(), "Invalid Netvue protocol data") ||
 		strings.Contains(logs.String(), "secret payload") {
 		t.Fatalf("exit = %d, log = %q", code, logs.String())
@@ -57,7 +57,7 @@ func TestRunCommandUsesBoundedSessionForTest(t *testing.T) {
 		"--camera", "192.0.2.20",
 		"--rtsp", "rtsp://127.0.0.1:8554/test",
 		"--duration", "15s",
-	}, runTest, runContinuous, runManager)
+	}, runTest, runContinuous, runManager, nil)
 	if code != 0 || !called {
 		t.Fatalf("runCommand() = %d, test runner called = %v", code, called)
 	}
@@ -87,7 +87,7 @@ func TestRunCommandUsesContinuousSupervisorForRun(t *testing.T) {
 		"--source", "192.0.2.10",
 		"--camera", "192.0.2.20",
 		"--rtsp", "rtsp://127.0.0.1:8554/test",
-	}, runTest, runContinuous, runManager)
+	}, runTest, runContinuous, runManager, nil)
 	if code != 0 || !called {
 		t.Fatalf("runCommand() = %d, continuous runner called = %v", code, called)
 	}
@@ -149,7 +149,7 @@ func TestRunCommandRejectsInvalidConfigurationBeforeStarting(t *testing.T) {
 	}
 
 	code := runCommand(context.Background(), []string{"run", "--source", "192.0.2.10"},
-		runTest, runContinuous, runManager)
+		runTest, runContinuous, runManager, nil)
 	if code != 2 || called {
 		t.Fatalf("runCommand() = %d, runner called = %v", code, called)
 	}
@@ -177,7 +177,7 @@ func TestRunCommandTreatsCanceledContextAsNormalStop(t *testing.T) {
 		"--source", "192.0.2.10",
 		"--camera", "192.0.2.20",
 		"--rtsp", "rtsp://127.0.0.1:8554/test",
-	}, runTest, runContinuous, runManager)
+	}, runTest, runContinuous, runManager, nil)
 	if code != 0 || called {
 		t.Fatalf("runCommand() = %d, runner called = %v", code, called)
 	}
@@ -201,7 +201,7 @@ func TestRunCommandReportsShutdownErrorAfterContextCancellation(t *testing.T) {
 	}
 
 	code := runCommand(ctx, []string{"serve", "--source", "192.168.10.10"},
-		runTest, runContinuous, runManager)
+		runTest, runContinuous, runManager, nil)
 	if code != 1 || !called {
 		t.Fatalf("runCommand() = %d, manager runner called = %v", code, called)
 	}
@@ -226,7 +226,7 @@ func TestRunCommandUsesManagerForServe(t *testing.T) {
 	}
 
 	code := runCommand(context.Background(), []string{"serve", "--source", "192.168.10.10"},
-		runTest, runContinuous, runManager)
+		runTest, runContinuous, runManager, nil)
 	if code != 0 || !called {
 		t.Fatalf("runCommand() = %d, manager runner called = %v", code, called)
 	}
