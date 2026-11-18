@@ -1,5 +1,9 @@
 """Camera backed by a separately managed RTSP bridge."""
 
+from io import BytesIO
+from math import hypot
+
+from PIL import Image
 from homeassistant.components import camera as camera_component
 from homeassistant.components.camera import (
     Camera, CameraEntityFeature, async_register_webrtc_provider,
@@ -16,6 +20,27 @@ from .const import (
 )
 from .coordinator import NetvueCoordinator
 from .webrtc import NetvueWebRTCProvider
+
+_BADGE_SIZE = 80
+
+# HA 2026.7 keeps this helper private; 2026.11 exposes it without the prefix.
+async_get_stream_image = getattr(camera_component, "async_get_stream_image", None)
+if async_get_stream_image is None:
+    async_get_stream_image = getattr(camera_component, "_async_get_stream_image")
+
+
+def _badge_image(image: bytes) -> bytes:
+    with Image.open(BytesIO(image)) as source:
+        # Leave room for JPEG edge artifacts and circular HA badges.
+        scale = (_BADGE_SIZE - 6) / hypot(source.width, source.height)
+        size = (max(1, round(source.width * scale)),
+                max(1, round(source.height * scale)))
+        resized = source.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        badge = Image.new("RGB", (_BADGE_SIZE, _BADGE_SIZE), "black")
+        badge.paste(resized, ((_BADGE_SIZE - size[0]) // 2, (_BADGE_SIZE - size[1]) // 2))
+        output = BytesIO()
+        badge.save(output, format="JPEG")
+        return output.getvalue()
 
 
 async def async_setup_entry(
@@ -79,9 +104,16 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
         return (super().available and self.coordinator.data is not None
                 and self.coordinator.data.rtsp_available)
 
-    @property
-    def use_stream_for_stills(self) -> bool:
-        return True
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        # HA Stream caches its last image and otherwise stretches it to the request size.
+        image = await async_get_stream_image(
+            self, wait_for_next_keyframe=width is None and height is None
+        )
+        if image is not None and width == height == _BADGE_SIZE:
+            return await self.hass.async_add_executor_job(_badge_image, image)
+        return image
 
     async def stream_source(self) -> str:
         return self._url

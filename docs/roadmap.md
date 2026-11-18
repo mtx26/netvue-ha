@@ -66,6 +66,7 @@ fiable, performante, modulaire et simple à installer.
 | État | Fonctionnalité | Objectif |
 |---|---|---|
 | 🧪 | WebRTC | Provider HA opt-in, RTSP/TCP H.264/AAC, ICE UDP limité à l'IPv4 source et conversion audio intégrés ; scénarios média synthétiques validés, usage réel dans le navigateur et accès réseau externe à confirmer |
+| 🧪 | Miniature caméra HA | Image complète proportionnelle dans le badge 80 × 80 ; proxy et formats synthétiques testés, affichage réel à confirmer ([phase 46](../findings/phase46-miniature-ha.md)) |
 | ⬜ | Configuration HA | Simplifier les réglages |
 | 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |
 | ⬜ | Dashboard | Centraliser les informations |

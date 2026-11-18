@@ -53,6 +53,15 @@ arrêté ou en échec et ne garantit pas la disponibilité immédiate du flux. U
 supervisée peut reconnecter, sans exposer dans HA la cause de chaque erreur
 transitoire.
 
+### Miniature de caméra
+
+HA demande une image JPEG de 80 × 80 pixels pour le badge à côté du nom.
+L'intégration y inscrit l'image complète, sans déformation, sur fond noir ;
+les marges protègent aussi les badges arrondis. Ce traitement s'applique à
+toute demande explicite de 80 × 80, pas uniquement à ce badge. Les autres
+captures ne sont pas rendues carrées et HA peut les réduire proportionnellement.
+Le flux vidéo principal n'est pas modifié.
+
 ### Audio et microphone
 
 L'audio caméra AAC est transmis en Opus par le lecteur WebRTC. Le fournisseur
@@ -69,6 +78,17 @@ option distincte « Contrôle microphone expérimental » peut l'exposer pour de
 essais explicitement demandés ; elle nécessite WebRTC et reste désactivée par
 défaut. Ce contrôle n'est pas une validation du talkback. FFmpeg est nécessaire
 au transcodage audio.
+
+Pour parler depuis l'interface native de Home Assistant, utilisez HA
+2026.11.2 ou ultérieur et activez sa fonction Labs d'audio bidirectionnel des
+caméras. Dans les options de Netvue Local, cochez « Signalisation WebRTC
+expérimentale » et « Contrôle microphone expérimental », puis ouvrez la fiche
+de la caméra et son flux en direct WebRTC. Autorisez le microphone du navigateur
+et utilisez le bouton Micro du lecteur. Le navigateur doit pouvoir joindre le
+pont sur le réseau local ; HTTPS est requis hors de `localhost`. Testez avec
+une courte phrase et une personne près de la caméra pour confirmer le son du
+haut-parleur. Home Assistant 2026.7.1 peut charger l'intégration, mais ne
+possède pas encore l'API native qui expose ce bouton.
 
 La commande Go expérimentale `talk` lit un fichier AAC préencodé dans une
 session distincte et bornée ; elle ne fait pas partie du parcours HA et ne doit

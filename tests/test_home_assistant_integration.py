@@ -4,11 +4,13 @@ import asyncio
 import gc
 import json
 import unittest
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from aiohttp import ClientSession, web
+from PIL import Image, ImageDraw
 
 from custom_components.netvue_local import async_setup_entry, async_unload_entry
 from custom_components.netvue_local.bridge_api import (
@@ -30,7 +32,7 @@ from custom_components.netvue_local.sensor import (
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.const import Platform
 from homeassistant.components.camera import (
-    CameraEntityFeature, StreamType, WebRTCAnswer, WebRTCCandidate, WebRTCError,
+    CameraEntityFeature, CameraImageView, StreamType, WebRTCAnswer, WebRTCCandidate, WebRTCError,
 )
 from homeassistant.components.camera.webrtc import DATA_WEBRTC_PROVIDERS
 from webrtc_models import RTCIceCandidateInit
@@ -320,6 +322,100 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await async_unload_entry(hass, entry))
         stop.assert_awaited_once_with(hass, "192.168.10.2")
         self.assertEqual(entries.async_forward_entry_unload.await_count, 4)
+
+    async def test_camera_badge_preserves_entire_image_and_other_snapshots(self):
+        entry = SimpleNamespace(
+            entry_id="1", title="Fake",
+            data={"stream_url": "rtsp://127.0.0.1:8554/a"}, options={},
+        )
+        coordinator = SimpleNamespace(
+            data=CameraData(SessionStatus("supervising", None), True),
+            last_update_success=True,
+        )
+        camera = NetvueCamera(entry, coordinator)
+        camera.hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+        self.assertFalse(camera.use_stream_for_stills)
+
+        for size in ((160, 90), (90, 160), (120, 120)):
+            with self.subTest(size=size):
+                source = Image.new("RGB", size, "white")
+                draw = ImageDraw.Draw(source)
+                for x, y, color in ((0, 0, "red"), (size[0] - 20, 0, "green"),
+                                    (0, size[1] - 20, "blue"),
+                                    (size[0] - 20, size[1] - 20, "yellow")):
+                    draw.rectangle((x, y, x + 19, y + 19), fill=color)
+                buf = BytesIO()
+                source.save(buf, format="JPEG", quality=100)
+                original = buf.getvalue()
+                with patch("custom_components.netvue_local.camera.async_get_stream_image",
+                           new=unittest.mock.AsyncMock(return_value=original)) as get_image:
+                    badge = await camera.async_camera_image(width=80, height=80)
+                    self.assertEqual(await camera.async_camera_image(width=640, height=360),
+                                     original)
+                    self.assertEqual(await camera.async_camera_image(), original)
+                self.assertEqual(get_image.await_args_list, [
+                    unittest.mock.call(camera, wait_for_next_keyframe=False),
+                    unittest.mock.call(camera, wait_for_next_keyframe=False),
+                    unittest.mock.call(camera, wait_for_next_keyframe=True),
+                ])
+                with Image.open(BytesIO(badge)) as image:
+                    self.assertEqual(image.size, (80, 80))
+                    pixels = image.convert("RGB")
+                    box = pixels.point(lambda value: 255 if value > 45 else 0).getbbox()
+                    self.assertIsNotNone(box)
+                    x0, y0, x1, y1 = box
+                    self.assertAlmostEqual((x1 - x0) / (y1 - y0), size[0] / size[1],
+                                           delta=0.08)
+                    for x, y in ((x0, y0), (x1, y0), (x0, y1), (x1, y1)):
+                        self.assertLessEqual((x - 40) ** 2 + (y - 40) ** 2, 40 ** 2)
+                    for x, y, channel in ((x0 + 4, y0 + 4, 0), (x1 - 5, y0 + 4, 1),
+                                          (x0 + 4, y1 - 5, 2)):
+                        self.assertGreater(pixels.getpixel((x, y))[channel], 100)
+                    yellow = pixels.getpixel((x1 - 5, y1 - 5))
+                    self.assertGreater(min(yellow[:2]), 100)
+
+    async def test_camera_proxy_badge_does_not_change_snapshot(self):
+        entry = SimpleNamespace(entry_id="1", title="Fake",
+                                data={"stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
+        camera = NetvueCamera(entry, SimpleNamespace(last_update_success=True))
+        camera.hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+        buf = BytesIO()
+        Image.new("RGB", (320, 180), "white").save(buf, format="JPEG")
+        original = buf.getvalue()
+        stream = SimpleNamespace(async_get_image=unittest.mock.AsyncMock(return_value=original))
+        camera.stream = stream
+        view = CameraImageView(None)
+        badge = await view.handle(SimpleNamespace(query={"width": "80", "height": "80"}),
+                                  camera)
+        scaled = await view.handle(SimpleNamespace(query={"width": "100", "height": "50"}),
+                                   camera)
+        snapshot = await view.handle(SimpleNamespace(query={}), camera)
+        self.assertEqual(badge.content_type, "image/jpeg")
+        with Image.open(BytesIO(badge.body)) as image:
+            self.assertEqual(image.size, (80, 80))
+        with Image.open(BytesIO(scaled.body)) as image:
+            self.assertAlmostEqual(image.width / image.height, 320 / 180, delta=0.03)
+        self.assertEqual(snapshot.body, original)
+        with Image.open(BytesIO(snapshot.body)) as image:
+            self.assertEqual(image.size, (320, 180))
+        self.assertEqual(stream.async_get_image.await_args_list, [
+            unittest.mock.call(width=None, height=None, wait_for_next_keyframe=False),
+            unittest.mock.call(width=None, height=None, wait_for_next_keyframe=False),
+            unittest.mock.call(width=None, height=None, wait_for_next_keyframe=True),
+        ])
+
+    async def test_camera_image_unavailable_is_not_replaced(self):
+        entry = SimpleNamespace(entry_id="1", title="Fake",
+                                data={"stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
+        camera = NetvueCamera(entry, SimpleNamespace(last_update_success=True))
+        with patch("custom_components.netvue_local.camera.async_get_stream_image",
+                   new=unittest.mock.AsyncMock(return_value=None)):
+            self.assertIsNone(await camera.async_camera_image(width=80, height=80))
+        camera.hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+        with patch("custom_components.netvue_local.camera.async_get_stream_image",
+                   new=unittest.mock.AsyncMock(return_value=b"not an image")):
+            with self.assertRaises(OSError):
+                await camera.async_camera_image(width=80, height=80)
 
     async def test_camera_loads_without_optional_two_way_audio_capability(self):
         entry = SimpleNamespace(
