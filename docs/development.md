@@ -54,7 +54,13 @@ puis reconnectée sans interrompre l'autre et que les deux flux RTSP se
 décodent. Cette séparation est nécessaire car Go filtre les réponses de
 découverte provenant de sa propre adresse source. Deux marqueurs finaux sont
 exigés : le premier après le scénario HA, le second après la panne et la
-reconnexion multi-caméra.
+reconnexion multi-caméra, le troisième après les scénarios d'erreur. La caméra
+fictive couvre également une fermeture et un timeout pendant l'authentification,
+des en-têtes invalides, un mauvais type de paquet, un JSON invalide, des réponses
+AUTH/LIVE incomplètes ou rejetées, ainsi que des trames média malformées. Chaque
+erreur fatale doit produire un diagnostic de la bonne étape et permettre un
+redémarrage explicite ; les erreurs réseau transitoires doivent se reconnecter
+une seule fois. La caméra A doit rester supervisée pendant ces essais.
 
 Requiert FFmpeg dans l'image HA, MediaMTX Linux et le binaire Go Linux compilé
 depuis le code testé. Monter sources et binaires en lecture seule, configurer
@@ -81,6 +87,10 @@ modules Python présents ; les 12 tests WebRTC/audio HA de
 `test_home_assistant_webrtc.py` sont explicitement exigés en `ok`. Les 23 tests
 Go actifs WebRTC/audio du gestionnaire sont exécutés dans leur binaire dédié
 avec FFmpeg ; la CI exige un marqueur `PASS` pour chacun et refuse les `SKIP`.
+Home Assistant 2026.7.1 ne publie pas encore `CameraEntityCapabilities` :
+l'intégration garde cette déclaration facultative, sans désactiver son provider
+WebRTC. Un test simule l'absence de cette API dans la version HA épinglée ; la
+compatibilité complète avec 2026.7.1 reste à valider dans cette image précise.
 
 Le workflow [synthetic-endurance.yml](../.github/workflows/synthetic-endurance.yml)
 répète 20 fois les tests Go sous le race detector chaque nuit ou à la demande.

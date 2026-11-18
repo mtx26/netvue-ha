@@ -321,6 +321,23 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         stop.assert_awaited_once_with(hass, "192.168.10.2")
         self.assertEqual(entries.async_forward_entry_unload.await_count, 4)
 
+    async def test_camera_loads_without_optional_two_way_audio_capability(self):
+        entry = SimpleNamespace(
+            entry_id="1", title="Fake",
+            data={"stream_url": "rtsp://127.0.0.1:8554/a"},
+            options={"webrtc_enabled": True, "experimental_talkback": True},
+        )
+        coordinator = SimpleNamespace(
+            data=CameraData(SessionStatus("supervising", None), True),
+            last_update_success=True,
+        )
+        with patch(
+            "custom_components.netvue_local.camera.camera_component",
+            SimpleNamespace(),
+        ):
+            camera = NetvueCamera(entry, coordinator)
+        self.assertTrue(camera._talkback_enabled)
+
     async def test_camera_does_not_expose_talkback_even_with_webrtc_provider(self):
         entry = SimpleNamespace(
             entry_id="1", title="Fake",

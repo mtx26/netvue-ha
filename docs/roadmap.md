@@ -23,7 +23,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Home Assistant | Intégration complète |
 | 🧪 | Découverte LAN | Découverte UDP réelle confirmée en [phase 35](../findings/phase35-decouverte-lan-ha.md) ; création depuis HA et autres modèles à valider |
 | ✅ | CI multi-composants | Go/race/vet, tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) ; la publication A/V synthétique est désormais incluse |
-| 🧪 | CI renforcée | PR : image démarrée, 12 tests WebRTC/audio HA et 23 Go exigés, fuzz borné, lint Python et E2E multi-caméra panne/reconnexion ; nouveau run GitHub à confirmer |
+| 🧪 | CI renforcée | PR : image démarrée, tests WebRTC/audio exigés, fuzz borné, lint Python et E2E multi-caméra avec erreurs protocole, reprise et isolement ; nouveau run GitHub à confirmer |
 | ✅ | Validation réelle courte (phase 36) | 30 s de H.264 décodées depuis la session active de la caméra ; le digest déployé n'est pas relié au commit local ([rapport](../findings/phase36-validation-reelle.md)) |
 | ✅ | Endurance synthétique | Multi-caméra, caméra défaillante, churn, annulation et libération de goroutines testés dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) |
 | 🧪 | CI d'endurance | Vingt répétitions quotidiennes des tests Go synthétiques sous race detector ; premier run GitHub à confirmer |

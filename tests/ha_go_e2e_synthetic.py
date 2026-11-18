@@ -25,6 +25,10 @@ def packet(kind: int, body: bytes) -> bytes:
     return struct.pack("<I8xHH", len(body), 0, kind) + body
 
 
+def flagged_packet(kind: int, body: bytes) -> bytes:
+    return struct.pack("<I8xHH", len(body), 1, kind) + body
+
+
 def command(unit: dict) -> bytes:
     return packet(200, json.dumps([unit], separators=(",", ":")).encode())
 
@@ -95,16 +99,47 @@ async def synthetic_camera() -> None:
     writers = set()
     login_count = 0
     forced_drops = 0
+    next_login_fault = None
+    last_login_fault = None
+    next_live_fault = None
+    last_live_fault = None
+    next_media_fault = None
+    last_media_fault = None
     reject_initial_login = os.environ.get("NETVUE_TEST_REJECT_INITIAL_LOGIN", "1") == "1"
 
     async def camera_handler(reader, writer):
         nonlocal login_count, forced_drops
+        nonlocal next_login_fault, last_login_fault
+        nonlocal next_live_fault, last_live_fault, next_media_fault, last_media_fault
         writers.add(writer)
         try:
             login = await read_command(reader)
             if login.get("Q") != 1:
                 raise RuntimeError("Expected synthetic login")
             login_count += 1
+            fault = next_login_fault
+            next_login_fault = None
+            if fault is not None:
+                last_login_fault = fault
+                if fault == "close-connection":
+                    return
+                if fault == "login-timeout":
+                    await asyncio.sleep(5)
+                    return
+                if fault == "flagged-header":
+                    writer.write(flagged_packet(200, b"x"))
+                elif fault == "wrong-packet-kind":
+                    writer.write(packet(201, b"x"))
+                elif fault == "invalid-json":
+                    writer.write(packet(200, b"{"))
+                elif fault == "missing-result":
+                    writer.write(command({"A": 1, "V": 1}))
+                elif fault == "unsupported-version":
+                    writer.write(command({"A": 1, "V": 99, "C": 0}))
+                else:
+                    raise RuntimeError(f"Unknown synthetic login fault: {fault}")
+                await writer.drain()
+                return
             rejected = reject_initial_login and login_count == 1
             writer.write(command({"A": 1, "V": 1, "C": 5 if rejected else 0}))
             await writer.drain()
@@ -113,10 +148,38 @@ async def synthetic_camera() -> None:
             live = await read_command(reader)
             if live.get("Q") != 3:
                 raise RuntimeError("Expected synthetic LIVE request")
+            fault = next_live_fault
+            next_live_fault = None
+            if fault is not None:
+                last_live_fault = fault
+                if fault == "invalid-json":
+                    writer.write(packet(200, b"{"))
+                elif fault == "missing-result":
+                    writer.write(command({"A": 3, "V": 2}))
+                elif fault == "rejected-result":
+                    writer.write(command({"A": 3, "V": 2, "C": 1}))
+                else:
+                    raise RuntimeError(f"Unknown synthetic LIVE fault: {fault}")
+                await writer.drain()
+                return
             writer.write(command({"A": 3, "V": 2, "C": 0}))
             await writer.drain()
             timestamp = 0
             while True:
+                fault = next_media_fault
+                next_media_fault = None
+                if fault is not None:
+                    last_media_fault = fault
+                    if forced_drops:
+                        forced_drops -= 1
+                    if fault == "unsupported-type":
+                        writer.write(packet(201, b"\x30\x00\x00\x00\x00\x01"))
+                    elif fault == "truncated-video":
+                        writer.write(packet(201, b"\x10\x00"))
+                    else:
+                        raise RuntimeError(f"Unknown synthetic media fault: {fault}")
+                    await writer.drain()
+                    return
                 writer.write(packet(201, b"\x10" + struct.pack("<I", timestamp) + video))
                 await writer.drain()
                 timestamp += 100
@@ -135,17 +198,56 @@ async def synthetic_camera() -> None:
                 pass
 
     async def status_handler(reader, writer):
-        nonlocal forced_drops
+        nonlocal forced_drops, next_login_fault, next_live_fault, next_media_fault
         try:
             request_line = await reader.readline()
             await reader.readuntil(b"\r\n\r\n")
+            request = request_line.split()
+            path = request[1].decode() if len(request) > 1 else ""
             if request_line.startswith(b"POST /fail-next "):
                 forced_drops += 1
                 status_code, status_text = 202, "Accepted"
                 result = {"forced_drops": forced_drops}
+            elif request_line.startswith(b"POST /fault-next/"):
+                _, _, stage, fault = path.split("/", 3)
+                modes = {
+                    "login": {
+                        "close-connection", "login-timeout", "flagged-header",
+                        "wrong-packet-kind", "invalid-json",
+                        "missing-result", "unsupported-version",
+                    },
+                    "live": {"invalid-json", "missing-result", "rejected-result"},
+                    "media": {"unsupported-type", "truncated-video"},
+                }
+                pending = {
+                    "login": next_login_fault,
+                    "live": next_live_fault,
+                    "media": next_media_fault,
+                }.get(stage)
+                if stage not in modes or fault not in modes[stage]:
+                    status_code, status_text = 400, "Bad Request"
+                    result = {"error": "unsupported synthetic fault stage or mode"}
+                elif pending is not None:
+                    status_code, status_text = 409, "Conflict"
+                    result = {"error": "a synthetic fault is already pending"}
+                else:
+                    if stage == "login":
+                        next_login_fault = fault
+                    elif stage == "live":
+                        next_live_fault = fault
+                    else:
+                        next_media_fault = fault
+                    forced_drops += 1
+                    status_code, status_text = 202, "Accepted"
+                    result = {"scheduled_fault": fault, "stage": stage}
             elif request_line.startswith(b"GET /status "):
                 status_code, status_text = 200, "OK"
-                result = {"login_count": login_count}
+                result = {
+                    "login_count": login_count,
+                    "last_login_fault": last_login_fault,
+                    "last_live_fault": last_live_fault,
+                    "last_media_fault": last_media_fault,
+                }
             else:
                 status_code, status_text = 404, "Not Found"
                 result = {"error": "not found"}
@@ -191,6 +293,13 @@ async def camera_login_count(host: str) -> int:
             return (await response.json())["login_count"]
 
 
+async def camera_status(host: str) -> dict:
+    async with ClientSession() as session:
+        async with session.get(f"http://{host}:5556/status") as response:
+            response.raise_for_status()
+            return await response.json()
+
+
 async def wait_camera_ready(host: str) -> None:
     for _ in range(100):
         try:
@@ -221,6 +330,22 @@ async def decode_rtsp_stream(stream_name: str) -> None:
     )
     if result.returncode:
         raise RuntimeError(f"Could not decode {stream_name}: {result.stderr}")
+
+
+async def manager_camera(host: str) -> dict:
+    async with ClientSession() as session:
+        async with session.get(f"http://127.0.0.1:8765/api/v1/cameras/{host}") as response:
+            response.raise_for_status()
+            return await response.json()
+
+
+async def wait_manager_camera_state(host: str, wanted: str, timeout: float = 20) -> dict:
+    async with asyncio.timeout(timeout):
+        while True:
+            camera_state = await manager_camera(host)
+            if camera_state["state"] == wanted:
+                return camera_state
+            await asyncio.sleep(0.1)
 
 
 async def main():
@@ -382,6 +507,91 @@ async def main():
                 raise RuntimeError("Camera B did not recover to the supervising state")
             await decode_rtsp_stream(camera_a["stream_name"])
             await decode_rtsp_stream(camera_b["stream_name"])
+
+            before_retryable_error = await camera_login_count(camera2_host)
+            async with ClientSession() as session:
+                async with session.post(
+                    f"http://{camera2_host}:5556/fault-next/login/close-connection"
+                ) as response:
+                    if response.status != 202:
+                        raise RuntimeError("Could not schedule a synthetic login disconnect")
+            await wait_camera_login_count(camera2_host, before_retryable_error + 2)
+            after_retryable_error = await camera_status(camera2_host)
+            if after_retryable_error["login_count"] != before_retryable_error + 2:
+                raise RuntimeError("Login disconnect did not recover with exactly one retry")
+            if after_retryable_error["last_login_fault"] != "close-connection":
+                raise RuntimeError("Synthetic login disconnect was not exercised")
+            await decode_rtsp_stream(camera_b["stream_name"])
+
+            before_timeout = await camera_login_count(camera2_host)
+            async with ClientSession() as session:
+                async with session.post(
+                    f"http://{camera2_host}:5556/fault-next/login/login-timeout"
+                ) as response:
+                    if response.status != 202:
+                        raise RuntimeError("Could not schedule a synthetic login timeout")
+            await wait_camera_login_count(camera2_host, before_timeout + 2, timeout=25)
+            after_timeout = await camera_status(camera2_host)
+            if after_timeout["login_count"] != before_timeout + 2:
+                raise RuntimeError("Login timeout did not recover with exactly one retry")
+            if after_timeout["last_login_fault"] != "login-timeout":
+                raise RuntimeError("Synthetic login timeout was not exercised")
+            await decode_rtsp_stream(camera_b["stream_name"])
+
+            fault_modes = (
+                ("login", "flagged-header"),
+                ("login", "wrong-packet-kind"),
+                ("login", "invalid-json"),
+                ("login", "missing-result"),
+                ("login", "unsupported-version"),
+                ("live", "invalid-json"),
+                ("live", "missing-result"),
+                ("live", "rejected-result"),
+                ("media", "unsupported-type"),
+                ("media", "truncated-video"),
+            )
+            for stage, fault in fault_modes:
+                before_b = await camera_login_count(camera2_host)
+                async with ClientSession() as session:
+                    async with session.post(
+                        f"http://{camera2_host}:5556/fault-next/{stage}/{fault}"
+                    ) as response:
+                        if response.status != 202:
+                            raise RuntimeError(f"Could not schedule synthetic fault {fault}")
+                failed = await wait_manager_camera_state(camera2_host, "failed")
+                after_fault = await camera_status(camera2_host)
+                expected_fault_logins = before_b + (1 if stage != "media" else 0)
+                if after_fault["login_count"] != expected_fault_logins:
+                    raise RuntimeError(
+                        f"Fault {fault} caused unexpected login count "
+                        f"{after_fault['login_count']} (started at {before_b})"
+                    )
+                if after_fault[f"last_{stage}_fault"] != fault or not failed.get("error"):
+                    raise RuntimeError(f"Fault {stage}/{fault} was not reported by the camera session")
+                expected_stage = {
+                    "login": "[authentication]",
+                    "live": "[LIVE response]",
+                    "media": "[media frame]",
+                }[stage]
+                if expected_stage not in failed["error"]:
+                    raise RuntimeError(
+                        f"Fault {stage}/{fault} produced an unexpected diagnostic: {failed['error']}"
+                    )
+                if await camera_login_count(camera_host) != stable_camera_a_logins:
+                    raise RuntimeError(f"Fault {stage}/{fault} disrupted camera A")
+                if (await manager_camera(camera_host))["state"] != "supervising":
+                    raise RuntimeError(f"Fault {stage}/{fault} stopped camera A supervision")
+
+                async with ClientSession() as session:
+                    async with session.post(
+                        f"http://127.0.0.1:8765/api/v1/cameras/{camera2_host}/start"
+                    ) as response:
+                        if response.status != 202:
+                            raise RuntimeError(f"Could not restart camera B after {stage}/{fault}")
+                await wait_manager_camera_state(camera2_host, "supervising")
+                await wait_camera_login_count(camera2_host, expected_fault_logins + 1)
+                await decode_rtsp_stream(camera_b["stream_name"])
+
             async with ClientSession() as session:
                 async with session.delete(
                     f"http://127.0.0.1:8765/api/v1/cameras/{camera2_host}"
@@ -400,6 +610,10 @@ async def main():
             print("HA -> Go discovery -> synthetic Netvue -> Go -> MediaMTX -> HA JPEG: "
                   "failure diagnostic, explicit restart and unload verified", flush=True)
             print("Go multi-camera E2E: camera B failure isolated, reconnect and RTSP decode verified",
+                  flush=True)
+            print("Synthetic protocol errors: flagged header, wrong packet kind, invalid JSON, "
+                  "missing auth result, unsupported auth version, login timeout, bad LIVE replies "
+                  "and malformed media all fail safely and restart",
                   flush=True)
         finally:
             if hass is not None:

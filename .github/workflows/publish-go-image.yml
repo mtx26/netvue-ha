@@ -116,6 +116,9 @@ jobs:
             grep -F -- "$test_name (test_home_assistant_webrtc.ProviderTests.$test_name) ... ok" \
               "$output_file" >/dev/null
           done
+          grep -F -- \
+            'test_camera_loads_without_optional_two_way_audio_capability (test_home_assistant_integration.HomeAssistantApiTests.test_camera_loads_without_optional_two_way_audio_capability) ... ok' \
+            "$output_file" >/dev/null
 
       - name: Render the Swarm stack without deploying it
         env:
@@ -294,6 +297,8 @@ jobs:
           grep -F -- 'HA -> Go discovery -> synthetic Netvue -> Go -> MediaMTX -> HA JPEG:' \
             "$e2e_output"
           grep -F -- 'Go multi-camera E2E: camera B failure isolated, reconnect and RTSP decode verified' \
+            "$e2e_output"
+          grep -F -- 'Synthetic protocol errors: flagged header, wrong packet kind, invalid JSON,' \
             "$e2e_output"
 
   publish:

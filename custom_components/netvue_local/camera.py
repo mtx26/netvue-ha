@@ -1,7 +1,8 @@
 """Camera backed by a separately managed RTSP bridge."""
 
+from homeassistant.components import camera as camera_component
 from homeassistant.components.camera import (
-    Camera, CameraEntityCapabilities, CameraEntityFeature, async_register_webrtc_provider,
+    Camera, CameraEntityFeature, async_register_webrtc_provider,
 )
 from homeassistant.components.stream import CONF_RTSP_TRANSPORT
 from homeassistant.config_entries import ConfigEntry
@@ -43,9 +44,11 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
         self._talkback_enabled = (
             self._webrtc_enabled and entry.options.get(CONF_TALKBACK_EXPERIMENTAL, False)
         )
-        self._attr_camera_entity_capabilities = CameraEntityCapabilities(
-            two_way_audio=self._talkback_enabled
-        )
+        capabilities_type = getattr(camera_component, "CameraEntityCapabilities", None)
+        if capabilities_type is not None:
+            self._attr_camera_entity_capabilities = capabilities_type(
+                two_way_audio=self._talkback_enabled
+            )
         self._netvue_provider = None
         self._remove_provider = None
         self.stream_options[CONF_RTSP_TRANSPORT] = "tcp"
