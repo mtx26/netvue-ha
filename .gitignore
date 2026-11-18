@@ -1,6 +1,5 @@
 # Les analyses restent privées ; le rapport de phase révisé est explicitement suivi.
 input/
-findings/*
 captures/
 firmware/
 tools/
@@ -13,3 +12,4 @@ tools/
 __pycache__/
 *.pyc
 *.exe
+decompiled/

@@ -50,6 +50,10 @@ func SessionDiagnostic(err error) string {
 		category = "Camera authentication rejected"
 	case errors.Is(err, ErrVideoFatal):
 		category = "Video publication failed"
+	case errors.Is(err, ErrUnsupportedAudioParameters):
+		category = "Unsupported Netvue audio parameters"
+	case errors.Is(err, ErrAudioFrame):
+		category = "Unsupported or malformed Netvue audio"
 	case stage != nil && stage.stage == "H.264" && errors.Is(err, ErrProtocol):
 		category = "Invalid H.264 data"
 	case errors.Is(err, ErrMediaFrame):
@@ -62,6 +66,8 @@ func SessionDiagnostic(err error) string {
 		category = "Video stream not ready or interrupted"
 	case errors.Is(err, ErrVideoStartup):
 		category = "Video publication startup failed"
+	case errors.Is(err, ErrTalkback):
+		category = "Talkback failed"
 	case errors.Is(err, ErrDiscoveryTimeout), errors.Is(err, ErrConnectionClosed),
 		errors.Is(err, context.DeadlineExceeded), errors.Is(err, io.EOF),
 		errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.ErrClosedPipe),

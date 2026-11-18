@@ -1,0 +1,38 @@
+# Préparation de la prochaine validation RTSP
+
+## État des preuves
+
+- **PROUVÉ — rapports historiques :** en [phase 4](./phase4-rtsp-bridge.md), la caméra 2 a fourni un flux RTSP H.264 décodé pendant un essai d'au plus 10 s. En [phase 5](./phase5-real-rtsp.md), deux tentatives ont été consommées ; les deux publications se sont arrêtées lors de changements de paramètres H.264.
+- **PROUVÉ — phase 6 :** aucune connexion réelle n'a été effectuée et le budget de cette phase n'a pas été consommé ([rapport](./phase6-rtsp-stability.md)). Les deux connexions précédemment autorisées et non utilisées, mentionnées par le propriétaire, ne sont pas assimilées à une autorisation d'exécution dans la présente session : leur périmètre et leur validité doivent être confirmés. Elles ne s'ajoutent pas aux deux tentatives déjà consommées en phase 5.
+- **NON VÉRIFIÉ :** aucun rapport de phase 7 n'a été trouvé dans les fichiers du projet. Demander son emplacement s'il existe ; ne pas supposer son contenu.
+- **PROUVÉ — 16 novembre 2026 :** les 19 tests de la passerelle ont réussi sous Windows, sans omission, avec Python 3.13.1, PyAV 16.1.0, MediaMTX 1.21.4 et FFmpeg/FFprobe n8.1. Les tests réseau utilisaient exclusivement des sockets locales et une caméra synthétique ; aucune caméra réelle ni aucun serveur Debian n'a été contacté. Le test synthétique borné a publié 90 unités et FFmpeg a décodé 27 images ; l'autre test RTSP a publié 55 unités et FFprobe a reçu 20 paquets horodatés. Les ressources indiquées à zéro sous Windows par `check_rtsp.py` ne sont pas des mesures valides : l'échantillonnage utilise `/proc`.
+- **Contexte de validation :** une première exécution avec PyAV 19.0.2, hors de la plage `av>=14,<17` de [requirements.txt](../netvue_bridge/requirements.txt), a échoué sur deux tests multimédia. Un nom `ffmpeg` sans extension manquait sous Windows et, après correction de ce nom, FFprobe dépassait encore son délai sur l'autre test. La suite complète a ensuite réussi avec PyAV 16.1.0 ; cela ne démontre pas à lui seul la cause exacte du délai.
+
+## Corrections et limites à valider sur la caméra 2
+
+- **NON VÉRIFIÉ sur caméra :** attente d'une IDR après changement SPS/PPS, réinjection des paramètres, validation du décodage, gestion d'une résolution modifiée et erreurs de décodage récupérables dans [rtsp.py](../netvue_bridge/rtsp.py). La cause exacte du second échec de phase 5 reste inconnue ; un succès synthétique ne la prouve pas.
+- **NON VÉRIFIÉ sur caméra :** diagnostics différenciés, métriques `live_metrics`, continuité des PTS et résultats partiels des lecteurs dans [stream.py](../netvue_bridge/stream.py) et [check_rtsp.py](../netvue_bridge/check_rtsp.py). Les B-frames détectées restent rejetées et leur détection n'est pas permanente ; la fragmentation, les horodatages et la compatibilité des lecteurs avec un changement de résolution restent à vérifier.
+- **NON VÉRIFIÉ :** accès du conteneur Home Assistant au flux réel, intégration Generic Camera, stabilité prolongée, reconnexion réelle, audio et caméra 1. L'accès au flux synthétique depuis le conteneur a été observé en phase 6 ; il ne valide pas l'interface Home Assistant.
+
+## Proposition à confirmer avant toute action active
+
+1. Cible proposée : caméra 2 uniquement, découverte UDP unicast, une connexion TCP, un login et une sélection LIVE par exécution, publication RTSP/TCP sur boucle locale et lecteurs FFprobe/FFmpeg locaux. Aucune reconnexion automatique : [check_rtsp.py](../netvue_bridge/check_rtsp.py) passe `--max-attempts 1` au pont. Un second essai éventuel consommerait la seconde connexion et ne serait lancé qu'après examen du premier résultat et confirmation du propriétaire.
+2. Préciser le nombre maximal de découvertes, connexions TCP et demandes de login, y compris les échecs avant authentification ; confirmer si les deux connexions non utilisées constituent bien le budget global applicable à cette session. Aucun essai de la caméra 1, accès au compte, capture brute, enregistrement vidéo, changement de firmware ou service permanent.
+3. Confirmer la durée maximale **totale**, incluant préparation, découverte, login, lecture et nettoyage, et la durée vidéo minimale désirée. L'outil actuel limite `--duration` à 30 s ; ce délai concerne le pont à partir de `run_sessions`, pas une garantie de 30 s entre première et dernière unité vidéo. Il prévoit aussi des délais de démarrage et d'arrêt supplémentaires. Le contrôle accepte une fenêtre lecteur limitée à `duration - 3` et ne vérifie pas automatiquement 30 s de vidéo. Si 30 s de vidéo réelle et une borne totale stricte sont exigées, adapter et tester d'abord le contrôle hors ligne ; ne pas contourner les limites.
+4. Après accord, vérifier les versions, l'environnement temporaire Debian, le port RTSP libre et le mode réseau Home Assistant, sans arrêter de service existant. Demander séparément si l'exécution temporaire de lecteurs dans le conteneur est permise. Ne pas modifier le conteneur ou sa configuration.
+5. Pour chaque essai, conserver seulement résultats expurgés : nombre de tentatives réellement envoyées, codes login/LIVE, durée entre première et dernière unité et durée PTS, unités/IDR, changements SPS/PPS/résolution et erreurs, résultats et codes des lecteurs, PTS croissants, plus grand écart, images décodées, durée réelle de lecture et ressources valides. Le contrôle actuel exige notamment H.264, une image clé, au moins deux images décodées, des PTS croissants, une durée PTS d'au moins 80 % de la fenêtre lecteur et un écart maximal de 1 s ; cela ne prouve pas 30 s de lecture continue.
+6. **Limite de diagnostic :** `check_rtsp.py` imprime les résultats partiels déjà récupérés avant de terminer les lecteurs restants ; il ne garantit donc pas la récupération de toutes leurs sorties si un lecteur ne s'arrête qu'au nettoyage. Une vérification/correction hors ligne est nécessaire avant de promettre une collecte exhaustive en cas d'interruption.
+7. Arrêter les processus temporaires et vérifier leur fermeture sans toucher aux services existants. La boucle locale est accessible aux autres utilisateurs locaux ; le transport caméra du prototype n'est pas chiffré et la mémoire peut être exposée au swap ou aux dumps. Les images, clés, identifiants et captures brutes ne doivent pas être partagés.
+
+## Reproduction du test local
+
+Les outils Windows officiels ont été téléchargés dans `tools/` et leurs archives vérifiées par rapport aux fichiers SHA-256 publiés. PyAV a été installé dans un venv sous `tools/`, sans installation système. Une copie locale de `ffmpeg.exe` nommée `ffmpeg` permet aux tests existants de trouver le nom attendu. Prérequis : ces outils et l'environnement isolé, ainsi que les ports locaux nécessaires libres. La commande suivante lance des processus et écouteurs de test sur la boucle locale, produit des métriques synthétiques et peut échouer si les ports sont occupés ; elle ne contacte pas les caméras :
+
+```powershell
+Remove-Item Env:\NETVUE_TEST_DURATION,Env:\NETVUE_TEST_HA,Env:\NETVUE_TEST_RECONFIG,Env:\NETVUE_TEST_RESIZE,Env:\NETVUE_TEST_PPS,Env:\NETVUE_TEST_DROP,Env:\NETVUE_TEST_INTERRUPT -ErrorAction SilentlyContinue
+$env:NETVUE_MEDIAMTX = (Resolve-Path 'tools\mediamtx-win64-1.21.4\extracted\mediamtx.exe').Path
+$env:NETVUE_FFPROBE = (Get-ChildItem 'tools\ffmpeg-win64-n8.1\extracted' -Recurse -Filter 'ffprobe.exe' | Select-Object -First 1).FullName
+& tools\venv-bridge-win\Scripts\python.exe -B -W error::ResourceWarning -m unittest discover -s tests -p 'test*bridge.py' -v
+```
+
+**Prochaine étape :** obtenir les confirmations de périmètre et de durée ci-dessus, ainsi que le rapport de phase 7 manquant. Ne lancer aucun essai réel avant ces confirmations.

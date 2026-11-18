@@ -8,8 +8,8 @@ from homeassistant.core import callback
 
 from .bridge_api import BridgeError, async_discover_cameras, async_stop_camera
 from .const import (
-    CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL,
-    DEFAULT_NAME, DOMAIN,
+    CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL, CONF_TALKBACK_EXPERIMENTAL,
+    CONF_WEBRTC_ENABLED, DEFAULT_NAME, DOMAIN,
 )
 from .rtsp import (
     stream_name_for_host, stream_url_from_name, validate_host,
@@ -110,33 +110,47 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input=None):
         entry = self.config_entry
         default_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
+        default_webrtc = entry.options.get(CONF_WEBRTC_ENABLED, False)
+        default_talkback = entry.options.get(CONF_TALKBACK_EXPERIMENTAL, False)
         errors = {}
         if user_input is not None:
-            try:
-                host = validate_host(user_input[CONF_HOST])
-            except (ValueError, KeyError):
-                errors["base"] = "invalid_input"
+            default_webrtc = user_input.get(CONF_WEBRTC_ENABLED, False)
+            default_talkback = user_input.get(CONF_TALKBACK_EXPERIMENTAL, False)
+            if default_talkback and not default_webrtc:
+                errors["base"] = "talkback_requires_webrtc"
             else:
-                stream_name = stream_name_for_host(host)
-                url = stream_url_from_name(stream_name)
-                if _duplicate(self.hass, host, url, entry.entry_id):
-                    errors["base"] = "already_configured"
+                try:
+                    host = validate_host(user_input[CONF_HOST])
+                except (ValueError, KeyError):
+                    errors["base"] = "invalid_input"
                 else:
-                    old_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
-                    try:
-                        await async_stop_camera(self.hass, old_host)
-                    except BridgeError:
-                        errors["base"] = "bridge_unavailable"
-                        default_host = host
+                    stream_name = stream_name_for_host(host)
+                    url = stream_url_from_name(stream_name)
+                    if _duplicate(self.hass, host, url, entry.entry_id):
+                        errors["base"] = "already_configured"
                     else:
-                        return self.async_create_entry(
-                            title="",
-                            data={CONF_HOST: host, CONF_STREAM_NAME: stream_name,
-                                  CONF_STREAM_URL: url},
-                        )
+                        old_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
+                        try:
+                            await async_stop_camera(self.hass, old_host)
+                        except BridgeError:
+                            errors["base"] = "bridge_unavailable"
+                            default_host = host
+                        else:
+                            return self.async_create_entry(
+                                title="",
+                                data={
+                                    CONF_HOST: host,
+                                    CONF_STREAM_NAME: stream_name,
+                                    CONF_STREAM_URL: url,
+                                    CONF_WEBRTC_ENABLED: default_webrtc,
+                                    CONF_TALKBACK_EXPERIMENTAL: default_talkback,
+                                },
+                            )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
                 vol.Required(CONF_HOST, default=default_host): str,
+                vol.Required(CONF_WEBRTC_ENABLED, default=default_webrtc): bool,
+                vol.Required(CONF_TALKBACK_EXPERIMENTAL, default=default_talkback): bool,
             }), errors=errors,
         )

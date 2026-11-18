@@ -17,24 +17,26 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | Protocole Netvue | Connexion et vidéo fiables |
+| 🧪 | Protocole Netvue | Connexion et vidéo fiables ; [guide de reconstruction LAN](../findings/phase44-specification-reconstruction-lan.md) |
 | 🧪 | Supervision | Reconnexion et fonctionnement continu |
 | 🧪 | Multi-caméra | Sessions indépendantes |
 | 🧪 | Home Assistant | Intégration complète |
-| 🧪 | Découverte LAN | E2E broadcast synthétique confirmé en CI ; réseau et caméra réels non vérifiés |
-| ✅ | CI multi-composants | Go/race/vet, 39 tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) |
-| ⬜ | Stabilité 24 h/24 | Validation prolongée |
-| ⬜ | Optimisation | CPU, RAM et latence |
+| 🧪 | Découverte LAN | Découverte UDP réelle confirmée en [phase 35](../findings/phase35-decouverte-lan-ha.md) ; création depuis HA et autres modèles à valider |
+| ✅ | CI multi-composants | Go/race/vet, tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) ; la publication A/V synthétique est désormais incluse |
+| ✅ | Validation réelle courte (phase 36) | 30 s de H.264 décodées depuis la session active de la caméra ; le digest déployé n'est pas relié au commit local ([rapport](../findings/phase36-validation-reelle.md)) |
+| ✅ | Endurance synthétique | Multi-caméra, caméra défaillante, churn, annulation et libération de goroutines testés dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) |
+| 🧪 | Stabilité réelle 24 h/24 | Protocole préparé dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) ; aucune validation réelle effectuée |
+| 🧪 | Performances de référence | Benchmarks et profils CPU/heap du gestionnaire ; aucune optimisation justifiée |
 
 ## 2. Audio
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 💡 | Analyse APK audio | Comprendre les protocoles audio |
-| ⬜ | Réception audio | Récupérer le microphone |
-| ⬜ | RTSP audio/vidéo | Publier image et son synchronisés |
-| ⬜ | Audio bidirectionnel | Parler vers la caméra |
-| ⬜ | Intégration HA | Utiliser le microphone depuis HA |
+| 🧪 | Analyse APK audio | Analyse statique des trames et directions ; réception AAC confirmée sur la caméra 2, unité de `samplesize` inconnue |
+| 🧪 | Réception audio | AAC/ADTS 8 kHz mono décodé sur la caméra 2 ; PCM 16 bits non validé sur caméra |
+| 🧪 | RTSP audio/vidéo | AAC-LC mono 8 kHz capturé sur la caméra ; pendant le talk, la publication a redémarré au changement de format audio et a attendu un IDR après changement H.264. Continuité A/V et avertissements DTS restent à confirmer ([phase 45](../findings/phase45-validation-reelle-talkback.md), [phase 39](../findings/phase39-talkback.md)) |
+| 🧪 | Audio bidirectionnel Go | Envoi Go direct d'une sinusoïde AAC-LC/ADTS 700 Hz, 0,5 s, -33,5 dBFS RMS ; pic spectral de retour à -53,7 dBFS, contre -62,3/-64,4 dBFS avant/après. Signal compatible avec un retour acoustique, mais haut-parleur et son audible non confirmés ([phase 45](../findings/phase45-validation-reelle-talkback.md)) |
+| 🧪 | Microphone Home Assistant | Provider WebRTC opt-in et transport synthétique validés ; microphone navigateur/téléphone→caméra non testé en réel. Contrôle expérimental désactivé par défaut ; `two_way_audio` et bouton restent masqués par défaut ([phase 43](../findings/phase43-microphone-ha.md), [phase 45](../findings/phase45-validation-reelle-talkback.md)) |
 
 ## 3. Enregistrement
 
@@ -61,9 +63,9 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| ⬜ | WebRTC | Réduire la latence |
+| 🧪 | WebRTC | Provider HA opt-in, RTSP/TCP H.264/AAC, ICE UDP limité à l'IPv4 source et conversion audio intégrés ; scénarios média synthétiques validés, usage réel dans le navigateur et accès réseau externe à confirmer |
 | ⬜ | Configuration HA | Simplifier les réglages |
-| ⬜ | Alertes de panne | Signaler les caméras indisponibles |
+| 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |
 | ⬜ | Dashboard | Centraliser les informations |
 | 🧪 | Installation Portainer | Guide et stack disponibles ; déploiement réel non validé |
 

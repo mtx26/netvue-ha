@@ -22,8 +22,12 @@ loopback et le lit avec FFmpeg. Sous PowerShell, adapter les chemins locaux :
 ```powershell
 $env:NETVUE_TEST_MEDIAMTX = "C:\tools\mediamtx.exe"
 $env:NETVUE_TEST_FFMPEG = "C:\tools\ffmpeg.exe"
-go test -run TestMediaMTXPublicationDecodesWithFFmpeg -v ./internal/netvue
+$env:NETVUE_TEST_FFPROBE = "C:\tools\ffprobe.exe"
+go test -run 'TestMediaMTX.*PublicationDecodesWithFFmpeg' -v ./internal/netvue
 ```
+
+Le test A/V vérifie également les pistes H.264 et AAC avec FFprobe lorsque
+`NETVUE_TEST_FFPROBE` est défini ; la CI le définit systématiquement.
 
 Les autres tests de transport utilisent des réponses fabriquées ou un pair
 local. Aucun test ne doit recevoir l'adresse d'une caméra réelle.
@@ -74,6 +78,24 @@ reçue à la découverte. Le login Netvue observé n'est pas chiffré : la clé
 locale envoyée peut être vue sur le LAN ; sa réutilisabilité est inconnue.
 Utiliser un réseau de confiance (détails : [protocole](./netvue-protocol.md)).
 
+## Talkback expérimental
+
+`talk` ouvre une session A/V bornée et envoie un fichier AAC-LC/ADTS :
+
+```text
+netvue-bridge talk --source 192.168.10.10 --camera 192.168.10.20 \
+  --rtsp rtsp://127.0.0.1:8554/netvue_test --duration 30s \
+  --audio clip.aac --delay 5s
+```
+
+Le fichier doit correspondre à la fréquence et aux canaux annoncés par la
+caméra et durer au plus 30 s. La durée de session doit dépasser la durée du
+fichier et le délai. L'émission démarre après publication vidéo ; la réception
+se poursuit ensuite jusqu'à la fin de la session. Cette commande ouvre sa
+propre connexion : éviter une session concurrente, qui peut perturber un flux
+existant. La lecture effective par le haut-parleur n'est pas encore confirmée.
+Ce mode ne fournit pas de microphone Home Assistant.
+
 ## API et fonctionnement HA
 
 `serve` écoute `127.0.0.1:8765` et publie vers MediaMTX
@@ -107,10 +129,12 @@ de la caméra déclenchent ensuite le fonctionnement normal du pont.
 ## Limites vidéo
 
 - Démarrage après SPS, PPS et IDR. Le SPS est vérifié avant et après
-  recadrage avec calculs bornés. Un changement de paramètres ferme puis
-  réouvre la publication à l'IDR suivant ; plusieurs changements successifs
-  sont acceptés, mais plusieurs SPS/PPS contradictoires dans une même unité
-  d'accès sont rejetés.
+  recadrage avec calculs bornés. En cas de changement de paramètres, la
+  publication reste ouverte et la vidéo attend l'IDR suivant avec les
+  nouveaux SPS/PPS ; l'audio continue. Plusieurs SPS/PPS contradictoires dans
+  une même unité d'accès sont rejetés. Ce comportement a été validé avec
+  MediaMTX et FFmpeg synthétiquement et lors d'un changement réel 640×360
+  vers 1920×1080.
 - Annex B, SPS et limites de résolution sont vérifiés ; chaque image n'est
   pas décodée en production. B-frames et fragments répartis sur plusieurs
   paquets restent non vérifiés.
@@ -118,5 +142,7 @@ de la caméra déclenchent ensuite le fonctionnement normal du pont.
   arrière ou saut supérieur à 10 s : incrément de 1 ms (90 ticks), sans
   inférer la cadence. Les données brutes de l'anomalie historique manquent ;
   cela garantit l'ordre de sortie, pas la continuité temporelle réelle.
+  Un DTS non monotone a été signalé par FFmpeg lors du changement de
+  résolution réel ; son origine reste à établir.
 - Caméra 1, autonomie sans cloud, stabilité prolongée et déploiement réel ne
   sont pas établis par les tests synthétiques.

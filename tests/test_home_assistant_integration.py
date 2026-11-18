@@ -14,7 +14,9 @@ from custom_components.netvue_local import async_setup_entry, async_unload_entry
 from custom_components.netvue_local.bridge_api import (
     BridgeError, ManagedCamera, SessionStatus, async_discover_cameras, async_stop_camera,
 )
-from custom_components.netvue_local.binary_sensor import NetvueStreamSensor
+from custom_components.netvue_local.binary_sensor import (
+    NetvueCameraUnavailableSensor, NetvueStreamSensor,
+)
 from custom_components.netvue_local.button import NetvueRestartButton
 from custom_components.netvue_local.camera import NetvueCamera
 from custom_components.netvue_local.config_flow import NetvueConfigFlow, NetvueOptionsFlow, _duplicate
@@ -22,9 +24,18 @@ from custom_components.netvue_local.coordinator import CameraData, NetvueCoordin
 from custom_components.netvue_local.rtsp import (
     async_probe_stream, stream_url_from_name, validate_host, validate_stream_url,
 )
-from custom_components.netvue_local.sensor import NetvueSessionSensor
+from custom_components.netvue_local.sensor import (
+    NetvueDiagnosticSensor, NetvueSessionSensor, _DIAGNOSTIC_OPTIONS, _diagnostic_state,
+)
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.const import Platform
+from homeassistant.components.camera import (
+    CameraEntityFeature, StreamType, WebRTCAnswer, WebRTCCandidate, WebRTCError,
+)
+from homeassistant.components.camera.webrtc import DATA_WEBRTC_PROVIDERS
+from webrtc_models import RTCIceCandidateInit
+
+
 class ConfigurationTests(unittest.TestCase):
     def test_urls_and_addresses(self):
         self.assertEqual(validate_host("192.168.10.2"), "192.168.10.2")
@@ -62,8 +73,11 @@ class ConfigurationTests(unittest.TestCase):
             return {key: keys(item) for key, item in value.items()} if isinstance(value, dict) else None
         reference = keys(json.loads((base / "strings.json").read_text(encoding="utf-8")))
         for lang in ("fr", "en"):
-            self.assertEqual(keys(json.loads((base / "translations" / f"{lang}.json")
-                                             .read_text(encoding="utf-8"))), reference)
+            translated = json.loads((base / "translations" / f"{lang}.json")
+                                    .read_text(encoding="utf-8"))
+            self.assertEqual(keys(translated), reference)
+            states = translated["entity"]["sensor"]["diagnostic"]["state"]
+            self.assertEqual(set(states), set(_DIAGNOSTIC_OPTIONS))
 
 
 class RTSPTests(unittest.IsolatedAsyncioTestCase):
@@ -220,7 +234,7 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         name = "netvue_192_168_10_3"
         self.assertEqual(result["data"], {
             "host": "192.168.10.3", "stream_url": f"rtsp://127.0.0.1:8554/{name}",
-            "stream_name": name,
+            "stream_name": name, "webrtc_enabled": False, "experimental_talkback": False,
         })
 
     async def test_options_preserve_requested_host_when_bridge_is_unavailable(self):
@@ -236,7 +250,45 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
                    new=unittest.mock.AsyncMock(side_effect=BridgeError("unavailable"))):
             result = await flow.async_step_init({"host": "192.168.10.3"})
         self.assertEqual(result["errors"]["base"], "bridge_unavailable")
-        self.assertEqual(result["data_schema"]({}), {"host": "192.168.10.3"})
+        self.assertEqual(result["data_schema"]({}),
+                         {"host": "192.168.10.3", "webrtc_enabled": False,
+                          "experimental_talkback": False})
+
+    async def test_experimental_webrtc_option_is_persisted(self):
+        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
+                                "stream_name": "a",
+                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
+        hass = SimpleNamespace(config_entries=SimpleNamespace(
+            async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
+        flow = NetvueOptionsFlow()
+        flow.hass = hass
+        flow.handler = "1"
+        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
+                   new=unittest.mock.AsyncMock()):
+            result = await flow.async_step_init({
+                "host": "192.168.10.2", "webrtc_enabled": True,
+                "experimental_talkback": True,
+            })
+        self.assertTrue(result["data"]["webrtc_enabled"])
+        self.assertTrue(result["data"]["experimental_talkback"])
+
+    async def test_experimental_talkback_requires_webrtc(self):
+        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
+                                "stream_name": "a",
+                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
+        hass = SimpleNamespace(config_entries=SimpleNamespace(
+            async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
+        flow = NetvueOptionsFlow()
+        flow.hass = hass
+        flow.handler = "1"
+        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
+                   new=unittest.mock.AsyncMock()) as stop:
+            result = await flow.async_step_init({
+                "host": "192.168.10.2", "webrtc_enabled": False,
+                "experimental_talkback": True,
+            })
+        self.assertEqual(result["errors"]["base"], "talkback_requires_webrtc")
+        stop.assert_not_awaited()
 
     async def test_setup_unload_and_camera(self):
         entry = SimpleNamespace(entry_id="1", title="Fake",
@@ -268,6 +320,113 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await async_unload_entry(hass, entry))
         stop.assert_awaited_once_with(hass, "192.168.10.2")
         self.assertEqual(entries.async_forward_entry_unload.await_count, 4)
+
+    async def test_camera_does_not_expose_talkback_even_with_webrtc_provider(self):
+        entry = SimpleNamespace(
+            entry_id="1", title="Fake",
+            data={"stream_url": "rtsp://127.0.0.1:8554/a"}, options={},
+        )
+        coordinator = SimpleNamespace(
+            data=CameraData(SessionStatus("supervising", None), True),
+            last_update_success=True,
+        )
+        camera = NetvueCamera(entry, coordinator)
+        camera.hass = SimpleNamespace()
+        provider = SimpleNamespace(
+            async_register_camera=unittest.mock.AsyncMock(),
+            async_handle_async_webrtc_offer=unittest.mock.AsyncMock(),
+            async_on_webrtc_candidate=unittest.mock.AsyncMock(),
+            async_close_session=unittest.mock.Mock(),
+        )
+        self.assertEqual(camera.supported_features, CameraEntityFeature.STREAM)
+        self.assertFalse(camera.camera_entity_capabilities.two_way_audio)
+        with patch("homeassistant.components.camera.entity.async_is_preview_feature_enabled",
+                   return_value=True):
+            capabilities = camera.camera_capabilities
+            self.assertEqual(capabilities.frontend_stream_types, {StreamType.HLS})
+            self.assertFalse(capabilities.two_way_audio)
+            with self.assertRaisesRegex(HomeAssistantError, "does not support WebRTC"):
+                await camera.async_handle_async_webrtc_offer("offer", "session", lambda _: None)
+            with patch.object(camera, "_async_get_supported_webrtc_provider",
+                              new=unittest.mock.AsyncMock(return_value=provider)):
+                await camera.async_refresh_providers(write_state=False)
+            provider.async_register_camera.assert_awaited_once_with(camera)
+            capabilities = camera.camera_capabilities
+            self.assertEqual(capabilities.frontend_stream_types,
+                             {StreamType.HLS, StreamType.WEB_RTC})
+            self.assertFalse(capabilities.two_way_audio)
+            send_message = unittest.mock.Mock()
+            await camera.async_handle_async_webrtc_offer("offer", "session", send_message)
+            provider.async_handle_async_webrtc_offer.assert_awaited_once_with(
+                camera, "offer", "session", send_message
+            )
+            await camera.async_on_webrtc_candidate("session", "candidate")
+            provider.async_on_webrtc_candidate.assert_awaited_once_with("session", "candidate")
+            camera.close_webrtc_session("session")
+            provider.async_close_session.assert_called_once_with("session")
+
+        entry.options = {"webrtc_enabled": True, "experimental_talkback": True}
+        experimental_camera = NetvueCamera(entry, coordinator)
+        self.assertTrue(experimental_camera.camera_entity_capabilities.two_way_audio)
+        experimental_camera.hass = SimpleNamespace()
+        with patch("homeassistant.components.camera.entity.async_is_preview_feature_enabled",
+                   return_value=True):
+            with patch.object(
+                experimental_camera, "_async_get_supported_webrtc_provider",
+                new=unittest.mock.AsyncMock(return_value=provider),
+            ):
+                await experimental_camera.async_refresh_providers(write_state=False)
+            self.assertTrue(experimental_camera.camera_capabilities.two_way_audio)
+
+    async def test_webrtc_provider_selection_and_signalling_preserve_ha_messages(self):
+        entry = SimpleNamespace(
+            entry_id="1", title="Fake",
+            data={"stream_url": "rtsp://127.0.0.1:8554/a"}, options={},
+        )
+        coordinator = SimpleNamespace(
+            data=CameraData(SessionStatus("supervising", None), True),
+            last_update_success=True,
+        )
+        camera = NetvueCamera(entry, coordinator)
+        candidate = RTCIceCandidateInit(
+            candidate="candidate:1 1 UDP 1 192.0.2.1 1234 typ host",
+            sdp_mid="0", sdp_m_line_index=0,
+        )
+        messages = [
+            WebRTCAnswer("answer"), WebRTCCandidate(candidate),
+            WebRTCError("failed", "negotiation failed"),
+        ]
+
+        async def offer(_camera, _offer, _session, send_message):
+            for message in messages:
+               send_message(message)
+
+        provider = unittest.mock.Mock()
+        provider.async_is_supported.side_effect = lambda source: source == entry.data["stream_url"]
+        provider.async_register_camera = unittest.mock.AsyncMock()
+        provider.async_unregister_camera = unittest.mock.AsyncMock()
+        provider.async_handle_async_webrtc_offer = unittest.mock.AsyncMock(side_effect=offer)
+        provider.async_on_webrtc_candidate = unittest.mock.AsyncMock()
+        camera.hass = SimpleNamespace(data={DATA_WEBRTC_PROVIDERS: {provider}})
+        await camera.async_refresh_providers(write_state=False)
+        provider.async_is_supported.assert_called_once_with(entry.data["stream_url"])
+        self.assertIs(camera.webrtc_provider, provider)
+
+        received = []
+        await camera.async_handle_async_webrtc_offer("offer", "session", received.append)
+        self.assertEqual(received, messages)
+        await camera.async_on_webrtc_candidate("session", candidate)
+        provider.async_on_webrtc_candidate.assert_awaited_once_with("session", candidate)
+        camera.close_webrtc_session("session")
+        provider.async_close_session.assert_called_once_with("session")
+
+        camera.hass.data[DATA_WEBRTC_PROVIDERS].clear()
+        await camera.async_refresh_providers(write_state=False)
+        provider.async_unregister_camera.assert_awaited_once_with(camera)
+        self.assertIsNone(camera.webrtc_provider)
+        self.assertEqual(camera.camera_capabilities.frontend_stream_types, {StreamType.HLS})
+        with self.assertRaises(HomeAssistantError):
+            await camera.async_on_webrtc_candidate("session", candidate)
 
     async def test_session_diagnostic_and_explicit_restart(self):
         entry = SimpleNamespace(entry_id="1", title="Fake")
@@ -301,6 +460,58 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         managed.async_start.side_effect = BridgeError("Bridge returned HTTP 503")
         with self.assertRaisesRegex(HomeAssistantError, "HTTP 503"):
             await button.async_press()
+
+    async def test_unavailable_alert_and_actionable_diagnostic(self):
+        entry = SimpleNamespace(entry_id="1", title="Fake")
+        coordinator = SimpleNamespace(
+            data=CameraData(SessionStatus("supervising", None), True),
+            last_update_success=True,
+        )
+        unavailable = NetvueCameraUnavailableSensor(entry, coordinator)
+        diagnostic = NetvueDiagnosticSensor(entry, coordinator)
+        self.assertFalse(unavailable.is_on)
+        self.assertEqual(diagnostic.native_value, "healthy")
+
+        coordinator.data = CameraData(SessionStatus("supervising", None), False)
+        self.assertTrue(unavailable.is_on)
+        self.assertEqual(diagnostic.native_value, "stream_unavailable")
+
+        cases = [
+            (CameraData(None, False, "Cannot reach the local bridge manager"),
+             "bridge_unavailable"),
+            (CameraData(SessionStatus("failed", "Camera authentication rejected [authentication]"),
+                        False), "authentication_failed"),
+            (CameraData(SessionStatus("failed", "Connection error [camera connection]"),
+                        False), "connection_failed"),
+            (CameraData(SessionStatus("failed", "Video publication failed [RTSP publication]"),
+                        False), "publication_failed"),
+            (CameraData(SessionStatus("failed", "Invalid Netvue protocol data [LIVE response]"),
+                        False), "protocol_error"),
+            (CameraData(SessionStatus("failed", "Video stream not ready or interrupted [LIVE packet]"),
+                        False), "video_interrupted"),
+            (CameraData(SessionStatus("failed", "Unexpected camera session error"), False),
+             "session_failed"),
+            (CameraData(SessionStatus("stopped", None), False), "session_stopped"),
+            (CameraData(None, False), "session_unknown"),
+        ]
+        for data, expected in cases:
+            with self.subTest(expected=expected):
+                coordinator.data = data
+                self.assertEqual(_diagnostic_state(data), expected)
+                self.assertEqual(diagnostic.native_value, expected)
+
+        coordinator.data = CameraData(
+            SessionStatus("failed", "Camera authentication rejected [authentication]"), False
+        )
+        self.assertEqual(
+            diagnostic.extra_state_attributes,
+            {"details": "Camera authentication rejected [authentication]"},
+        )
+        coordinator.data = CameraData(None, False, "Cannot reach the local bridge manager")
+        self.assertEqual(
+            diagnostic.extra_state_attributes,
+            {"details": "Cannot reach the local bridge manager"},
+        )
 
     async def test_unload_preserves_entry_when_bridge_cannot_delete_camera(self):
         entry = SimpleNamespace(
@@ -863,7 +1074,7 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
                 patch("custom_components.netvue_local.coordinator.async_probe_stream",
                       new=unittest.mock.AsyncMock(return_value=True)) as probe:
             self.assertEqual(await NetvueCoordinator._async_update_data(coordinator),
-                             CameraData(None, True))
+                             CameraData(None, True, "Bridge returned HTTP 503"))
         probe.assert_awaited_once_with(entry.data["stream_url"])
 
 if __name__ == "__main__":

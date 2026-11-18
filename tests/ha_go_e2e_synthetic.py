@@ -230,8 +230,11 @@ async def main():
             registry = er.async_get(hass)
 
             def entity_id(domain):
+                suffix = {"sensor": "session", "binary_sensor": "rtsp"}.get(domain)
                 entities = [item.entity_id for item in er.async_entries_for_config_entry(
-                    registry, entry.entry_id) if item.domain == domain]
+                    registry, entry.entry_id) if item.domain == domain and (
+                        suffix is None or item.unique_id == f"{entry.entry_id}_{suffix}"
+                    )]
                 if len(entities) != 1:
                     raise RuntimeError(f"Expected one {domain} entity, got {entities}")
                 return entities[0]

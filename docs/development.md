@@ -16,7 +16,7 @@ Le test vidéo MediaMTX/FFmpeg est documenté dans le
 ## Home Assistant
 
 Dépendances Python dans [`tests/requirements-homeassistant.txt`](../tests/requirements-homeassistant.txt) :
-Home Assistant 2026.11.2 nécessite Python 3.13.2 ou ultérieur.
+Home Assistant 2026.11.2 nécessite Python 3.14.2 ou ultérieur.
 
 ```sh
 python -m pip install -r tests/requirements-homeassistant.txt
@@ -71,6 +71,11 @@ conteneurs synthétiques. Il exige explicitement que les tests vidéo soient
 tests HA unitaires restent des étapes séparées. La stack Swarm est aussi
 rendue avec des valeurs factices via `docker stack config` ; aucune stack
 n'est déployée.
+
+La CI démarre également MediaMTX dans un conteneur sans réseau et vérifie ses
+écouteurs effectifs pour la configuration de référence et les variables de
+la stack : seul RTSP/TCP sur loopback est permis. Pour un essai manuel, utiliser
+`deployment/mediamtx.yml` plutôt que les paramètres par défaut de MediaMTX.
 
 Ces tests utilisent un réseau isolé, des données fictives et des ports libres.
 Les résultats ne prouvent ni la compatibilité matérielle ni la stabilité

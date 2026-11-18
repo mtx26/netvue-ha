@@ -128,9 +128,10 @@ func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *
 }
 
 type camera struct {
-	host string
-	port int
-	key  string
+	host  string
+	port  int
+	key   string
+	audio bool
 }
 
 func discover(ctx context.Context, source, target string) (camera, error) {
@@ -239,7 +240,14 @@ func parseDiscovery(data []byte, source, expected string) (camera, error) {
 		if hostIP == nil || !hostIP.Equal(expectedIP) || port < 1 || port > 65535 || key == "" {
 			return camera{}, withReason("invalid or mismatched discovery endpoint", fmt.Errorf("%w: discovery endpoint does not match target", ErrProtocol))
 		}
-		return camera{host: expectedIP.String(), port: port, key: key}, nil
+		audio := false
+		if len(params) > 5 {
+			var capabilities []json.RawMessage
+			if json.Unmarshal(params[5], &capabilities) == nil && len(capabilities) > 0 {
+				_ = json.Unmarshal(capabilities[0], &audio)
+			}
+		}
+		return camera{host: expectedIP.String(), port: port, key: key, audio: audio}, nil
 	}
 	return camera{}, withReason("no supported discovery response", fmt.Errorf("%w: no supported discovery response", ErrProtocol))
 }

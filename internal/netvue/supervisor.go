@@ -24,12 +24,17 @@ var continuousRetryPolicy = retryPolicy{
 
 // RunContinuous retries recoverable session failures until ctx is canceled.
 func RunContinuous(ctx context.Context, source, target, rtspURL string) error {
+	return RunContinuousWithTalkback(ctx, source, target, rtspURL, nil)
+}
+
+// RunContinuousWithTalkback binds the controller only to each active session.
+func RunContinuousWithTalkback(ctx context.Context, source, target, rtspURL string, live *LiveTalkback) error {
 	cameraLabel := "invalid address"
 	if ip, err := validateLANIPv4(target); err == nil {
 		cameraLabel = ip.String()
 	}
 	runSession := func(ctx context.Context) error {
-		return RunSession(ctx, source, target, rtspURL, 0)
+		return runSessionWithLiveTalk(ctx, source, target, rtspURL, 0, nil, live)
 	}
 	return supervise(ctx, cameraLabel, runSession, continuousRetryPolicy, waitForRetry)
 }

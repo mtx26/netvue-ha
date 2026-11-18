@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
@@ -17,6 +18,8 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtplpcm"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
@@ -44,6 +47,7 @@ type timestampClock struct {
 	hasPrevious bool
 	previous    uint32
 	elapsedRTP  uint32
+	elapsedMS   int64
 }
 
 func (clock *timestampClock) update(value uint32) uint32 {
@@ -58,6 +62,7 @@ func (clock *timestampClock) update(value uint32) uint32 {
 	}
 	clock.previous = value
 	clock.hasPrevious = true
+	clock.elapsedMS += int64(deltaMS)
 	clock.elapsedRTP += deltaMS * 90
 	return clock.elapsedRTP
 }
@@ -69,12 +74,21 @@ type videoPublisher struct {
 	stopContext         func() bool
 	media               *description.Media
 	encoder             *rtph264.Encoder
+	audioMedia          *description.Media
+	audioTrack          *audioTrack
+	audioAACEncoder     *rtpmpeg4audio.Encoder
+	audioLPCMEncoder    *rtplpcm.Encoder
 	rtpBase             uint32
+	videoRTPStart       uint32
+	videoElapsedMSStart int64
+	nextAudioSample     int64
+	hasAudioTimestamp   bool
 	startDeadline       time.Time
 	sps                 []byte
 	pps                 []byte
 	clock               timestampClock
 	started             bool
+	waitingIDR          bool
 	published           uint64
 	generationPublished uint64
 	generation          uint64
@@ -168,7 +182,8 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 		publisher.pps = append(publisher.pps[:0], pps...)
 	}
 	if parametersChanged && publisher.started {
-		publisher.stop()
+		slog.Info("Netvue RTSP H.264 parameters changed", "action", "waiting for IDR")
+		publisher.waitingIDR = true
 	}
 	if !hasVCL {
 		return nil
@@ -184,7 +199,16 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 		if err := publisher.start(); err != nil {
 			return atStage("RTSP publication", err)
 		}
+		publisher.videoRTPStart = publisher.rtpBase + elapsedRTP
+		publisher.videoElapsedMSStart = publisher.clock.elapsedMS
+		publisher.hasAudioTimestamp = false
+	}
+	if publisher.waitingIDR && !hasIDR {
+		return nil
+	}
+	if hasIDR {
 		annexB = prependParameters(annexB, publisher.sps, publisher.pps)
+		publisher.waitingIDR = false
 	}
 
 	packets, err := publisher.encoder.Encode(annexB)
@@ -201,6 +225,67 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 	publisher.published++
 	publisher.generationPublished++
 	return nil
+}
+
+func (publisher *videoPublisher) PushAudio(frame audioFrame, parameters *audioParameters) error {
+	candidate, err := newAudioTrack(frame, parameters)
+	if err != nil {
+		return atStage("audio", err)
+	}
+	if !publisher.audioTrack.matches(candidate) {
+		publisher.audioTrack = candidate
+		if publisher.started {
+			slog.Info("Netvue RTSP publication restarting", "reason", "audio format changed")
+			publisher.stop()
+		}
+		return nil
+	}
+	if !publisher.started {
+		return nil
+	}
+
+	packets, err := publisher.audioTrack.encode(frame, publisher.audioAACEncoder, publisher.audioLPCMEncoder)
+	if err != nil {
+		return atStage("audio", err)
+	}
+	publisher.timestampAudioPackets(frame.timestamp, packets)
+	for _, packet := range packets {
+		if err := publisher.client.WritePacketRTP(publisher.audioMedia, packet.packet); err != nil {
+			return atStage("audio", fmt.Errorf("write RTSP RTP packet: %w", err))
+		}
+	}
+	return nil
+}
+
+func (publisher *videoPublisher) timestampAudioPackets(timestamp uint32, packets []timedAudioPacket) {
+	if len(packets) == 0 {
+		return
+	}
+	last := packets[len(packets)-1]
+	frameBase := publisher.audioRTPTimestamp(timestamp, last.sampleOffset+last.sampleCount)
+	for _, packet := range packets {
+		packet.packet.Timestamp = frameBase + packet.sampleOffset
+	}
+}
+
+func (publisher *videoPublisher) audioRTPTimestamp(timestamp uint32, durationSamples uint32) uint32 {
+	audioBase := int64(publisher.videoRTPStart) * int64(publisher.audioTrack.sampleRate) / 90_000
+	elapsedMS := publisher.clock.elapsedMS - publisher.videoElapsedMSStart
+	if publisher.clock.hasPrevious {
+		// Audio and video share the source millisecond clock. Use the nearest
+		// video sample as an epoch anchor, not a signed delta from session start:
+		// the latter breaks after 2^31 ms in a long-lived publication.
+		elapsedMS += int64(int32(timestamp - publisher.clock.previous))
+	}
+	elapsedSamples := elapsedMS * int64(publisher.audioTrack.sampleRate) / 1000
+	if publisher.hasAudioTimestamp && elapsedSamples < publisher.nextAudioSample {
+		// Avoid overlap with the whole previous payload, including multi-AU
+		// AAC and fragmented RTP packets, without comparing wrapped RTP values.
+		elapsedSamples = publisher.nextAudioSample
+	}
+	publisher.nextAudioSample = elapsedSamples + int64(durationSamples)
+	publisher.hasAudioTimestamp = true
+	return uint32(audioBase + elapsedSamples)
 }
 
 func (publisher *videoPublisher) SetStartupDeadline(deadline time.Time) {
@@ -289,6 +374,28 @@ func (publisher *videoPublisher) start() error {
 		Type:    description.MediaTypeVideo,
 		Formats: []format.Format{h264Format},
 	}
+	medias := []*description.Media{media}
+	var audioAACEncoder *rtpmpeg4audio.Encoder
+	var audioLPCMEncoder *rtplpcm.Encoder
+	var audioMedia *description.Media
+	if publisher.audioTrack != nil {
+		audioMedia = &description.Media{
+			Type:    description.MediaTypeAudio,
+			Formats: []format.Format{publisher.audioTrack.format},
+		}
+		switch audioFormat := publisher.audioTrack.format.(type) {
+		case *format.MPEG4Audio:
+			audioAACEncoder, err = audioFormat.CreateEncoder()
+		case *format.LPCM:
+			audioLPCMEncoder, err = audioFormat.CreateEncoder()
+		default:
+			return fmt.Errorf("%w: unsupported RTSP audio format", ErrAudioFrame)
+		}
+		if err != nil {
+			return fmt.Errorf("%w: create RTSP audio encoder: %w", ErrAudioFrame, err)
+		}
+		medias = append(medias, audioMedia)
+	}
 	var initialTimestamp [4]byte
 	if _, err := rand.Read(initialTimestamp[:]); err != nil {
 		return fmt.Errorf("%w: generate RTP timestamp base: %w", ErrVideoFatal, err)
@@ -338,7 +445,7 @@ func (publisher *videoPublisher) start() error {
 			}
 		}
 	}()
-	desc := &description.Session{Medias: []*description.Media{media}}
+	desc := &description.Session{Medias: medias}
 	// Keep each RTSP request interruptible by the session context.
 	response, err := client.Announce(u, desc)
 	if err != nil {
@@ -378,6 +485,9 @@ func (publisher *videoPublisher) start() error {
 	publisher.stopContext = stopOnCancel
 	publisher.media = media
 	publisher.encoder = encoder
+	publisher.audioMedia = audioMedia
+	publisher.audioAACEncoder = audioAACEncoder
+	publisher.audioLPCMEncoder = audioLPCMEncoder
 	publisher.rtpBase = binary.BigEndian.Uint32(initialTimestamp[:])
 	publisher.generation++
 	publisher.started = true
@@ -427,7 +537,11 @@ func (publisher *videoPublisher) stop() {
 	publisher.client = nil
 	publisher.media = nil
 	publisher.encoder = nil
+	publisher.audioMedia = nil
+	publisher.audioAACEncoder = nil
+	publisher.audioLPCMEncoder = nil
 	publisher.started = false
+	publisher.waitingIDR = false
 	publisher.generationPublished = 0
 }
 

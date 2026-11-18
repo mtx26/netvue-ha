@@ -60,6 +60,7 @@ jobs:
             "$GO_IMAGE" \
             sh -ec 'export CGO_ENABLED=0 GOOS=linux GOARCH=amd64
                     go build -trimpath -buildvcs=false -o /out/netvue-bridge ./cmd/netvue-bridge
+                    go test -c -o /out/netvue-manager.test ./internal/manager
                     go test -c -o /out/netvue.test ./internal/netvue'
 
           mediamtx_container="$(docker create "$MEDIAMTX_IMAGE")"
@@ -67,6 +68,45 @@ jobs:
           docker cp "$mediamtx_container:/mediamtx" "$RUNNER_TEMP/netvue-integration/mediamtx"
           docker rm "$mediamtx_container"
           chmod +x "$RUNNER_TEMP/netvue-integration/mediamtx"
+
+      - name: Verify MediaMTX listeners are isolated
+        run: |
+          set -euo pipefail
+          output_file="$(mktemp)"
+          trap 'rm -f "$output_file"' EXIT
+          docker run --rm --network none \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --mount "type=bind,source=$RUNNER_TEMP/netvue-integration/mediamtx,target=/mediamtx,readonly" \
+            --workdir /workspace --env NETVUE_TEST_MEDIAMTX=/mediamtx \
+            --entrypoint python "$HA_IMAGE" \
+            -B -m unittest discover -s tests -p test_portainer_config.py -v \
+            >"$output_file" 2>&1 || { cat "$output_file"; exit 1; }
+          cat "$output_file"
+          grep -E '^test_mediamtx_runtime_listeners_are_isolated .* \.\.\. ok$' "$output_file" >/dev/null
+
+      - name: Run synthetic WebRTC and audio conversion tests
+        run: |
+          set -euo pipefail
+          output_file="$(mktemp)"
+          trap 'rm -f "$output_file"' EXIT
+          if ! docker run --rm --network none \
+            --mount "type=bind,source=$RUNNER_TEMP/netvue-integration/netvue-manager.test,target=/netvue-manager.test,readonly" \
+            --env NETVUE_TEST_FFMPEG=/usr/bin/ffmpeg \
+            --env NETVUE_TEST_FFMPEG_FULL=/usr/bin/ffmpeg \
+            --entrypoint /netvue-manager.test \
+            "$HA_IMAGE" \
+            -test.v >"$output_file" 2>&1; then
+            cat "$output_file"
+            exit 1
+          fi
+          cat "$output_file"
+          for test_name in TestWebRTCEndToEndSynthetic TestAACToOpusRTPWithFFmpeg TestOpusAACNonSilentSignal; do
+            grep -F -- "--- PASS: $test_name" "$output_file" >/dev/null
+            if grep -F -- "--- SKIP: $test_name" "$output_file" >/dev/null; then
+              echo "$test_name was skipped; the integration job requires an actual pass" >&2
+              exit 1
+            fi
+          done
 
       - name: Run MediaMTX publication, decode and isolation tests
         run: |
@@ -78,15 +118,16 @@ jobs:
             --mount "type=bind,source=$RUNNER_TEMP/netvue-integration/mediamtx,target=/mediamtx,readonly" \
             --env NETVUE_TEST_MEDIAMTX=/mediamtx \
             --env NETVUE_TEST_FFMPEG=/usr/bin/ffmpeg \
+            --env NETVUE_TEST_FFPROBE=/usr/bin/ffprobe \
             --entrypoint /netvue.test \
             "$HA_IMAGE" \
-            -test.v -test.run '^(TestMediaMTXPublicationDecodesWithFFmpeg|TestMediaMTXMultiCameraIsolation)$' \
+            -test.v -test.run '^(TestMediaMTXPublicationDecodesWithFFmpeg|TestMediaMTXAudioVideoPublicationDecodesWithFFmpeg|TestMediaMTXMultiCameraIsolation|TestMediaMTXContinuousReaderResolutionChange|TestTalkADTSFromFFmpeg)$' \
             >"$output_file" 2>&1; then
             cat "$output_file"
             exit 1
           fi
           cat "$output_file"
-          for test_name in TestMediaMTXPublicationDecodesWithFFmpeg TestMediaMTXMultiCameraIsolation; do
+          for test_name in TestMediaMTXPublicationDecodesWithFFmpeg TestMediaMTXAudioVideoPublicationDecodesWithFFmpeg TestMediaMTXMultiCameraIsolation TestMediaMTXContinuousReaderResolutionChange TestTalkADTSFromFFmpeg; do
             grep -F -- "--- PASS: $test_name" "$output_file" >/dev/null
             if grep -F -- "--- SKIP: $test_name" "$output_file" >/dev/null; then
               echo "$test_name was skipped; the integration job requires an actual pass" >&2

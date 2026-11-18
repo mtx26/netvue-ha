@@ -8,6 +8,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/mtx26/netvue-ha/internal/netvue"
 )
@@ -41,6 +42,7 @@ type cameraSession struct {
 	operationMu sync.Mutex
 	cancel      context.CancelFunc
 	done        chan struct{}
+	talkback    *netvue.LiveTalkback
 }
 
 type sessionRunner func(context.Context, string, string, string) error
@@ -52,8 +54,13 @@ type Manager struct {
 	cancel        context.CancelFunc
 	source        string
 	runSession    sessionRunner
+	runWithTalk   func(context.Context, string, string, string, *netvue.LiveTalkback) error
+	openAudio     func(context.Context, string) (talkSink, error)
+	ffmpegPath    func() (string, error)
 	discoverLAN   func(context.Context, string) ([]string, error)
 	cameras       map[string]*cameraSession
+	peers         map[string]*webRTCPeer
+	tombstones    map[string]time.Time
 	closed        bool
 	closeOnce     sync.Once
 	closeComplete chan struct{}
@@ -61,7 +68,11 @@ type Manager struct {
 }
 
 func New(ctx context.Context, source string) (*Manager, error) {
-	return newManager(ctx, source, netvue.RunContinuous)
+	manager, err := newManager(ctx, source, netvue.RunContinuous)
+	if err == nil {
+		manager.runWithTalk = netvue.RunContinuousWithTalkback
+	}
+	return manager, err
 }
 
 func newManager(
@@ -89,6 +100,8 @@ func newManager(
 		runSession:    runSession,
 		discoverLAN:   netvue.DiscoverLAN,
 		cameras:       make(map[string]*cameraSession),
+		peers:         make(map[string]*webRTCPeer),
+		tombstones:    make(map[string]time.Time),
 		closeComplete: make(chan struct{}),
 	}, nil
 }
@@ -129,10 +142,54 @@ func (manager *Manager) AddCamera(host, streamName string) (Camera, bool, error)
 
 	session := &cameraSession{Camera: Camera{
 		Host: host, StreamName: streamName, RTSPURL: rtspURL, State: stateSupervising,
-	}}
+	}, talkback: netvue.NewLiveTalkback()}
 	manager.cameras[host] = session
 	manager.startLocked(session)
 	return session.Camera, true, nil
+}
+
+// OpenTalkback opens an exclusive experimental ADTS stream on the current
+// supervised session. It never creates or reconnects a camera session.
+func (manager *Manager) OpenTalkback(ctx context.Context, host string) (*netvue.TalkStream, error) {
+	if ctx == nil {
+		return nil, errors.New("request context is required")
+	}
+	host, err := normalizeCameraHost(host)
+	if err != nil {
+		return nil, err
+	}
+	manager.mu.RLock()
+	session := manager.cameras[host]
+	closed := manager.closed || manager.ctx.Err() != nil
+	if closed {
+		manager.mu.RUnlock()
+		return nil, ErrManagerClosed
+	}
+	if session == nil {
+		manager.mu.RUnlock()
+		return nil, ErrCameraNotFound
+	}
+	manager.mu.RUnlock()
+	if err := lockCameraOperation(ctx, &session.operationMu); err != nil {
+		return nil, err
+	}
+	defer session.operationMu.Unlock()
+	manager.mu.RLock()
+	if manager.closed || manager.ctx.Err() != nil {
+		manager.mu.RUnlock()
+		return nil, ErrManagerClosed
+	}
+	if manager.cameras[host] != session {
+		manager.mu.RUnlock()
+		return nil, ErrCameraNotFound
+	}
+	if session.State != stateSupervising {
+		manager.mu.RUnlock()
+		return nil, netvue.ErrTalkUnavailable
+	}
+	controller := session.talkback
+	manager.mu.RUnlock()
+	return controller.Open(ctx)
 }
 
 func (manager *Manager) StartCamera(host string) (Camera, bool, error) {
@@ -274,8 +331,15 @@ func (manager *Manager) stopSession(ctx context.Context, host string, remove boo
 		session.cancel()
 	}
 	done := session.done
+	peer := manager.peers[host]
 	manager.mu.Unlock()
 
+	if peer != nil {
+		peer.fail("camera_stopped")
+		if err := waitPeerWorkers(ctx, peer); err != nil {
+			return Camera{}, false, err
+		}
+	}
 	select {
 	case <-done:
 	case <-ctx.Done():
@@ -296,6 +360,23 @@ func (manager *Manager) stopSession(ctx context.Context, host string, remove boo
 	return session.Camera, false, nil
 }
 
+func lockCameraOperation(ctx context.Context, mu *sync.Mutex) error {
+	for !mu.TryLock() {
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 func (manager *Manager) startLocked(session *cameraSession) {
 	ctx, cancel := context.WithCancel(manager.ctx)
 	done := make(chan struct{})
@@ -306,7 +387,12 @@ func (manager *Manager) startLocked(session *cameraSession) {
 }
 
 func (manager *Manager) run(ctx context.Context, session *cameraSession, done chan struct{}) {
-	err := manager.runSession(ctx, manager.source, session.Host, session.RTSPURL)
+	var err error
+	if manager.runWithTalk != nil {
+		err = manager.runWithTalk(ctx, manager.source, session.Host, session.RTSPURL, session.talkback)
+	} else {
+		err = manager.runSession(ctx, manager.source, session.Host, session.RTSPURL)
+	}
 	canceled := ctx.Err() != nil
 	session.cancel()
 	var diagnostic string

@@ -18,6 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 class CameraData(NamedTuple):
     session: SessionStatus | None
     rtsp_available: bool
+    manager_error: str | None = None
 
 
 class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
@@ -31,8 +32,10 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
 
     async def _async_update_data(self) -> CameraData:
         session = None
+        manager_error = None
         try:
             session = await self.camera.async_reconcile()
         except BridgeError as exc:
+            manager_error = str(exc)
             _LOGGER.warning("Unable to reconcile the bridge camera: %s", exc)
-        return CameraData(session, await async_probe_stream(self.url))
+        return CameraData(session, await async_probe_stream(self.url), manager_error)

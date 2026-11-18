@@ -53,6 +53,115 @@ arrêté ou en échec et ne garantit pas la disponibilité immédiate du flux. U
 supervisée peut reconnecter, sans exposer dans HA la cause de chaque erreur
 transitoire.
 
+### Audio et microphone
+
+L'audio caméra AAC est transmis en Opus par le lecteur WebRTC. Le fournisseur
+HA est opt-in via les options de l'intégration. Le pont reçoit le microphone
+WebRTC en Opus, le convertit en AAC-LC/ADTS et l'envoie sur la session Netvue
+supervisée de la caméra ; après dix secondes sans paquets RTP, il ferme le
+talkback et le rouvre à la reprise du microphone. Ce délai limite les ouvertures
+répétées pendant les silences avec suppression de paquets. La vidéo et l'audio
+caméra restent sur cette même session.
+
+La capacité HA `two_way_audio` reste désactivée par défaut : les essais
+synthétiques ne prouvent pas la restitution par le haut-parleur Netvue. Une
+option distincte « Contrôle microphone expérimental » peut l'exposer pour des
+essais explicitement demandés ; elle nécessite WebRTC et reste désactivée par
+défaut. Ce contrôle n'est pas une validation du talkback. FFmpeg est nécessaire
+au transcodage audio.
+
+La commande Go expérimentale `talk` lit un fichier AAC préencodé dans une
+session distincte et bornée ; elle ne fait pas partie du parcours HA et ne doit
+pas être lancée en parallèle de la session supervisée.
+
+### Signalisation WebRTC expérimentale
+
+Le serveur Go et le fournisseur HA implémentent la signalisation et le trajet
+média. Le fournisseur reste **désactivé par défaut** : cochez
+« Signalisation WebRTC expérimentale » uniquement sur un pont compatible.
+Le contrôle microphone est séparément opt-in, réservé aux essais et désactivé
+par défaut ; sans cette option, les offres contenant une piste audio émise
+sont refusées avant d'ouvrir une session. Les options rechargent l'entrée et
+arrêtent/redémarrent la session caméra.
+Les essais d'intégration média nécessitent FFmpeg et une validation acoustique
+est encore requise. L'API est :
+
+| Méthode et chemin, sous `/api/v1` | Corps ou réponse JSON |
+|---|---|
+| `PUT /cameras/{host}/webrtc/{session_id}` | `{"offer":"<SDP>"}` ; `201` crée la session identifiée par HA, `200` confirme une répétition identique, `409` refuse un identifiant réutilisé avec une autre offre. |
+| `POST /cameras/{host}/webrtc/{session_id}/candidates` | `{"candidate":{"candidate":"...","sdpMid":"0","sdpMLineIndex":0,"usernameFragment":null}}` ; `204` accepte. Les champs optionnels gardent leurs valeurs ou `null`. |
+| `GET /cameras/{host}/webrtc/{session_id}/events?after=<n>` | Attente bornée à 30 s maximum, puis `200 {"events":[{"seq":1,"type":"answer","answer":"<SDP>"},{"seq":2,"type":"candidate","candidate":{...}}]}` ou liste vide. Une erreur est `{"seq":3,"type":"error","code":"...","message":"..."}`. |
+| `DELETE /cameras/{host}/webrtc/{session_id}` | `204` même si déjà fermée ; libère le pair et ses ressources. |
+
+Les séquences commencent à 1, restent ordonnées et sont rejouables après le
+curseur fourni : `after=0` récupère les premiers événements. Réponse et
+candidates serveur sont donc possibles après l'offre. Le client sérialise
+l'ouverture et les candidates ; une fermeture demandée pendant l'ouverture
+attend son résultat puis supprime la session. Le pont limite taille SDP,
+nombre de sessions/événements et durée de vie, et applique un tombstone à la
+fermeture. Une expiration ou session inconnue renvoie `404`/`410`, un corps
+invalide `400`, une caméra non gérée `404`, et une indisponibilité `503`. Une
+erreur de négociation est un événement `error` terminal. Les SDP, adresses ICE
+et identifiants ne sont pas journalisés. L'API reste sur loopback, non
+authentifiée comme le reste du gestionnaire. Le contrat limite à un pair
+WebRTC par caméra à la fois (`409` si occupée) : vidéo et audio proviennent
+du RTSP/TCP ; le microphone Opus est converti en AAC-LC/ADTS et joint à la
+même session Netvue supervisée, jamais une seconde session caméra. Le retour
+AAC caméra → Opus WebRTC est également implémenté.
+
+Audit du code officiel [HA 2026.11.2](https://github.com/home-assistant/core/blob/2026.11.2/homeassistant/components/camera/webrtc.py) :
+`CameraWebRTCProvider` sélectionne les sources RTSP via `async_is_supported`,
+reçoit offre et candidates, envoie `WebRTCAnswer`, `WebRTCCandidate` ou
+`WebRTCError`, puis ferme la session par callback synchrone. HA conserve HLS
+avec un fournisseur ; une méthode WebRTC native remplaçant celle de `Camera`
+supprime ce repli. La sélection du premier fournisseur compatible n'assure
+pas une priorité stable entre fournisseurs. `two_way_audio` dépend également
+de WebRTC et de la fonctionnalité Labs ; il reste `False` par défaut. L'option
+expérimentale distincte peut l'exposer uniquement pour les essais, sans
+confirmer la restitution physique. L'intégration
+officielle [go2rtc](https://github.com/home-assistant/core/blob/2026.11.2/homeassistant/components/go2rtc/__init__.py)
+utilise un WebSocket de signalisation ; le seul RTSP ne fournit pas le retour
+audio Netvue. Le choix du fournisseur HA se fait uniquement par URL : une
+autre entité utilisant exactement la même URL pourrait le sélectionner, mais
+ce fournisseur refuse les offres d'une autre entité. L'API HA ne permet pas
+de sélectionner un fournisseur par entité ni de garantir sa priorité face à
+go2rtc. Sans découverte de capacité Go convenue, l'activation manuelle peut
+annoncer WebRTC même si le serveur est incompatible ; l'offre échouera alors,
+sans repli automatique garanti côté lecteur. HLS reste annoncé par HA.
+Le fournisseur ne peut pas définir de configuration ICE propre via l'API
+provider : HA fournit celle de l'entité et ses serveurs ICE globaux. Le pair
+Go annonce uniquement l'IPv4 source configurée et utilise UDP ; l'accès depuis
+un navigateur hors de ce LAN n'est pas couvert. `two_way_audio=False` reste
+le comportement par défaut : le microphone HA est masqué tant que l'option
+expérimentale d'essai n'est pas explicitement activée. Les conversions et la
+signalisation sont testées synthétiquement, mais ne prouvent ni l'acceptation
+du talkback par la caméra ni la restitution audio réelle. Si le `DELETE` côté
+HA est interrompu, le pont a déjà installé un tombstone et poursuit la fermeture
+en arrière-plan ; le client peut répéter la suppression.
+
+[MediaMTX](https://mediamtx.org/docs/read/webrtc) propose la lecture WHEP
+(H.264 et Opus/G.711, pas AAC WebRTC), mais la lecture n'établit pas à elle
+seule un trajet microphone vers la session Netvue. [go2rtc](https://github.com/AlexxIT/go2rtc/blob/master/internal/webrtc/README.md)
+documente un mode WebRTC bidirectionnel ; il faut néanmoins relier et
+transcoder l'audio entrant vers le protocole Netvue. La connectivité ICE
+nécessite des adresses et ports accessibles ([MediaMTX](https://mediamtx.org/docs/features/webrtc-specific-features)).
+Le pont ajoute Pion WebRTC/Opus et utilise FFmpeg pour les conversions AAC ↔
+Opus. Le paquet officiel
+[HA 2026.11.2](https://github.com/home-assistant/core/blob/2026.11.2/pyproject.toml)
+requiert Python **3.14.2 minimum**, et non 3.13.2.
+
+L'entité **Caméra indisponible** passe à `on` quand le flux RTSP/H.264 n'est
+pas disponible ; elle sert directement de déclencheur à une automatisation
+ou une notification HA. Pour limiter les faux positifs, configurez le
+déclencheur d'état sur `on` avec un délai (par exemple deux minutes). L'entité
+**Diagnostic caméra** distingue notamment une panne du gestionnaire, un refus
+d'authentification, une erreur de connexion et un flux interrompu. Son attribut
+`details` conserve le diagnostic technique utile aux journaux ; l'état de la
+session reste disponible séparément.
+
+La configuration n'exige que la découverte (ou une adresse IPv4 saisie) et un
+nom. L'intégration génère l'URL RTSP et crée les entités automatiquement.
+
 Le nom affiché se modifie depuis l'appareil/l'entité ; les options de
 l'intégration changent l'IPv4, arrêtent l'ancien flux et démarrent le nouveau.
 La suppression de l'intégration arrête et retire la session. Une ancienne

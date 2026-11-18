@@ -22,7 +22,7 @@ func main() {
 func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runCommand(ctx, os.Args[1:], netvue.RunSession, netvue.RunContinuous, manager.Run)
+	return runCommand(ctx, os.Args[1:], netvue.RunSession, netvue.RunContinuous, manager.Run, netvue.RunTalkback)
 }
 
 type commandConfig struct {
@@ -31,6 +31,8 @@ type commandConfig struct {
 	rtspURL       string
 	listenAddress string
 	duration      time.Duration
+	audioFile     string
+	talkDelay     time.Duration
 }
 
 func runCommand(
@@ -39,6 +41,7 @@ func runCommand(
 	runTest func(context.Context, string, string, string, time.Duration) error,
 	runContinuous func(context.Context, string, string, string) error,
 	runManager func(context.Context, string, string) error,
+	talkRunner func(context.Context, string, string, string, time.Duration, string, time.Duration) error,
 ) int {
 	if len(args) == 0 {
 		printUsage(os.Stderr)
@@ -46,7 +49,7 @@ func runCommand(
 	}
 
 	command := args[0]
-	if command != "test" && command != "run" && command != "serve" {
+	if command != "test" && command != "run" && command != "serve" && command != "talk" {
 		printUsage(os.Stderr)
 		return 2
 	}
@@ -66,8 +69,14 @@ func runCommand(
 		err = runTest(ctx, config.source, config.camera, config.rtspURL, config.duration)
 	} else if command == "run" {
 		err = runContinuous(ctx, config.source, config.camera, config.rtspURL)
-	} else {
+	} else if command == "serve" {
 		err = runManager(ctx, config.source, config.listenAddress)
+	} else {
+		if talkRunner == nil {
+			fmt.Fprintln(os.Stderr, "talkback runner unavailable")
+			return 1
+		}
+		err = talkRunner(ctx, config.source, config.camera, config.rtspURL, config.duration, config.audioFile, config.talkDelay)
 	}
 	if err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
@@ -99,6 +108,8 @@ func parseCommandFlags(command string, args []string) (commandConfig, error) {
 			fmt.Fprintf(flags.Output(), "usage: netvue-bridge %s --source IPv4 --camera IPv4 --rtsp URL", command)
 			if command == "test" {
 				fmt.Fprint(flags.Output(), " --duration 15s")
+			} else if command == "talk" {
+				fmt.Fprint(flags.Output(), " --duration 45s --audio clip.aac")
 			}
 		}
 		fmt.Fprintln(flags.Output())
@@ -113,8 +124,12 @@ func parseCommandFlags(command string, args []string) (commandConfig, error) {
 		flags.StringVar(&config.camera, "camera", "", "Netvue camera IPv4 address")
 		flags.StringVar(&config.rtspURL, "rtsp", "", "loopback RTSP publish URL")
 	}
-	if command == "test" {
+	if command == "test" || command == "talk" {
 		flags.DurationVar(&config.duration, "duration", 0, "positive test session duration")
+	}
+	if command == "talk" {
+		flags.StringVar(&config.audioFile, "audio", "", "experimental pre-encoded AAC-LC ADTS file (maximum 30s)")
+		flags.DurationVar(&config.talkDelay, "delay", 0, "delay after first video publication (0 to 10s)")
 	}
 	if err := flags.Parse(args); err != nil {
 		return commandConfig{}, err
@@ -128,10 +143,13 @@ func parseCommandFlags(command string, args []string) (commandConfig, error) {
 	if command == "test" && config.duration <= 0 {
 		return commandConfig{}, errors.New("test duration must be positive")
 	}
+	if command == "talk" && (config.duration <= 0 || config.duration > 2*time.Minute || config.audioFile == "" || config.talkDelay < 0 || config.talkDelay > 10*time.Second) {
+		return commandConfig{}, errors.New("talk requires --audio, --duration between 0 and 2m, and --delay between 0 and 10s")
+	}
 	return config, nil
 }
 
 func printUsage(output *os.File) {
-	fmt.Fprintln(output, "usage: netvue-bridge <test|run|serve> [flags]")
-	fmt.Fprintln(output, "use `netvue-bridge <test|run|serve> --help` for options")
+	fmt.Fprintln(output, "usage: netvue-bridge <test|run|serve|talk> [flags]")
+	fmt.Fprintln(output, "use `netvue-bridge <test|run|serve|talk> --help` for options")
 }
