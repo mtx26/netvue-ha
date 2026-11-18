@@ -153,3 +153,21 @@ Donner des bilans courts, précis et orientés résultat.
 Concevoir et développer la solution la plus simple qui répond correctement aux besoins du projet.
 
 **La qualité et la fiabilité sont prioritaires.**
+
+## Netvue Protocol Reference
+
+Before modifying camera discovery, authentication, LAN communication,
+video reception, audio reception, talkback, RTP/RTSP publication,
+WebRTC audio or camera session management:
+
+1. Read `docs/netvue-protocol.md`.
+2. Read the relevant sections of `docs/netvue-lan-client-spec.md`.
+3. Check existing tests and previous findings.
+4. Preserve verified protocol behavior.
+5. Distinguish documented facts from implementation assumptions.
+6. Update the documentation when new behavior is verified.
+
+Do not reinvent or modify the Netvue protocol without examining
+the existing reverse-engineering documentation.
+
+Prefer simple, maintainable implementations supported by evidence.

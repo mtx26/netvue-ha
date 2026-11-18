@@ -67,7 +67,7 @@ et CRC : ceux-ci sont émis à zéro, et leur sémantique n'est pas établie.
 
 | Étape | Message | Comportement établi |
 |---|---|---|
-| Découverte | UDP/36868, requête `Q=8`, `V=2`, `P=[]`; réponse `A=8`, `V=2`. | Le Go vérifie l'émetteur et la concordance de l'adresse annoncée avec la cible. Dans `P`, `P[2]` est l'hôte annoncé, `P[3]` le port TCP, `P[4]` une clé locale, et `P[5][0]` l'indicateur audio si présent. Le rôle des premiers éléments de `P` n'est pas établi ici. `C` peut manquer; s'il est présent, Go exige un entier nul. |
+| Découverte | UDP/36868, requête `Q=8`, `V=2`, `P=[]`; réponse `A=8`, `V=2`. | Le Go vérifie l'émetteur et la concordance de l'adresse annoncée avec la cible. Dans `P`, `P[2]` est l'hôte annoncé, `P[3]` le port TCP, `P[4]` une clé locale, et `P[5][0]` l'indicateur audio si présent. Le parseur Android nomme `P[0]` identifiant de l'appareil et `P[1]` version de firmware ; Go ne les utilise pas. `C` peut manquer; s'il est présent, Go exige un entier nul. |
 | Login LAN classique | TCP, commande `Q=1`, `V=1`; `P` contient clé locale, entier aléatoire 32 bits, nom d'utilisateur local, hôte et port annoncés. | L'entier est présent dans la requête Android; sa fonction côté caméra n'est pas connue. Le code Android utilise un login TCP sans chiffrement applicatif apparent. Go garde la clé en mémoire et ne la journalise pas. |
 | ACK login | `A=1`, `V=1` ou `V=2`, résultat `C`. | Les objets ACK Android peuvent garder une valeur « succès » par défaut si `C` manque; aucune validation explicite de `C` n'est visible dans le gestionnaire LAN étudié. Go exige un résultat entier explicite et ne poursuit qu'avec `C=0`. Il s'agit d'une validation stricte volontaire, pas d'une reproduction exacte de l'APK. |
 

@@ -17,7 +17,7 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | Protocole Netvue | Connexion et vidéo fiables |
+| 🧪 | Protocole Netvue | Connexion et vidéo fiables ; [guide de reconstruction LAN](../findings/phase44-specification-reconstruction-lan.md) |
 | 🧪 | Supervision | Reconnexion et fonctionnement continu |
 | 🧪 | Multi-caméra | Sessions indépendantes |
 | 🧪 | Home Assistant | Intégration complète |
@@ -35,8 +35,8 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Analyse APK audio | Analyse statique des trames et directions ; réception AAC confirmée sur la caméra 2, unité de `samplesize` inconnue |
 | 🧪 | Réception audio | AAC/ADTS 8 kHz mono décodé sur la caméra 2 ; PCM 16 bits non validé sur caméra |
 | 🧪 | RTSP audio/vidéo | H.264 et AAC décodés ensemble ; continuité d'un lecteur lors d'un changement de résolution réel confirmée, avertissement DTS restant à analyser en [phase 39](../findings/phase39-talkback.md) |
-| 🧪 | Audio bidirectionnel Go | Opus→AAC-LC/ADTS vers la session Netvue active, retour AAC caméra→Opus et fermeture/reprise après inactivité RTP implémentés ; tests média FFmpeg à exécuter, restitution réelle non prouvée ([phase 43](../findings/phase43-microphone-ha.md)) |
-| 🧪 | Microphone Home Assistant | Signalisation et transport WebRTC intégrés en opt-in ; `two_way_audio` reste désactivé jusqu'à confirmation acoustique ([phase 43](../findings/phase43-microphone-ha.md)) |
+| 🧪 | Audio bidirectionnel Go | Tests synthétiques réussis ; deux essais réels bornés ont transmis l'AAC et exposé les pistes H.264/AAC RTSP. Retour 700 Hz faible/intermittent, non attribuable avec certitude ; haut-parleur non confirmé ([phase 43](../findings/phase43-microphone-ha.md)) |
+| 🧪 | Microphone Home Assistant | Provider WebRTC opt-in, 54 tests HA et transport synthétique réussis ; usage navigateur→haut-parleur non validé, `two_way_audio` désactivé et bouton masqué ([phase 43](../findings/phase43-microphone-ha.md)) |
 
 ## 3. Enregistrement
 
@@ -63,7 +63,7 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | WebRTC | Provider HA opt-in, RTSP/TCP H.264/AAC, ICE UDP limité à l'IPv4 source et conversion audio intégrés ; test synthétique arrêt/reprise ajouté, validation média CI et accès réseau externe à confirmer |
+| 🧪 | WebRTC | Provider HA opt-in, RTSP/TCP H.264/AAC, ICE UDP limité à l'IPv4 source et conversion audio intégrés ; scénarios média synthétiques validés, usage réel dans le navigateur et accès réseau externe à confirmer |
 | ⬜ | Configuration HA | Simplifier les réglages |
 | 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |
 | ⬜ | Dashboard | Centraliser les informations |

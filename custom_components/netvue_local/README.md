@@ -58,9 +58,10 @@ transitoire.
 L'audio caméra AAC est transmis en Opus par le lecteur WebRTC. Le fournisseur
 HA est opt-in via les options de l'intégration. Le pont reçoit le microphone
 WebRTC en Opus, le convertit en AAC-LC/ADTS et l'envoie sur la session Netvue
-supervisée de la caméra ; après trois secondes sans paquets RTP, il ferme le
-talkback et le rouvre à la reprise du microphone. La vidéo et l'audio caméra
-restent sur cette même session.
+supervisée de la caméra ; après dix secondes sans paquets RTP, il ferme le
+talkback et le rouvre à la reprise du microphone. Ce délai limite les ouvertures
+répétées pendant les silences avec suppression de paquets. La vidéo et l'audio
+caméra restent sur cette même session.
 
 La capacité HA `two_way_audio` reste désactivée : les essais synthétiques ne
 prouvent pas la restitution par le haut-parleur Netvue. Aucun contrôle
