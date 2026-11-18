@@ -63,10 +63,12 @@ talkback et le rouvre à la reprise du microphone. Ce délai limite les ouvertur
 répétées pendant les silences avec suppression de paquets. La vidéo et l'audio
 caméra restent sur cette même session.
 
-La capacité HA `two_way_audio` reste désactivée : les essais synthétiques ne
-prouvent pas la restitution par le haut-parleur Netvue. Aucun contrôle
-« parler » n'est donc annoncé avant une validation acoustique réelle. FFmpeg
-est nécessaire au transcodage audio.
+La capacité HA `two_way_audio` reste désactivée par défaut : les essais
+synthétiques ne prouvent pas la restitution par le haut-parleur Netvue. Une
+option distincte « Contrôle microphone expérimental » peut l'exposer pour des
+essais explicitement demandés ; elle nécessite WebRTC et reste désactivée par
+défaut. Ce contrôle n'est pas une validation du talkback. FFmpeg est nécessaire
+au transcodage audio.
 
 La commande Go expérimentale `talk` lit un fichier AAC préencodé dans une
 session distincte et bornée ; elle ne fait pas partie du parcours HA et ne doit
@@ -77,7 +79,10 @@ pas être lancée en parallèle de la session supervisée.
 Le serveur Go et le fournisseur HA implémentent la signalisation et le trajet
 média. Le fournisseur reste **désactivé par défaut** : cochez
 « Signalisation WebRTC expérimentale » uniquement sur un pont compatible.
-Les options rechargent l'entrée et arrêtent/redémarrent la session caméra.
+Le contrôle microphone est séparément opt-in, réservé aux essais et désactivé
+par défaut ; sans cette option, les offres contenant une piste audio émise
+sont refusées avant d'ouvrir une session. Les options rechargent l'entrée et
+arrêtent/redémarrent la session caméra.
 Les essais d'intégration média nécessitent FFmpeg et une validation acoustique
 est encore requise. L'API est :
 
@@ -111,7 +116,9 @@ reçoit offre et candidates, envoie `WebRTCAnswer`, `WebRTCCandidate` ou
 avec un fournisseur ; une méthode WebRTC native remplaçant celle de `Camera`
 supprime ce repli. La sélection du premier fournisseur compatible n'assure
 pas une priorité stable entre fournisseurs. `two_way_audio` dépend également
-de WebRTC et de la fonctionnalité Labs ; il reste ici `False`. L'intégration
+de WebRTC et de la fonctionnalité Labs ; il reste `False` par défaut. L'option
+expérimentale distincte peut l'exposer uniquement pour les essais, sans
+confirmer la restitution physique. L'intégration
 officielle [go2rtc](https://github.com/home-assistant/core/blob/2026.11.2/homeassistant/components/go2rtc/__init__.py)
 utilise un WebSocket de signalisation ; le seul RTSP ne fournit pas le retour
 audio Netvue. Le choix du fournisseur HA se fait uniquement par URL : une
@@ -125,12 +132,12 @@ Le fournisseur ne peut pas définir de configuration ICE propre via l'API
 provider : HA fournit celle de l'entité et ses serveurs ICE globaux. Le pair
 Go annonce uniquement l'IPv4 source configurée et utilise UDP ; l'accès depuis
 un navigateur hors de ce LAN n'est pas couvert. `two_way_audio=False` reste
-volontaire : le microphone HA est masqué jusqu'à confirmation acoustique du
-haut-parleur. Les conversions et la signalisation sont testées
-synthétiquement, mais ne prouvent ni l'acceptation du talkback par la caméra ni
-la restitution audio réelle. Si le `DELETE` côté HA est interrompu, le pont a déjà installé
-un tombstone et poursuit la fermeture en arrière-plan ; le client peut répéter
-la suppression.
+le comportement par défaut : le microphone HA est masqué tant que l'option
+expérimentale d'essai n'est pas explicitement activée. Les conversions et la
+signalisation sont testées synthétiquement, mais ne prouvent ni l'acceptation
+du talkback par la caméra ni la restitution audio réelle. Si le `DELETE` côté
+HA est interrompu, le pont a déjà installé un tombstone et poursuit la fermeture
+en arrière-plan ; le client peut répéter la suppression.
 
 [MediaMTX](https://mediamtx.org/docs/read/webrtc) propose la lecture WHEP
 (H.264 et Opus/G.711, pas AAC WebRTC), mais la lecture n'établit pas à elle

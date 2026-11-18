@@ -34,9 +34,9 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 🧪 | Analyse APK audio | Analyse statique des trames et directions ; réception AAC confirmée sur la caméra 2, unité de `samplesize` inconnue |
 | 🧪 | Réception audio | AAC/ADTS 8 kHz mono décodé sur la caméra 2 ; PCM 16 bits non validé sur caméra |
-| 🧪 | RTSP audio/vidéo | H.264 et AAC décodés ensemble ; continuité d'un lecteur lors d'un changement de résolution réel confirmée, avertissement DTS restant à analyser en [phase 39](../findings/phase39-talkback.md) |
-| 🧪 | Audio bidirectionnel Go | Tests synthétiques réussis ; deux essais réels bornés ont transmis l'AAC et exposé les pistes H.264/AAC RTSP. Retour 700 Hz faible/intermittent, non attribuable avec certitude ; haut-parleur non confirmé ([phase 43](../findings/phase43-microphone-ha.md)) |
-| 🧪 | Microphone Home Assistant | Provider WebRTC opt-in, 54 tests HA et transport synthétique réussis ; usage navigateur→haut-parleur non validé, `two_way_audio` désactivé et bouton masqué ([phase 43](../findings/phase43-microphone-ha.md)) |
+| 🧪 | RTSP audio/vidéo | AAC-LC mono 8 kHz capturé sur la caméra ; pendant le talk, la publication a redémarré au changement de format audio et a attendu un IDR après changement H.264. Continuité A/V et avertissements DTS restent à confirmer ([phase 45](../findings/phase45-validation-reelle-talkback.md), [phase 39](../findings/phase39-talkback.md)) |
+| 🧪 | Audio bidirectionnel Go | Envoi Go direct d'une sinusoïde AAC-LC/ADTS 700 Hz, 0,5 s, -33,5 dBFS RMS ; pic spectral de retour à -53,7 dBFS, contre -62,3/-64,4 dBFS avant/après. Signal compatible avec un retour acoustique, mais haut-parleur et son audible non confirmés ([phase 45](../findings/phase45-validation-reelle-talkback.md)) |
+| 🧪 | Microphone Home Assistant | Provider WebRTC opt-in et transport synthétique validés ; microphone navigateur/téléphone→caméra non testé en réel. Contrôle expérimental désactivé par défaut ; `two_way_audio` et bouton restent masqués par défaut ([phase 43](../findings/phase43-microphone-ha.md), [phase 45](../findings/phase45-validation-reelle-talkback.md)) |
 
 ## 3. Enregistrement
 

@@ -16,7 +16,7 @@ Le test vidéo MediaMTX/FFmpeg est documenté dans le
 ## Home Assistant
 
 Dépendances Python dans [`tests/requirements-homeassistant.txt`](../tests/requirements-homeassistant.txt) :
-Home Assistant 2026.11.2 nécessite Python 3.13.2 ou ultérieur.
+Home Assistant 2026.11.2 nécessite Python 3.14.2 ou ultérieur.
 
 ```sh
 python -m pip install -r tests/requirements-homeassistant.txt

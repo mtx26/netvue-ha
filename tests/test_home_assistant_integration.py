@@ -234,7 +234,7 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         name = "netvue_192_168_10_3"
         self.assertEqual(result["data"], {
             "host": "192.168.10.3", "stream_url": f"rtsp://127.0.0.1:8554/{name}",
-            "stream_name": name, "webrtc_enabled": False,
+            "stream_name": name, "webrtc_enabled": False, "experimental_talkback": False,
         })
 
     async def test_options_preserve_requested_host_when_bridge_is_unavailable(self):
@@ -251,7 +251,8 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             result = await flow.async_step_init({"host": "192.168.10.3"})
         self.assertEqual(result["errors"]["base"], "bridge_unavailable")
         self.assertEqual(result["data_schema"]({}),
-                         {"host": "192.168.10.3", "webrtc_enabled": False})
+                         {"host": "192.168.10.3", "webrtc_enabled": False,
+                          "experimental_talkback": False})
 
     async def test_experimental_webrtc_option_is_persisted(self):
         entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
@@ -266,8 +267,28 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
                    new=unittest.mock.AsyncMock()):
             result = await flow.async_step_init({
                 "host": "192.168.10.2", "webrtc_enabled": True,
+                "experimental_talkback": True,
             })
         self.assertTrue(result["data"]["webrtc_enabled"])
+        self.assertTrue(result["data"]["experimental_talkback"])
+
+    async def test_experimental_talkback_requires_webrtc(self):
+        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
+                                "stream_name": "a",
+                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
+        hass = SimpleNamespace(config_entries=SimpleNamespace(
+            async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
+        flow = NetvueOptionsFlow()
+        flow.hass = hass
+        flow.handler = "1"
+        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
+                   new=unittest.mock.AsyncMock()) as stop:
+            result = await flow.async_step_init({
+                "host": "192.168.10.2", "webrtc_enabled": False,
+                "experimental_talkback": True,
+            })
+        self.assertEqual(result["errors"]["base"], "talkback_requires_webrtc")
+        stop.assert_not_awaited()
 
     async def test_setup_unload_and_camera(self):
         entry = SimpleNamespace(entry_id="1", title="Fake",
@@ -343,6 +364,19 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             provider.async_on_webrtc_candidate.assert_awaited_once_with("session", "candidate")
             camera.close_webrtc_session("session")
             provider.async_close_session.assert_called_once_with("session")
+
+        entry.options = {"webrtc_enabled": True, "experimental_talkback": True}
+        experimental_camera = NetvueCamera(entry, coordinator)
+        self.assertTrue(experimental_camera.camera_entity_capabilities.two_way_audio)
+        experimental_camera.hass = SimpleNamespace()
+        with patch("homeassistant.components.camera.entity.async_is_preview_feature_enabled",
+                   return_value=True):
+            with patch.object(
+                experimental_camera, "_async_get_supported_webrtc_provider",
+                new=unittest.mock.AsyncMock(return_value=provider),
+            ):
+                await experimental_camera.async_refresh_providers(write_state=False)
+            self.assertTrue(experimental_camera.camera_capabilities.two_way_audio)
 
     async def test_webrtc_provider_selection_and_signalling_preserve_ha_messages(self):
         entry = SimpleNamespace(

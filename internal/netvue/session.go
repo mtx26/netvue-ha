@@ -410,7 +410,6 @@ func receiveLiveWithTalkController(
 						talkDisabled = true
 						live.detachWithError(talkFailure("audio direction rejected or invalid", ErrTalkback))
 						liveAttached = false
-						disableAudio(talkFailure("audio direction rejected or invalid", ErrTalkback))
 					}
 				}
 				if !actionOK || action != 3 {

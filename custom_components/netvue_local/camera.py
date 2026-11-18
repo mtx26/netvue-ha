@@ -10,7 +10,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_HOST, CONF_STREAM_URL, CONF_WEBRTC_ENABLED, DOMAIN
+from .const import (
+    CONF_HOST, CONF_STREAM_URL, CONF_TALKBACK_EXPERIMENTAL, CONF_WEBRTC_ENABLED, DOMAIN,
+)
 from .coordinator import NetvueCoordinator
 from .webrtc import NetvueWebRTCProvider
 
@@ -25,8 +27,6 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
     _attr_has_entity_name = True
     _attr_name = None
     _attr_supported_features = CameraEntityFeature.STREAM
-    # Keep HA's microphone control hidden until speaker playback is verified.
-    _attr_camera_entity_capabilities = CameraEntityCapabilities(two_way_audio=False)
 
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         Camera.__init__(self)
@@ -40,6 +40,12 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
         self._entry = entry
         self._host = entry.options.get(CONF_HOST, entry.data.get(CONF_HOST))
         self._webrtc_enabled = entry.options.get(CONF_WEBRTC_ENABLED, False)
+        self._talkback_enabled = (
+            self._webrtc_enabled and entry.options.get(CONF_TALKBACK_EXPERIMENTAL, False)
+        )
+        self._attr_camera_entity_capabilities = CameraEntityCapabilities(
+            two_way_audio=self._talkback_enabled
+        )
         self._netvue_provider = None
         self._remove_provider = None
         self.stream_options[CONF_RTSP_TRANSPORT] = "tcp"
@@ -47,7 +53,10 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         if self._webrtc_enabled:
-            provider = NetvueWebRTCProvider(self.hass, self._entry, self, self._host, self._url)
+            provider = NetvueWebRTCProvider(
+                self.hass, self._entry, self, self._host, self._url,
+                allow_microphone=self._talkback_enabled,
+            )
             self._remove_provider = async_register_webrtc_provider(self.hass, provider)
             self._netvue_provider = provider
 

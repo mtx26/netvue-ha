@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,7 +98,11 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 	})
 	manager.source = "127.0.0.1"
 	sink := &testTalkSink{first: make(chan struct{}), closeEvents: make(chan struct{}, 4)}
-	manager.openAudio = func(context.Context, string) (talkSink, error) { return sink, nil }
+	var audioOpenCount atomic.Int32
+	manager.openAudio = func(context.Context, string) (talkSink, error) {
+		audioOpenCount.Add(1)
+		return sink, nil
+	}
 	manager.ffmpegPath = func() (string, error) { return ffmpeg, nil }
 	host := "192.168.10.20"
 	if _, _, err := manager.AddCamera(host, "test"); err != nil {
@@ -146,7 +151,7 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 	cameraAudioFirstTimestamp := make(chan uint32, 1)
 	browser.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
-			_ = track.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_ = track.SetReadDeadline(time.Now().Add(45 * time.Second))
 			count := 0
 			for {
 				packet, _, err := track.ReadRTP()
@@ -240,7 +245,30 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		if time.Now().After(deadline) {
-			t.Fatal("WebRTC did not connect")
+			p.mu.Lock()
+			eventSummary := make([]string, 0, len(p.events))
+			for _, event := range p.events {
+				eventSummary = append(eventSummary, fmt.Sprintf("%d:%s:%s", event.Seq, event.Type, event.Code))
+			}
+			p.mu.Unlock()
+			candidateMu.Lock()
+			candidateCount := len(candidates)
+			candidateMu.Unlock()
+			p.mu.Lock()
+			gatheringState := p.pc.ICEGatheringState()
+			localDescription := p.pc.LocalDescription()
+			serverCandidateCount := 0
+			if localDescription != nil {
+				for _, line := range strings.Split(localDescription.SDP, "\r\n") {
+					if strings.HasPrefix(line, "a=candidate:") {
+						serverCandidateCount++
+					}
+				}
+			}
+			p.mu.Unlock()
+			t.Fatalf("WebRTC did not connect: browser=%s ICE=%s browser_candidates=%d server_candidates=%d gathering=%s events=%v",
+				browser.ConnectionState(), browser.ICEConnectionState(),
+				candidateCount, serverCandidateCount, gatheringState, eventSummary)
 		}
 		pollCtx, pollCancel := context.WithTimeout(context.Background(), time.Second)
 		req, err := http.NewRequestWithContext(pollCtx, http.MethodGet,
@@ -293,14 +321,40 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 		}
 	}
 ready:
+	videoStop := make(chan struct{})
 	videoDone := make(chan struct{})
+	var videoStopOnce sync.Once
+	stopVideo := func() {
+		videoStopOnce.Do(func() { close(videoStop) })
+		<-videoDone
+	}
+	defer stopVideo()
+	videoWriteError := make(chan error, 1)
+	var videoSequence, videoTimestamp atomic.Uint32
 	videoStart := make(chan struct{})
 	go func() {
 		defer close(videoDone)
 		<-videoStart
-		for i := range 120 {
-			_ = handler.stream.WritePacketRTP(videoMedia, &rtp.Packet{Header: rtp.Header{Version: 2, PayloadType: 96, SequenceNumber: uint16(i), Timestamp: uint32(i * 1800), SSRC: 1, Marker: true}, Payload: []byte{0x65, 0x80}})
-			time.Sleep(20 * time.Millisecond)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-videoStop:
+				return
+			case <-ticker.C:
+				sequence := videoSequence.Add(1) - 1
+				timestamp := videoTimestamp.Add(1800) - 1800
+				if err := handler.stream.WritePacketRTP(videoMedia, &rtp.Packet{
+					Header: rtp.Header{
+						Version: 2, PayloadType: 96, SequenceNumber: uint16(sequence),
+						Timestamp: timestamp, SSRC: 1, Marker: true,
+					},
+					Payload: []byte{0x65, 0x80},
+				}); err != nil {
+					videoWriteError <- err
+					return
+				}
+			}
 		}
 	}()
 	aacFrames := syntheticAACAccessUnits(t, ffmpeg, 2)
@@ -357,15 +411,6 @@ ready:
 	if err := <-audioPublished; err != nil {
 		t.Fatalf("publish synthetic RTSP AAC: %v", err)
 	}
-	<-videoDone
-	select {
-	case count := <-videoPacketsReceived:
-		if count < 90 {
-			t.Fatalf("video stopped during audio: received %d RTP packets", count)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no WebRTC video packets during camera audio")
-	}
 	select {
 	case videoTimestamp := <-videoFirstTimestamp:
 		select {
@@ -383,7 +428,38 @@ ready:
 	}
 	select {
 	case <-sink.closeEvents:
+		t.Fatal("talkback closed during a 5-second packet-suppressed silence")
 	case <-time.After(5 * time.Second):
+	}
+	sink.mu.Lock()
+	framesBeforeSpeech := len(sink.frames)
+	sink.mu.Unlock()
+	for i := 0; i < 40; i++ {
+		if err := audio.WriteSample(media.Sample{
+			Data: audioPackets[i%len(audioPackets)], Duration: 20 * time.Millisecond,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	speechDeadline := time.Now().Add(5 * time.Second)
+	for {
+		sink.mu.Lock()
+		received := len(sink.frames) > framesBeforeSpeech
+		sink.mu.Unlock()
+		if received {
+			break
+		}
+		if time.Now().After(speechDeadline) {
+			t.Fatal("talkback did not accept audio after packet-suppressed silence")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if count := audioOpenCount.Load(); count != 1 {
+		t.Fatalf("talkback reopened during a short silence: open count %d", count)
+	}
+	select {
+	case <-sink.closeEvents:
+	case <-time.After(webRTCAudioIdleTimeout + 5*time.Second):
 		t.Fatal("microphone idle did not release the talkback sink")
 	}
 	sink.mu.Lock()
@@ -401,16 +477,35 @@ ready:
 		sink.mu.Lock()
 		resumed := len(sink.frames) > framesBeforeResume
 		sink.mu.Unlock()
-		if resumed {
+		if resumed && audioOpenCount.Load() == 2 {
 			break
 		}
 		if time.Now().After(resumeDeadline) {
-			t.Fatal("talkback did not resume after microphone audio restarted")
+			sink.mu.Lock()
+			frameCount := len(sink.frames)
+			sink.mu.Unlock()
+			p.mu.Lock()
+			eventSummary := make([]string, 0, len(p.events))
+			for _, event := range p.events {
+				eventSummary = append(eventSummary, fmt.Sprintf("%d:%s:%s", event.Seq, event.Type, event.Code))
+			}
+			p.mu.Unlock()
+			t.Fatalf("talkback did not resume: opens=%d frames=%d peer_closed=%t events=%v",
+				audioOpenCount.Load(), frameCount, p.ctx.Err() != nil, eventSummary)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	stopVideo()
+	select {
+	case err := <-videoWriteError:
+		t.Fatalf("publish synthetic video during talkback: %v", err)
+	default:
+	}
 	if err := handler.stream.WritePacketRTP(videoMedia, &rtp.Packet{
-		Header:  rtp.Header{Version: 2, PayloadType: 96, SequenceNumber: 120, Timestamp: 216000, SSRC: 1, Marker: true},
+		Header: rtp.Header{
+			Version: 2, PayloadType: 96, SequenceNumber: uint16(videoSequence.Load()),
+			Timestamp: videoTimestamp.Load(), SSRC: 1, Marker: true,
+		},
 		Payload: []byte{0x67, 0x64, 0x00, 0x1f},
 	}); err != nil {
 		t.Fatal(err)
@@ -428,6 +523,14 @@ ready:
 	p.mu.Unlock()
 	if !foundFormatError {
 		t.Fatal("SPS change was not reported")
+	}
+	select {
+	case count := <-videoPacketsReceived:
+		if count < 400 {
+			t.Fatalf("video did not continue through talkback and silence; received %d RTP packets", count)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WebRTC video track did not close with its session")
 	}
 	response = requestWebRTC(t, api, http.MethodDelete, path, nil)
 	if response.Code != http.StatusNoContent {

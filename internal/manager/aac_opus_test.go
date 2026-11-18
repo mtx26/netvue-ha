@@ -11,6 +11,7 @@ import (
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	mediopus "github.com/bluenviron/mediacommon/v2/pkg/codecs/opus"
 	"github.com/pion/opus"
 	"github.com/pion/rtp"
 )
@@ -75,9 +76,16 @@ func TestAACToOpusRTPWithFFmpeg(t *testing.T) {
 	frames := syntheticAACAccessUnits(t, ffmpeg, 1)
 	source := make(chan aacRTPFrame, len(frames))
 	const firstTimestamp = 123456
+	audioFormat := &format.MPEG4Audio{Config: &mpeg4audio.AudioSpecificConfig{
+		Type: mpeg4audio.ObjectTypeAACLC, SampleRate: 8000, ChannelConfig: 1,
+	}}
 	for i, frame := range frames {
+		adts, err := aacAccessUnitToADTS(audioFormat, frame)
+		if err != nil {
+			t.Fatal(err)
+		}
 		source <- aacRTPFrame{
-			data: frame, timestamp: firstTimestamp + uint32(i*1024*48000/8000),
+			data: adts, timestamp: firstTimestamp + uint32(i*1024*48000/8000),
 		}
 	}
 	close(source)
@@ -96,21 +104,29 @@ func TestAACToOpusRTPWithFFmpeg(t *testing.T) {
 	}
 	samples := make([]int16, 5760*2)
 	packetCount, audible := 0, false
-	var lastTimestamp uint32
+	var lastTimestamp, lastDuration uint32
 	for packet := range track.packets {
 		if packet.PayloadType != 111 || len(packet.Payload) == 0 {
 			t.Fatalf("invalid Opus RTP packet: PT=%d size=%d", packet.PayloadType, len(packet.Payload))
 		}
-		if packetCount > 0 && int32(packet.Timestamp-lastTimestamp) <= 0 {
-			t.Fatalf("Opus RTP timestamp did not advance: %d after %d", packet.Timestamp, lastTimestamp)
+		if packetCount > 0 && packet.Timestamp != lastTimestamp+lastDuration {
+			t.Fatalf("Opus RTP timestamp = %d, want contiguous timestamp %d", packet.Timestamp, lastTimestamp+lastDuration)
 		}
 		if packetCount == 0 && packet.Timestamp != firstTimestamp {
 			t.Fatalf("first Opus timestamp = %d, want source timestamp %d", packet.Timestamp, firstTimestamp)
 		}
+		duration := mediopus.PacketDuration2(packet.Payload)
+		if duration <= 0 || duration > 5760 {
+			t.Fatalf("invalid Opus RTP packet duration: %d", duration)
+		}
 		lastTimestamp = packet.Timestamp
+		lastDuration = uint32(duration)
 		n, err := decoder.DecodeToInt16(packet.Payload, samples)
 		if err != nil {
 			t.Fatalf("decode generated Opus packet: %v", err)
+		}
+		if int64(n) != duration {
+			t.Fatalf("decoded sample duration=%d, RTP packet duration=%d", n, duration)
 		}
 		for _, sample := range samples[:n*2] {
 			if sample != 0 {

@@ -5,6 +5,8 @@
 - Le provider WebRTC HA reste opt-in. `two_way_audio` reste désactivé tant
   qu'une restitution réelle n'est pas confirmée ; le contrôle microphone n'est
   donc pas affiché dans HA.
+- L'option distincte « Contrôle microphone expérimental » est désactivée par
+  défaut. Sans opt-in, les offres SDP demandant l'envoi audio sont refusées.
 - Le pont reçoit l'Opus WebRTC, le décode en PCM puis l'encode en AAC-LC/ADTS
   sur la session Netvue supervisée. Le retour audio AAC caméra est converti en
   Opus. Le refus du talkback n'interrompt plus l'audio caméra ni la vidéo.
@@ -27,6 +29,8 @@
 - Home Assistant 2026.11.2 : les 54 tests Python de `tests/` réussissent dans
   l'image officielle isolée (`--network none`), avec MediaMTX pour les tests de
   configuration/runtime.
+- La suite HA/Portainer a ensuite été relancée dans la même image isolée :
+  58 tests réussis.
 - Rendu `docker stack config` réussi sans déploiement. Le workflow GitHub
   distant n'a pas été déclenché ; ses validations locales équivalentes ont été
   exécutées.
@@ -66,3 +70,7 @@
   microphone du navigateur ni l'interface HA. `two_way_audio` reste désactivé
   et le bouton microphone masqué ; le trajet HA→WebRTC→caméra et la restitution
   réelle restent non validés.
+- Complément Phase 45 : un talk direct Go de 25 s a envoyé une tonalité
+  AAC-LC/ADTS 700 Hz faible. Le retour caméra présente un pic spectral supérieur
+  aux contrôles sans émission, mais cette corrélation ne prouve pas une
+  restitution par le haut-parleur ; voir le [rapport Phase 45](./phase45-validation-reelle-talkback.md).

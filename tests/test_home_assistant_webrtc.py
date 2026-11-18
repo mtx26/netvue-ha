@@ -12,7 +12,7 @@ from homeassistant.components.camera.webrtc import DATA_WEBRTC_PROVIDERS
 from homeassistant.exceptions import HomeAssistantError
 from webrtc_models import RTCIceCandidateInit
 
-from custom_components.netvue_local.webrtc import NetvueWebRTCProvider
+from custom_components.netvue_local.webrtc import NetvueWebRTCProvider, _offer_sends_audio
 from custom_components.netvue_local.camera import NetvueCamera
 
 
@@ -95,6 +95,46 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(3):
             while not condition():
                 await asyncio.sleep(0.01)
+
+    def test_offer_audio_direction_identifies_microphone_track(self):
+        base = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+        self.assertTrue(_offer_sends_audio(base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendrecv\r\n"))
+        self.assertTrue(_offer_sends_audio(base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendonly\r\n"))
+        self.assertFalse(_offer_sends_audio(base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=recvonly\r\n"))
+        self.assertFalse(_offer_sends_audio(
+            "v=0\r\na=recvonly\r\n" + base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        ))
+        self.assertFalse(_offer_sends_audio(
+            base + "m=audio 0 UDP/TLS/RTP/SAVPF 111\r\na=sendrecv\r\n"
+        ))
+
+    async def test_microphone_offer_is_rejected_when_experimental_option_is_off(self):
+        offer = (
+            "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendrecv\r\n"
+        )
+        with self.assertRaisesRegex(HomeAssistantError, "microphone control is disabled"):
+            await self.provider.async_handle_async_webrtc_offer(
+                self.camera, offer, "microphone-disabled", lambda _: None,
+            )
+        self.assertEqual(self.requests, [])
+
+    async def test_microphone_offer_is_forwarded_when_experimental_option_is_on(self):
+        provider = NetvueWebRTCProvider(
+            SimpleNamespace(), SimpleNamespace(async_create_background_task=lambda hass, coro,
+                                               name, eager_start: asyncio.create_task(coro)),
+            self.camera, "192.168.10.2", "rtsp://127.0.0.1:8554/a",
+            allow_microphone=True,
+        )
+        try:
+            await provider.async_handle_async_webrtc_offer(
+                self.camera,
+                "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendonly\r\n",
+                "microphone-enabled", lambda _: None,
+            )
+            await self.wait_for(lambda: any(r[0] == "PUT" for r in self.requests))
+        finally:
+            await provider.async_shutdown()
 
     async def test_offer_candidates_events_and_close(self):
         received = []
@@ -251,6 +291,14 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(camera.camera_entity_capabilities.two_way_audio)
             await camera.async_will_remove_from_hass()
             remove.assert_called_once()
+
+            entry.options = {"webrtc_enabled": True, "experimental_talkback": True}
+            camera = NetvueCamera(entry, coordinator)
+            camera.hass = SimpleNamespace()
+            await camera.async_added_to_hass()
+            self.assertTrue(camera.camera_entity_capabilities.two_way_audio)
+            self.assertTrue(register.call_args.args[1]._allow_microphone)
+            await camera.async_will_remove_from_hass()
 
     async def test_real_ha_registry_selects_and_removes_provider(self):
         entry = SimpleNamespace(

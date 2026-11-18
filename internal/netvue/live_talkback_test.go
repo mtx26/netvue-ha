@@ -30,6 +30,19 @@ func assertDirection(t *testing.T, packet Packet, direction int) {
 	}
 }
 
+type notifyingAudioTestPublisher struct {
+	audioTestPublisher
+	audioReceived chan audioFrame
+}
+
+func (publisher *notifyingAudioTestPublisher) PushAudio(frame audioFrame, parameters *audioParameters) error {
+	if err := publisher.audioTestPublisher.PushAudio(frame, parameters); err != nil {
+		return err
+	}
+	publisher.audioReceived <- frame
+	return nil
+}
+
 func TestLiveTalkOnReceivingSession(t *testing.T) {
 	client, server := testPipe(t)
 	controller := NewLiveTalkback()
@@ -171,14 +184,15 @@ func TestLiveTalkDirectionRejectionDoesNotStopVideo(t *testing.T) {
 	}
 }
 
-func TestLiveTalkExplicitRejectionSignalsStreamAndPreservesVideo(t *testing.T) {
+func TestLiveTalkExplicitRejectionSignalsStreamAndPreservesCameraAudioAndVideo(t *testing.T) {
 	client, server := testPipe(t)
 	controller := NewLiveTalkback()
+	publisher := &notifyingAudioTestPublisher{audioReceived: make(chan audioFrame, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- receiveLiveWithTalkController(ctx, client, &audioTestPublisher{}, time.Second, time.Second, true, nil, controller)
+		done <- receiveLiveWithTalkController(ctx, client, publisher, time.Second, time.Second, true, nil, controller)
 	}()
 	ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 	if err := writeFull(server, ack); err != nil {
@@ -210,6 +224,18 @@ func TestLiveTalkExplicitRejectionSignalsStreamAndPreservesVideo(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("explicit rejection not propagated")
+	}
+	audio := testADTS(11, 1, 7)
+	if err := writeFull(server, audioTestPacket(false, 40, audio)); err != nil {
+		t.Fatalf("camera audio after talkback rejection: %v", err)
+	}
+	select {
+	case frame := <-publisher.audioReceived:
+		if frame.timestamp != 40 || !bytes.Equal(frame.payload, audio) {
+			t.Fatalf("camera audio after talkback rejection = %+v, want timestamp 40 and original AAC payload", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("camera receive audio stopped after talkback rejection")
 	}
 	if err := writeFull(server, mediaPacket(33, []byte{2})); err != nil {
 		t.Fatalf("video stopped on talkback rejection: %v", err)

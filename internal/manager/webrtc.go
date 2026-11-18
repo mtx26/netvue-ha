@@ -26,7 +26,7 @@ const (
 	webRTCMaxEvents        = 128
 	webRTCLifetime         = 10 * time.Minute
 	webRTCEstablishTimeout = 15 * time.Second
-	webRTCAudioIdleTimeout = 3 * time.Second
+	webRTCAudioIdleTimeout = 10 * time.Second
 )
 
 var errAudioIdle = errors.New("microphone audio idle")
@@ -159,7 +159,7 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	protocol := gortsplib.ProtocolTCP
 	client := &gortsplib.Client{
 		Scheme: u.Scheme, Host: u.Host, Protocol: &protocol,
-		ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second,
+		ReadTimeout: 10 * time.Second, WriteTimeout: 2 * time.Second,
 	}
 	if err := client.Start(); err != nil {
 		return fmt.Errorf("start RTSP reader: %w", err)
@@ -221,6 +221,7 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: udpConn})
 	settings := webrtc.SettingEngine{}
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	settings.SetIncludeLoopbackCandidate(sourceIP.IsLoopback())
 	settings.SetIPFilter(func(ip net.IP) bool { return ip.Equal(sourceIP) })
 	settings.SetICEUDPMux(mux)
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))

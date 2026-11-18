@@ -26,6 +26,40 @@ _LOGGER = logging.getLogger(__name__)
 _EVENT_TIMEOUT = 35
 _MAX_EVENTS_SIZE = 256 * 1024
 _MAX_EVENTS = 128
+_AUDIO_DIRECTIONS = {"sendrecv", "sendonly", "recvonly", "inactive"}
+
+
+def _offer_sends_audio(sdp: str) -> bool:
+    session_direction = "sendrecv"
+    media_type = ""
+    media_active = False
+    media_direction = "sendrecv"
+
+    def sends_audio() -> bool:
+        return (
+            media_type == "audio"
+            and media_active
+            and media_direction in {"sendrecv", "sendonly"}
+        )
+
+    in_media_section = False
+    for raw_line in sdp.splitlines():
+        line = raw_line.strip()
+        if line.startswith("m="):
+            if sends_audio():
+                return True
+            fields = line[2:].split()
+            in_media_section = True
+            media_type = fields[0].lower() if fields else ""
+            media_active = len(fields) > 1 and fields[1].split("/", 1)[0] != "0"
+            media_direction = session_direction
+        elif line.startswith("a=") and line[2:] in _AUDIO_DIRECTIONS:
+            if in_media_section:
+                media_direction = line[2:]
+            else:
+                session_direction = line[2:]
+
+    return sends_audio()
 
 
 @dataclass
@@ -43,12 +77,14 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
 
     def __init__(
         self, hass: HomeAssistant, entry: ConfigEntry, camera: Camera, host: str, url: str,
+        *, allow_microphone: bool = False,
     ) -> None:
         self._hass = hass
         self._entry = entry
         self._camera = camera
         self._host = host
         self._url = url
+        self._allow_microphone = allow_microphone
         self._sessions: dict[str, _Session] = {}
         self._stopping = False
 
@@ -100,6 +136,8 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
         if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id)
                 or not offer_sdp or len(offer_sdp.encode("utf-8")) > 128 * 1024):
             raise HomeAssistantError("Invalid WebRTC offer or session identifier")
+        if not self._allow_microphone and _offer_sends_audio(offer_sdp):
+            raise HomeAssistantError("Experimental microphone control is disabled")
         if self._sessions:
             raise HomeAssistantError("WebRTC camera already has a session")
         state = self._sessions[session_id] = _Session(asyncio.Event(), asyncio.Lock())

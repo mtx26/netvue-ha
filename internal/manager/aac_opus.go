@@ -10,6 +10,7 @@ import (
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	mediopus "github.com/bluenviron/mediacommon/v2/pkg/codecs/opus"
 	"github.com/pion/rtp"
 )
 
@@ -114,6 +115,9 @@ func transcodeAACToOpusRTP(ctx context.Context, ffmpeg string, frames <-chan aac
 		timestampOffset    uint32
 		timestampOffsetSet bool
 		receivedRTP        bool
+		lastTimestamp      uint32
+		lastDuration       uint32
+		haveLastPacket     bool
 	)
 	cleanup := func() {
 		cancel()
@@ -192,6 +196,20 @@ func transcodeAACToOpusRTP(ctx context.Context, ffmpeg string, frames <-chan aac
 			}
 		}
 		packet.Timestamp += timestampOffset
+		duration := mediopus.PacketDuration2(packet.Payload)
+		if duration <= 0 || duration > 5760 {
+			cleanup()
+			return errors.New("Opus encoder produced an invalid RTP packet duration")
+		}
+		if haveLastPacket {
+			nextTimestamp := lastTimestamp + lastDuration
+			if int32(packet.Timestamp-nextTimestamp) < 0 {
+				packet.Timestamp = nextTimestamp
+			}
+		}
+		lastTimestamp = packet.Timestamp
+		lastDuration = uint32(duration)
+		haveLastPacket = true
 		if err := track.WriteRTP(&packet); err != nil {
 			cleanup()
 			return fmt.Errorf("write WebRTC audio: %w", err)
