@@ -21,12 +21,14 @@ test silencieusement ignoré, endurance séparée. Voir [testing.md](../docs/tes
 ## Tests exécutés (Windows, local)
 - `go build`, `go vet` : OK. `go test -race -count=1 ./...` avec FFmpeg 9.0.2 et MediaMTX 1.21.4 réels : tous OK (~47 s). Sans ces outils : OK, tests dépendants ignorés.
 - Suivi qualité : `go build ./...`, `go vet ./...`, `go test ./...` et `go test -race ./...` : OK ; deux tests sensibles au temps répétés 10 fois : OK.
+- Vérification du correctif après le run GitHub : tests MediaMTX audio/vidéo et simulateur/reconnexion/résolution passés ensemble (30 s) ; scénario simulateur seul passé aussi sous `-race` (28 s). `go vet ./...` et `go build ./...` passent.
 - HA : 75/75 (Python 3.14.10, venv hors dépôt), ~40 s.
 - `actionlint` sur les deux workflows : OK.
 - Mutations (défaut introduit → échec constaté → restauré) : authentification sans résultat, en-tête ADTS, `cancel()` du manager, erreur fatale de supervision (non détectée au départ → test ajouté), absence de reconnexion, AAC talkback tronqué, RTSP indisponible, déchargement sans suppression de session, micro toujours autorisé.
 
 ## Limites
 - Workflows jamais exécutés sur GitHub : temps de CI et téléchargements non mesurés ; premier run à confirmer.
+- Une tentative récente de `go test ./...` n'est pas verte : la variable locale `NETVUE_TEST_FFPROBE` pointait par erreur vers FFmpeg, et les tests `tests/e2e` ont échoué sur l'indisponibilité de l'encodeur audio. La suite complète reste à revalider dans l'environnement Linux de CI ; les tests RTSP ciblés avec la configuration corrigée passent.
 - `ha_go_e2e_synthetic.py` (Docker) non exécuté avec le nouveau simulateur ; absence de Docker local.
 - Mutation de suppression du pacing talkback non détectée lors du premier essai ; l'assertion de cadence a depuis été rendue plus robuste, mais la mutation n'a pas été rejouée. L'isolation multi-caméra n'a pas été mutée.
 - Un échec `-race` unique et non reproduit a été signalé pendant les essais précédents ; la suite complète sous race passe dans le suivi, sans validation prolongée.
