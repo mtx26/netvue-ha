@@ -115,6 +115,7 @@ jobs:
             docker run --rm --network none \
               --mount "type=bind,source=$GITHUB_WORKSPACE/bin,target=/ci,readonly" \
               --env NETVUE_REQUIRE_INTEGRATION=1 \
+              --env NETVUE_TEST_GO_BRIDGE=/ci/netvue-bridge \
               --env NETVUE_TEST_MEDIAMTX=/ci/mediamtx \
               --env NETVUE_TEST_FFMPEG=/usr/bin/ffmpeg \
               --env NETVUE_TEST_FFMPEG_FULL=/usr/bin/ffmpeg \

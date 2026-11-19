@@ -23,6 +23,11 @@ absents. Variables : `NETVUE_TEST_FFMPEG`, `NETVUE_TEST_FFPROBE`,
 `NETVUE_TEST_MEDIAMTX`. Avec `NETVUE_REQUIRE_INTEGRATION=1`, un outil manquant
 devient un échec : c'est le mode de la CI.
 
+Les tests `tests/e2e` compilent la passerelle une seule fois en local.
+`NETVUE_TEST_GO_BRIDGE` permet de fournir un exécutable déjà construit :
+la CI utilise `/ci/netvue-bridge`, sans installer Go dans le conteneur HA.
+Un chemin explicitement configuré mais invalide fait échouer le test.
+
 Fuzzing natif (toutes les cibles `Fuzz*`, durée par cible) :
 
 ```sh

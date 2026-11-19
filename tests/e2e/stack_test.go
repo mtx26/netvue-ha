@@ -37,6 +37,13 @@ var (
 
 func bridgeBinary(t *testing.T) string {
 	t.Helper()
+	if path := os.Getenv("NETVUE_TEST_GO_BRIDGE"); path != "" {
+		binary, err := exec.LookPath(path)
+		if err != nil {
+			t.Fatalf("NETVUE_TEST_GO_BRIDGE: %v", err)
+		}
+		return binary
+	}
 	buildOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "netvue-e2e-")
 		if err != nil {
@@ -57,6 +64,18 @@ func bridgeBinary(t *testing.T) string {
 		t.Fatalf("build netvue-bridge: %v", buildErr)
 	}
 	return buildPath
+}
+
+func TestBridgeBinaryUsesPrebuiltWithoutGo(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NETVUE_TEST_GO_BRIDGE", binary)
+	t.Setenv("PATH", t.TempDir())
+	if got := bridgeBinary(t); got != binary {
+		t.Fatalf("bridge binary = %q, want prebuilt %q", got, binary)
+	}
 }
 
 // Stack is MediaMTX plus one netvue-bridge process, with the control API.
