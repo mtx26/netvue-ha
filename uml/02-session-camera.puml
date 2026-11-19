@@ -1,0 +1,99 @@
+@startuml
+title Session caméra — validations et publication
+autonumber
+
+actor "CLI ou Manager" as Caller
+participant "runSessionWithLiveTalk\ninternal/netvue/session.go" as Session
+participant "Découverte UDP\ninternal/netvue/discovery.go" as Discovery
+participant "Caméra Netvue" as Camera
+participant "Protocole / LIVE\nprotocol.go, authentication.go" as Protocol
+participant "Récepteur LIVE\nsession.go" as Receiver
+participant "videoPublisher\nmedia.go" as Publisher
+participant "MediaMTX" as MTX
+participant "Superviseur\nsupervisor.go" as Supervisor
+
+Caller -> Session : démarrer session
+Session -> Session : valider durée
+Session -> Session : valider URL RTSP loopback,\nIPv4 LAN source/caméra et adresses distinctes
+Session -> MTX : préflight TCP de l'écouteur RTSP
+alt paramètre invalide ou RTSP indisponible
+  Session --> Caller : erreur avec étape
+else préflight réussi
+  Session -> Discovery : envoyer requête UDP ciblée
+  Discovery -> Camera : découverte
+  Camera --> Discovery : réponse UDP
+  Discovery -> Discovery : vérifier hôte émetteur,\nen-tête, type, JSON,\nendpoint, port et clé non vide
+  alt réponse non valide / délai expiré
+    Discovery --> Session : erreur discovery
+    Session --> Caller : erreur avec étape
+  else caméra compatible
+    Session -> Camera : connexion TCP à l'endpoint découvert
+    Session -> Protocol : encoder et envoyer login
+    Protocol -> Camera : commande login
+    Camera --> Protocol : ACK A=1, V=1/2, C explicite
+    Protocol -> Protocol : exiger C=0
+    alt authentification refusée ou réponse invalide
+      Protocol --> Session : erreur fatale d'authentification/protocole
+      Session --> Caller : erreur avec étape
+    else authentification réussie
+      Session -> Protocol : demander les canaux LIVE vidéo\net audio si annoncé
+      Protocol -> Camera : commande LIVE
+      Camera --> Receiver : ACK LIVE et médias multiplexés
+      Receiver -> Receiver : vérifier ACK A=3, version, résultat\net ordre ACK avant média
+      alt LIVE A/V refusé au premier essai
+        Receiver -> Camera : un seul nouvel essai vidéo seule
+      end
+      loop jusqu'à annulation, erreur ou fin bornée
+        Camera --> Receiver : commande ou paquet média
+        alt commande LIVE
+          Receiver -> Receiver : valider les paramètres audio\net appliquer les délais de démarrage/silence
+        else audio sélectionné
+          Receiver -> Receiver : vérifier type, taille et format\nAAC/ADTS ou PCM
+          alt trame audio invalide / format non pris en charge
+            Receiver -> Receiver : désactiver l'audio,\ncontinuer la vidéo
+          else audio valide
+            Receiver -> Publisher : PushAudio
+          end
+        else vidéo
+          Receiver -> Receiver : vérifier en-tête média,\nframe H.264 et timestamp
+          Receiver -> Publisher : Push(access unit)
+          Publisher -> Publisher : vérifier taille, Annex B,\nNAL, SPS/PPS, dimensions et conflits
+          alt SPS/PPS/IDR de démarrage pas encore réunis
+            Publisher --> Receiver : attendre, échéance de démarrage bornée
+          else trame prête
+            Publisher -> MTX : ANNOUNCE puis SETUP puis RECORD\nau premier IDR avec SPS/PPS
+            MTX --> Publisher : accepter ou refuser la publication
+            alt publication acceptée
+              Publisher -> MTX : paquets RTP H.264\n(et audio si sélectionné)
+              MTX --> Publisher : publication active
+              opt changement SPS/PPS
+                Publisher -> Publisher : attendre l'IDR suivant\navec les paramètres courants
+              end
+              opt changement du format audio
+                Publisher -> MTX : fermer puis recréer la publication
+              end
+            else erreur RTSP
+              Publisher --> Session : erreur classée fatale ou récupérable
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+Session -> Session : fermer la connexion caméra\net le publisher à la sortie
+Session --> Caller : résultat de la session
+
+opt commande run ou session ajoutée dans serve
+  Caller -> Supervisor : superviser les erreurs de session
+  alt erreur transitoire
+    Supervisor -> Supervisor : backoff 2, 4, 8, 16 puis 30 s max\n(reset après 5 min stables)
+    Supervisor -> Session : nouvelle session
+  else protocole, authentification ou média fatal
+    Supervisor --> Caller : arrêter ; reprise explicite nécessaire
+  else annulation
+    Supervisor --> Caller : arrêt propre
+  end
+end
+@enduml

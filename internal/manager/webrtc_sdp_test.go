@@ -1,9 +1,37 @@
 package manager
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
+
+func TestWebRTCSelectVideoForChromiumOffer(t *testing.T) {
+	offer := testAudioSDP("sendrecv") +
+		"m=video 9 UDP/TLS/RTP/SAVPF 109 117\r\n" +
+		"a=recvonly\r\n" +
+		"a=rtpmap:109 H264/90000\r\n" +
+		"a=fmtp:109 packetization-mode=1;profile-level-id=42e01f\r\n" +
+		"a=rtpmap:117 H264/90000\r\n" +
+		"a=fmtp:117 packetization-mode=1;profile-level-id=4d001f\r\n"
+	cameraSPS := []byte{0x67, 0x4d, 0x00, 0x29}
+	got, transcode, err := selectWebRTCVideo(offer, cameraSPS, true)
+	if err != nil || !transcode || !bytes.Equal(got, []byte{0x67, 0x42, 0xe0, 0x1f}) {
+		t.Fatalf("main 4.1 -> Chromium: profile %x, transcode=%t, err=%v", got, transcode, err)
+	}
+	got, transcode, err = selectWebRTCVideo(strings.Replace(offer, "4d001f", "4d0029", 1), cameraSPS, true)
+	if err != nil || transcode || !bytes.Equal(got, cameraSPS) {
+		t.Fatalf("main 4.1 -> main 4.1: profile %x, transcode=%t, err=%v", got, transcode, err)
+	}
+	for _, invalid := range []string{
+		strings.ReplaceAll(offer, "packetization-mode=1", "packetization-mode=0"),
+		strings.Replace(offer, "opus/48000/2", "PCMU/8000", 1),
+	} {
+		if _, _, err := selectWebRTCVideo(invalid, cameraSPS, true); err == nil {
+			t.Fatal("accepted an offer without compatible H.264 or microphone codec")
+		}
+	}
+}
 
 func TestWebRTCOfferAudioDirections(t *testing.T) {
 	tests := []struct {

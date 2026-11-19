@@ -1,0 +1,67 @@
+@startuml
+title Pont Netvue — composants et flux
+left to right direction
+skinparam componentStyle rectangle
+
+actor "Utilisateur" as User
+actor "Navigateur / lecteur" as Viewer
+
+package "Home Assistant\ncustom_components/netvue_local" as HA {
+  component "Config flow\net options" as Config
+  component "Client API\nbridge_api.py" as HAAPI
+  component "Coordinator\net entités" as Coordinator
+  component "Provider WebRTC\nwebrtc.py" as HAWebRTC
+}
+
+package "Pont Go\ncmd/netvue-bridge" as Bridge {
+  component "Commandes\n test / run / serve / talk" as CLI
+  component "API HTTP locale\n127.0.0.1:8765" as API
+  component "Manager\nsessions par caméra" as Manager
+  component "Client Netvue\ninternal/netvue" as Netvue
+  component "Publication RTSP\nH.264 / audio" as Publisher
+  component "Peer WebRTC\nsignalisation + média" as Peer
+}
+
+component "Caméra Netvue\nLAN" as Camera
+database "MediaMTX\n127.0.0.1:8554" as MTX
+
+User --> Config : ajouter / configurer caméra
+Config --> HAAPI : découverte
+Coordinator --> HAAPI : réconcilier / état / start
+HAAPI --> API : HTTP JSON loopback
+API --> Manager : valider et piloter
+CLI --> Netvue : test / run / talk
+Manager --> Netvue : session supervisée
+Netvue <--> Camera : UDP découverte,\nTCP protocole LIVE
+Netvue --> Publisher : trames H.264 / AAC / PCM
+Publisher --> MTX : ANNOUNCE / SETUP / RECORD,\nRTP sur RTSP/TCP
+Coordinator --> MTX : sonder disponibilité RTSP
+Viewer --> MTX : lire le flux RTSP
+Coordinator --> HA : entités caméra,\nétat et diagnostics
+
+HAWebRTC --> API : offre, candidats,\névénements, fermeture
+API --> Peer : créer / suivre un pair
+Peer --> MTX : lire le flux RTSP publié
+Peer --> Viewer : média WebRTC direct
+Viewer --> Peer : microphone WebRTC\nsi activé explicitement
+Peer --> Manager : ouvrir / fermer talkback
+Manager --> Netvue : talkback sur la session\ncaméra déjà active
+
+note bottom of Camera
+Seul le client Go parle le protocole de la caméra.
+La découverte seule n'ouvre pas de session vidéo.
+end note
+
+note bottom of Manager
+Le registre Go est volatil. Home Assistant conserve
+les entrées et réconcilie une entrée absente au démarrage.
+Une session supervisée et un flux RTSP disponible
+sont deux états distincts.
+end note
+
+note bottom of Peer
+ICE est limité à l'adresse source IPv4 configurée.
+L'audio caméra et le microphone WebRTC sont optionnels ;
+le contrôle microphone est désactivé par défaut.
+end note
+@enduml

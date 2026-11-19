@@ -8,6 +8,18 @@ import (
 	"github.com/pion/sdp/v3"
 )
 
+var errWebRTCCodecMismatch = errors.New("SDP lacks compatible H.264 video or Opus microphone")
+
+func selectWebRTCVideo(offer string, sps []byte, microphone bool) ([]byte, bool, error) {
+	if err := validateWebRTCSDP(offer, sps, true, microphone); err == nil {
+		return sps, false, nil
+	}
+	if err := validateWebRTCSDP(offer, webRTCBaselineSPS, true, microphone); err != nil {
+		return nil, false, err
+	}
+	return webRTCBaselineSPS, true, nil
+}
+
 // Require an exact H.264 profile/constraints match and a sufficient decoder
 // level. Pion otherwise permits a MIME-only partial match when binding RTP.
 func validateWebRTCSDP(text string, sps []byte, offer, requireMic bool) error {
@@ -49,7 +61,7 @@ func validateWebRTCSDP(text string, sps []byte, offer, requireMic bool) error {
 		}
 	}
 	if !videoOK || (requireMic && !audioOK) {
-		return errors.New("SDP lacks compatible H.264 video or Opus microphone")
+		return errWebRTCCodecMismatch
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os/exec"
 	"strings"
@@ -29,7 +30,10 @@ const (
 	webRTCAudioIdleTimeout = 10 * time.Second
 )
 
-var errAudioIdle = errors.New("microphone audio idle")
+var (
+	errAudioIdle                 = errors.New("microphone audio idle")
+	errWebRTCVideoEncoderMissing = errors.New("WebRTC video encoder unavailable")
+)
 
 type webRTCEvent struct {
 	Seq       uint64                   `json:"seq"`
@@ -122,10 +126,11 @@ func (p *webRTCPeer) answer(sdp string) error {
 
 func (p *webRTCPeer) fail(code string) {
 	p.mu.Lock()
-	if !p.closed {
-		_ = p.eventLocked(webRTCEvent{Type: "error", Code: code})
-	}
+	report := !p.closed && p.eventLocked(webRTCEvent{Type: "error", Code: code})
 	p.mu.Unlock()
+	if report && code != "session_closed" {
+		slog.Warn("Netvue WebRTC session ended", "reason", code)
+	}
 	p.close()
 }
 
@@ -185,8 +190,15 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	if len(sps) < 4 {
 		return errors.New("RTSP stream has no usable H.264 SPS")
 	}
-	if err := validateWebRTCSDP(offer, sps, true, microphone); err != nil {
+	videoSPS, transcodeVideo, err := selectWebRTCVideo(offer, sps, microphone)
+	if err != nil {
 		return err
+	}
+	if transcodeVideo && ffmpeg == "" {
+		ffmpeg, err = manager.webRTCFFmpeg()
+		if err != nil {
+			return errWebRTCVideoEncoderMissing
+		}
 	}
 	var (
 		audioMedia  *description.Media
@@ -267,7 +279,7 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	}
 	track, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
 		MimeType: webrtc.MimeTypeH264, ClockRate: 90000,
-		SDPFmtpLine: fmt.Sprintf("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=%02x%02x%02x", sps[1], sps[2], sps[3]),
+		SDPFmtpLine: fmt.Sprintf("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=%x", videoSPS[1:4]),
 	}, "video", "netvue")
 	if err != nil {
 		return err
@@ -288,7 +300,7 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	if err != nil {
 		return err
 	}
-	if err := validateWebRTCSDP(answer.SDP, sps, false, microphone); err != nil {
+	if err := validateWebRTCSDP(answer.SDP, videoSPS, false, microphone); err != nil {
 		return err
 	}
 	if cameraAudio {
@@ -305,9 +317,6 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	}
 	if err := p.answer(answer.SDP); err != nil {
 		return err
-	}
-	if _, err := client.Setup(desc.BaseURL, media, 0, 0); err != nil {
-		return fmt.Errorf("setup RTSP video: %w", err)
 	}
 	var audioDecoder *rtpmpeg4audio.Decoder
 	if cameraAudio {
@@ -357,29 +366,58 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 			}
 		})
 	}
-	videoDecoder, err := h264.CreateDecoder()
-	if err != nil {
-		return err
-	}
-	var invalidVideo sync.Once
-	client.OnPacketRTP(media, h264, func(packet *rtp.Packet) {
-		_, _ = client.PacketPTS(media, packet)
-		accessUnit, err := videoDecoder.Decode(packet)
-		if err != nil && !errors.Is(err, rtph264.ErrMorePacketsNeeded) &&
-			!errors.Is(err, rtph264.ErrNonStartingPacketAndNoPrevious) {
-			invalidVideo.Do(func() { go p.fail("video_invalid") })
-			return
+	if !transcodeVideo {
+		if _, err := client.Setup(desc.BaseURL, media, 0, 0); err != nil {
+			return fmt.Errorf("setup RTSP video: %w", err)
 		}
-		for _, nalu := range accessUnit {
-			if nalu[0]&0x1f == 7 && (len(nalu) < 4 || nalu[1] != sps[1] || nalu[2] != sps[2] || nalu[3] > sps[3]) {
-				invalidVideo.Do(func() { go p.fail("video_format_changed") })
+		videoDecoder, err := h264.CreateDecoder()
+		if err != nil {
+			return err
+		}
+		var invalidVideo sync.Once
+		client.OnPacketRTP(media, h264, func(packet *rtp.Packet) {
+			_, _ = client.PacketPTS(media, packet)
+			accessUnit, err := videoDecoder.Decode(packet)
+			if err != nil && !errors.Is(err, rtph264.ErrMorePacketsNeeded) &&
+				!errors.Is(err, rtph264.ErrNonStartingPacketAndNoPrevious) {
+				invalidVideo.Do(func() { go p.fail("video_invalid") })
 				return
 			}
+			for _, nalu := range accessUnit {
+				if nalu[0]&0x1f == 7 && (len(nalu) < 4 || nalu[1] != sps[1] || nalu[2] != sps[2] || nalu[3] > sps[3]) {
+					invalidVideo.Do(func() { go p.fail("video_format_changed") })
+					return
+				}
+			}
+			_ = track.WriteRTP(packet)
+		})
+	}
+	if !transcodeVideo || cameraAudio {
+		if _, err := client.Play(nil); err != nil {
+			return fmt.Errorf("play RTSP media: %w", err)
 		}
-		_ = track.WriteRTP(packet)
-	})
-	if _, err := client.Play(nil); err != nil {
-		return fmt.Errorf("play RTSP video: %w", err)
+		go func() {
+			_ = client.Wait()
+			if p.ctx.Err() == nil {
+				p.fail("rtsp_stream_ended")
+			}
+		}()
+	}
+	if transcodeVideo {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return context.Canceled
+		}
+		p.workers.Add(1)
+		p.mu.Unlock()
+		slog.Info("Netvue WebRTC adapting H.264", "input_profile_level", fmt.Sprintf("%x", sps[1:4]))
+		go func() {
+			defer p.workers.Done()
+			if err := transcodeH264ToWebRTC(p.ctx, ffmpeg, url, track); err != nil && p.ctx.Err() == nil {
+				p.fail("video_transcode_failed")
+			}
+		}()
 	}
 	if cameraAudio {
 		p.mu.Lock()
@@ -396,12 +434,6 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 			}
 		}()
 	}
-	go func() {
-		_ = client.Wait()
-		if p.ctx.Err() == nil {
-			p.fail("video_unavailable")
-		}
-	}()
 	return nil
 }
 
@@ -530,4 +562,11 @@ func (r *prefetchedAudio) ReadRTP(ctx context.Context) (*rtp.Packet, error) {
 
 func findFFmpeg() (string, error) {
 	return exec.LookPath("ffmpeg")
+}
+
+func (manager *Manager) webRTCFFmpeg() (string, error) {
+	if manager.ffmpegPath != nil {
+		return manager.ffmpegPath()
+	}
+	return findFFmpeg()
 }

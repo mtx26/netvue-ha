@@ -56,3 +56,17 @@ utilisé ; `two_way_audio` reste désactivé par défaut.
 Les tests Go, race, vet, build, FFmpeg/WebRTC synthétiques et les 58 tests
 Home Assistant/Portainer isolés étaient réussis avant ces essais. Ils ne
 remplacent pas les validations réelles encore manquantes ci-dessus.
+
+## Suivi — bouton microphone grisé dans Home Assistant
+
+- Le RTSP déjà publié annonçait H.264 Main 4.1 (`4d0029`) ; un Chromium de
+  test proposait Main 3.1 (`4d001f`). Cette combinaison était refusée par le
+  pont avant la mise en place du média. Le SDP de la tentative réelle n'a
+  pas été capturé. Un redémarrage RTSP a aussi été observé indépendamment.
+- Le pont garde le passage direct quand l'offre est compatible. Sinon, il
+  réencode uniquement la vidéo WebRTC en Constrained Baseline 3.1 si le
+  navigateur l'offre. Le test synthétique publie du Main 4.1 en RTSP,
+  négocie avec un pair WebRTC local et décode quatre images de sortie.
+- Le navigateur doit toujours joindre l'adresse IPv4 ICE du pont en UDP.
+  Le tunnel HTTPS Cloudflare seul ne fournit pas cette route. Le microphone
+  et le haut-parleur n'ont pas été testés sur la caméra réelle.

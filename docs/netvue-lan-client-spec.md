@@ -272,6 +272,8 @@ ne sont pas nécessairement un rebouclage naturel.
   saut de plus de 10 s. C'est une politique de récupération du pont, pas une
   propriété démontrée du protocole. Gérer aussi les changements SPS/PPS et
   attendre une nouvelle IDR.
+- L'adaptation H.264 pour WebRTC intervient en aval du RTSP publié. Elle
+  ne modifie ni le flux RTSP natif ni les commandes de la caméra.
 - **Réel historique :** H.264 a été décodé depuis une caméra ; une transition
   PTS non croissante a aussi été constatée. Les B-frames, fragments génériques
   et l'endurance ne sont pas entièrement établis.

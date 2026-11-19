@@ -1,0 +1,100 @@
+@startuml
+title WebRTC — signalisation, lecture RTSP et audio optionnel
+autonumber
+
+actor "Navigateur Home Assistant" as Browser
+participant "Provider HA\ncustom_components/netvue_local/webrtc.py" as HA
+participant "API HTTP Go\ninternal/manager/webrtc_http.go" as API
+participant "Manager Go\ninternal/manager/manager.go" as Manager
+participant "Peer WebRTC\ninternal/manager/webrtc.go" as Peer
+participant "MediaMTX\nflux RTSP caméra" as MTX
+participant "FFmpeg\nsi conversion nécessaire" as FFmpeg
+participant "Session Netvue\nLiveTalkback" as Netvue
+
+Browser -> HA : offre SDP + session_id
+HA -> HA : vérifier caméra, session ID,\ntaille SDP et politique microphone
+alt offre ou option non autorisée
+  HA --> Browser : erreur WebRTC
+else offre acceptée
+  HA -> API : PUT /cameras/{host}/webrtc/{id}
+  API -> API : vérifier chemin, JSON, taille et SDP\n(codec vidéo/audio demandé)
+  API -> Manager : vérifier caméra supervisée,\npeer unique et id non tombstoné
+  opt audio caméra ou microphone demandé
+    API -> Manager : localiser FFmpeg
+    alt FFmpeg indisponible
+      API --> HA : HTTP 503
+      HA --> Browser : erreur de signalisation
+    end
+  end
+  Manager -> Peer : créer peer et démarrer
+  Peer -> MTX : DESCRIBE du flux RTSP
+  MTX --> Peer : SDP et formats disponibles
+  Peer -> Peer : exiger H.264 et SPS exploitable\nchoisir sortie directe ou transcodage
+  opt adaptation H.264 requise
+    Peer -> Manager : localiser FFmpeg
+    Manager --> Peer : exécutable ou erreur
+  end
+  Peer -> Peer : limiter ICE UDP à l'IPv4 source
+  Peer -> Peer : créer PeerConnection,\nvalider offre et SDP réponse
+  Peer -> Peer : mettre réponse et candidats\nICE dans la file d'événements
+  alt H.264 accepté sans adaptation
+    Peer -> MTX : SETUP / PLAY piste vidéo
+  else profil H.264 incompatible
+    Peer -> FFmpeg : démarrer le lecteur RTSP/TCP\net la conversion vers H.264 baseline borné
+    FFmpeg -> MTX : lire le flux RTSP
+  end
+  opt audio caméra demandé et présent
+    Peer -> MTX : SETUP piste AAC
+  end
+  opt lecture RTSP directe ou piste audio utilisée
+    Peer -> MTX : PLAY
+  end
+  Peer --> API : start() terminé,\névénements disponibles
+  API --> HA : HTTP 201 (session créée)
+  loop long-poll des événements
+    HA -> API : GET /events?after=seq
+    API --> HA : réponse, candidats ou erreur
+    HA --> Browser : réponse SDP / candidats
+  end
+  Browser -> HA : candidat ICE distant
+  HA -> API : POST /candidates
+  API -> Peer : valider puis ajouter candidat ICE
+  opt pair connecté
+  alt H.264 accepté sans adaptation
+    MTX --> Peer : RTP H.264
+    Peer --> Browser : RTP H.264 sur WebRTC
+  else profil H.264 incompatible
+    MTX --> FFmpeg : média RTSP
+    FFmpeg -> FFmpeg : convertir vers H.264 baseline
+    FFmpeg --> Peer : MPEG-TS avec H.264
+    Peer -> Peer : extraire les unités H.264\net les packetiser en RTP
+    Peer --> Browser : RTP H.264 adapté
+  end
+  opt audio caméra demandé et présent
+    MTX --> Peer : RTP AAC
+    Peer -> FFmpeg : convertir AAC vers Opus
+    FFmpeg --> Peer : trames Opus
+    Peer --> Browser : audio WebRTC
+  end
+  end
+  opt microphone explicitement activé
+    Browser --> Peer : RTP Opus microphone
+    Peer -> FFmpeg : convertir Opus vers AAC
+    FFmpeg --> Peer : AAC-LC / ADTS
+    Peer -> Netvue : ouvrir talkback et écrire audio\nsur la session caméra active
+  end
+  alt fermeture, arrêt caméra, échec ICE ou expiration
+    HA -> API : DELETE session WebRTC
+    API -> Manager : tombstoner l'identifiant temporairement
+    Manager -> Peer : fermer peer, RTSP, ICE et workers
+  end
+end
+
+note over HA,Peer
+L'audio caméra et le microphone sont des options distinctes.
+Le microphone reste désactivé par défaut ; le talkback ne rejoint
+que la session caméra déjà active et ne la crée pas.
+La compatibilité de lecture WebRTC doit encore être validée
+dans un navigateur réel.
+end note
+@enduml

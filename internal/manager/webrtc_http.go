@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -66,11 +67,7 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 	}
 	var ffmpeg string
 	if microphone || cameraAudio {
-		findEncoder := manager.ffmpegPath
-		if findEncoder == nil {
-			findEncoder = findFFmpeg
-		}
-		ffmpeg, err = findEncoder()
+		ffmpeg, err = manager.webRTCFFmpeg()
 		if err != nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "audio encoder unavailable")
 			return
@@ -112,7 +109,16 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 			delete(manager.peers, host)
 		}
 		manager.mu.Unlock()
-		writeAPIError(w, http.StatusServiceUnavailable, "WebRTC session unavailable")
+		switch {
+		case errors.Is(err, errWebRTCCodecMismatch):
+			slog.Warn("Netvue WebRTC negotiation failed", "reason", "codec_mismatch")
+			writeAPIError(w, http.StatusBadRequest, "incompatible WebRTC codecs")
+		case errors.Is(err, errWebRTCVideoEncoderMissing):
+			slog.Warn("Netvue WebRTC negotiation failed", "reason", "video_encoder_unavailable")
+			writeAPIError(w, http.StatusServiceUnavailable, "video encoder unavailable")
+		default:
+			writeAPIError(w, http.StatusServiceUnavailable, "WebRTC session unavailable")
+		}
 		return
 	}
 	w.WriteHeader(http.StatusCreated)

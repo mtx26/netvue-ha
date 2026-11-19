@@ -129,6 +129,11 @@ du RTSP/TCP ; le microphone Opus est converti en AAC-LC/ADTS et joint à la
 même session Netvue supervisée, jamais une seconde session caméra. Le retour
 AAC caméra → Opus WebRTC est également implémenté.
 
+Si l'offre WebRTC ne peut pas recevoir le profil et le niveau H.264 du flux
+RTSP, le pont peut réencoder la vidéo en H.264 Constrained Baseline 3.1
+(jusqu'à 720p, 15 images/s) avec FFmpeg. Ce traitement ne s'applique qu'au
+lecteur WebRTC et n'affecte ni la publication RTSP ni la caméra.
+
 Audit du code officiel [HA 2026.11.2](https://github.com/home-assistant/core/blob/2026.11.2/homeassistant/components/camera/webrtc.py) :
 `CameraWebRTCProvider` sélectionne les sources RTSP via `async_is_supported`,
 reçoit offre et candidates, envoie `WebRTCAnswer`, `WebRTCCandidate` ou
@@ -151,7 +156,12 @@ sans repli automatique garanti côté lecteur. HLS reste annoncé par HA.
 Le fournisseur ne peut pas définir de configuration ICE propre via l'API
 provider : HA fournit celle de l'entité et ses serveurs ICE globaux. Le pair
 Go annonce uniquement l'IPv4 source configurée et utilise UDP ; l'accès depuis
-un navigateur hors de ce LAN n'est pas couvert. `two_way_audio=False` reste
+un navigateur hors de ce LAN n'est pas couvert sans route privée vers cette
+adresse (par exemple un VPN avec accès au sous-réseau du pont). Un accès
+HTTPS à Home Assistant via Cloudflare Tunnel ne relaie pas ce média UDP.
+Pour tester le microphone, utiliser un navigateur sur le LAN avec l'URL HTTPS
+de Home Assistant, ou un VPN fournissant cette route. Ne pas exposer les ports
+RTSP ou API pour résoudre ce problème. `two_way_audio=False` reste
 le comportement par défaut : le microphone HA est masqué tant que l'option
 expérimentale d'essai n'est pas explicitement activée. Les conversions et la
 signalisation sont testées synthétiquement, mais ne prouvent ni l'acceptation
