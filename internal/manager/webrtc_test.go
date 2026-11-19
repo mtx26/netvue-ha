@@ -559,6 +559,32 @@ func newLocalTestPeerConnection(t *testing.T) *webrtc.PeerConnection {
 	return peer
 }
 
+func TestWebRTCOfferRejectsUnsupportedAudioBeforeAllocation(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	encoderLookups := 0
+	manager.ffmpegPath = func() (string, error) {
+		encoderLookups++
+		return "", errors.New("encoder should not be needed")
+	}
+
+	host, id := "192.168.10.20", "unsupported_audio"
+	offer := strings.Replace(testAudioSDP("sendonly"), "a=rtpmap:111 opus/48000/2\r\n", "", 1)
+	response := requestWebRTC(t, manager.Handler(), http.MethodPut,
+		"/api/v1/cameras/"+host+"/webrtc/"+id, map[string]string{"offer": offer})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported microphone offer: %d %s", response.Code, response.Body)
+	}
+	if encoderLookups != 0 {
+		t.Fatalf("looked up encoder %d times for invalid offer", encoderLookups)
+	}
+	if manager.webRTCPeer(host, id) != nil {
+		t.Fatal("invalid offer allocated a WebRTC peer")
+	}
+}
+
 func TestWebRTCVideoOnlyDoesNotRequireEncoder(t *testing.T) {
 	handler := &testRTSPHandler{}
 	server := &gortsplib.Server{Handler: handler, RTSPAddress: "127.0.0.1:0"}

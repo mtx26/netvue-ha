@@ -181,6 +181,9 @@ func TestManagerStoppingOneCameraLeavesOtherRunning(t *testing.T) {
 func TestDeleteSerializesWithConcurrentRestart(t *testing.T) {
 	stopping := make(chan struct{}, 1)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseSession := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseSession()
 	var starts atomic.Int32
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
 		if starts.Add(1) == 1 {
@@ -216,7 +219,7 @@ func TestDeleteSerializesWithConcurrentRestart(t *testing.T) {
 		_, _, err := manager.StartCamera("192.168.10.20")
 		restarted <- err
 	}()
-	close(release)
+	releaseSession()
 
 	select {
 	case result := <-deleted:
@@ -298,21 +301,24 @@ func TestManagerFatalSessionCanBeRestartedExplicitly(t *testing.T) {
 
 func TestSessionErrorDiagnosticsDoNotExposeUnderlyingErrors(t *testing.T) {
 	tests := []struct {
+		name string
 		err  error
 		want string
 	}{
-		{fmt.Errorf("%w: secret", netvue.ErrAuthenticationRejected), "Camera authentication rejected"},
-		{fmt.Errorf("%w: secret", netvue.ErrLiveResponseVersion), "Unsupported Netvue LIVE response version"},
-		{fmt.Errorf("%w: secret", netvue.ErrProtocol), "Invalid Netvue protocol data"},
-		{fmt.Errorf("%w: secret", netvue.ErrMediaFrame), "Invalid Netvue media frame"},
-		{fmt.Errorf("%w: secret", netvue.ErrConnectionClosed), "Connection error"},
-		{fmt.Errorf("%w: secret", netvue.ErrVideoFatal), "Video publication failed"},
-		{errors.New("secret"), "Unexpected camera session error"},
+		{"authentication", fmt.Errorf("%w: secret", netvue.ErrAuthenticationRejected), "Camera authentication rejected"},
+		{"live version", fmt.Errorf("%w: secret", netvue.ErrLiveResponseVersion), "Unsupported Netvue LIVE response version"},
+		{"protocol", fmt.Errorf("%w: secret", netvue.ErrProtocol), "Invalid Netvue protocol data"},
+		{"media frame", fmt.Errorf("%w: secret", netvue.ErrMediaFrame), "Invalid Netvue media frame"},
+		{"connection", fmt.Errorf("%w: secret", netvue.ErrConnectionClosed), "Connection error"},
+		{"video publication", fmt.Errorf("%w: secret", netvue.ErrVideoFatal), "Video publication failed"},
+		{"unknown error", errors.New("secret"), "Unexpected camera session error"},
 	}
 	for _, test := range tests {
-		if got := netvue.SessionDiagnostic(test.err); got != test.want {
-			t.Errorf("SessionDiagnostic() = %q, want %q", got, test.want)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if got := netvue.SessionDiagnostic(test.err); got != test.want {
+				t.Errorf("SessionDiagnostic() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

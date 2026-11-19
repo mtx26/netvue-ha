@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-ha/internal/netvue/netvuetest"
 )
 
 // Each publisher and decoder has exactly one owner; cleanup also waits for it.
@@ -207,15 +209,8 @@ func multiCameraFrames(t *testing.T, ffmpeg, path, color, size string) [][]byte 
 }
 
 func TestMediaMTXMultiCameraIsolation(t *testing.T) {
-	mediamtx, ffmpeg := os.Getenv("NETVUE_TEST_MEDIAMTX"), os.Getenv("NETVUE_TEST_FFMPEG")
-	if mediamtx == "" || ffmpeg == "" {
-		t.Skip("set NETVUE_TEST_MEDIAMTX and NETVUE_TEST_FFMPEG to run the loopback integration test")
-	}
-	for _, binary := range []string{mediamtx, ffmpeg} {
-		if _, err := exec.LookPath(binary); err != nil {
-			t.Skipf("integration binary unavailable: %v", err)
-		}
-	}
+	mediamtx := netvuetest.Executable(t, "NETVUE_TEST_MEDIAMTX", "mediamtx")
+	ffmpeg := netvuetest.Executable(t, "NETVUE_TEST_FFMPEG", "ffmpeg")
 	dir := t.TempDir()
 	red := multiCameraFrames(t, ffmpeg, filepath.Join(dir, "red.ts"), "red", "160x90")
 	blue := multiCameraFrames(t, ffmpeg, filepath.Join(dir, "blue.ts"), "blue", "160x90")

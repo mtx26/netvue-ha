@@ -22,6 +22,15 @@ func testADTS(index byte, channels byte, payload byte) []byte {
 	return []byte{0xff, 0xf1, 0x40 | index<<2 | channels>>2, channels << 6, 1, 0x1f, 0xfc, payload}
 }
 
+func mustReadTalkAudio(t *testing.T, data []byte) *talkAudio {
+	t.Helper()
+	audio, err := readTalkAudio(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("readTalkAudio() failed: %v", err)
+	}
+	return audio
+}
+
 func TestTalkADTSValidation(t *testing.T) {
 	frame := testADTS(11, 1, 42)
 	for _, tc := range []struct {
@@ -138,12 +147,14 @@ func TestTalkSendsMediaWhileReceivingAudioVideo(t *testing.T) {
 		t.Fatal(err)
 	}
 	audio.delay = 80 * time.Millisecond
+	frameDuration := audio.duration() / time.Duration(len(audio.frames))
+	minimumCadence := frameDuration / 2
 	publisher := &audioTestPublisher{}
 	ctx, cancel := context.WithTimeoutCause(context.Background(), 2*time.Second, errSessionDurationElapsed)
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- receiveLiveTalk(ctx, client, publisher, time.Second, 3*time.Second, true, audio) }()
-	ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+	ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 	if err := writeFull(server, ack); err != nil {
 		t.Fatal(err)
 	}
@@ -156,11 +167,15 @@ func TestTalkSendsMediaWhileReceivingAudioVideo(t *testing.T) {
 		t.Fatalf("direction = %s, error %v", direction.Body, err)
 	}
 	// No media is sent before the first published video frame.
-	_ = server.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
+	if err := server.SetReadDeadline(time.Now().Add(40 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := ReadPacket(server); err == nil {
 		t.Fatal("talkback started before video")
 	}
-	_ = server.SetReadDeadline(time.Time{})
+	if err := server.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeFull(server, mediaPacket(0, []byte{1})); err != nil {
 		t.Fatal(err)
 	}
@@ -187,10 +202,10 @@ func TestTalkSendsMediaWhileReceivingAudioVideo(t *testing.T) {
 		if delta := int32(uint32(now.UnixMilli()) - pts); delta < 0 || delta > 1000 {
 			t.Fatalf("PTS not Unix milliseconds: delta=%d", delta)
 		}
-		if i == 0 && now.Sub(start) < 60*time.Millisecond {
+		if i == 0 && now.Sub(start) < audio.delay*3/4 {
 			t.Fatalf("delay too short: %v", now.Sub(start))
 		}
-		if i > 0 && now.Sub(previous) < 110*time.Millisecond {
+		if i > 0 && now.Sub(previous) < minimumCadence {
 			t.Fatalf("frames sent too quickly: %v", now.Sub(previous))
 		}
 		previous = now
@@ -205,7 +220,7 @@ func TestTalkSendsMediaWhileReceivingAudioVideo(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("talkback completion not logged")
 	}
-	if time.Since(previous) < 100*time.Millisecond {
+	if time.Since(previous) < minimumCadence {
 		t.Fatal("talkback completed before the last AAC frame duration")
 	}
 	// Both packets are sent after the completion log, hence after the final
@@ -216,11 +231,13 @@ func TestTalkSendsMediaWhileReceivingAudioVideo(t *testing.T) {
 	if err := writeFull(server, mediaPacket(66, []byte{3})); err != nil {
 		t.Fatalf("video after talkback: %v", err)
 	}
-	barrier, _ := EncodeCommand([]map[string]any{{"A": 99}})
+	barrier := mustEncodeCommand(t, []map[string]any{{"A": 99}})
 	if err := writeFull(server, barrier); err != nil {
 		t.Fatal(err)
 	}
-	_ = server.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if err := server.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	if packet, err := ReadPacket(server); err == nil {
 		t.Fatalf("unexpected second talkback sender: %+v", packet)
 	} else {
@@ -229,7 +246,9 @@ func TestTalkSendsMediaWhileReceivingAudioVideo(t *testing.T) {
 			t.Fatalf("LIVE connection closed after talkback: %v", err)
 		}
 	}
-	_ = server.SetReadDeadline(time.Time{})
+	if err := server.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case err := <-result:
 		t.Fatalf("LIVE stopped before duration: %v", err)
@@ -261,12 +280,12 @@ func TestTalkSelectionAndCancellation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, server := testPipe(t)
-			audio, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 1)))
+			audio := mustReadTalkAudio(t, testADTS(11, 1, 1))
 			done := make(chan error, 1)
 			go func() {
 				done <- receiveLiveTalk(context.Background(), client, &audioTestPublisher{}, time.Second, time.Second, true, audio)
 			}()
-			packet, _ := EncodeCommand([]map[string]any{tc.ack})
+			packet := mustEncodeCommand(t, []map[string]any{tc.ack})
 			if err := writeFull(server, packet); err != nil {
 				t.Fatal(err)
 			}
@@ -277,13 +296,13 @@ func TestTalkSelectionAndCancellation(t *testing.T) {
 	}
 	t.Run("cancel blocked media write", func(t *testing.T) {
 		client, server := testPipe(t)
-		audio, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 1)))
+		audio := mustReadTalkAudio(t, testADTS(11, 1, 1))
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
 			done <- receiveLiveTalk(ctx, client, &audioTestPublisher{}, time.Second, time.Second, true, audio)
 		}()
-		ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+		ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 		if err := writeFull(server, ack); err != nil {
 			t.Fatal(err)
 		}
@@ -305,19 +324,19 @@ func TestTalkSelectionAndCancellation(t *testing.T) {
 	})
 	t.Run("direction refusal", func(t *testing.T) {
 		client, server := testPipe(t)
-		audio, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 1)))
+		audio := mustReadTalkAudio(t, testADTS(11, 1, 1))
 		done := make(chan error, 1)
 		go func() {
 			done <- receiveLiveTalk(context.Background(), client, &audioTestPublisher{}, time.Second, time.Second, true, audio)
 		}()
-		ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+		ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 		if err := writeFull(server, ack); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := ReadPacket(server); err != nil {
 			t.Fatal(err)
 		}
-		refusal, _ := EncodeCommand([]map[string]any{{"A": 5, "V": 1, "C": 1}})
+		refusal := mustEncodeCommand(t, []map[string]any{{"A": 5, "V": 1, "C": 1}})
 		if err := writeFull(server, refusal); err != nil {
 			t.Fatal(err)
 		}
@@ -327,14 +346,14 @@ func TestTalkSelectionAndCancellation(t *testing.T) {
 	})
 	t.Run("cancel delay", func(t *testing.T) {
 		client, server := testPipe(t)
-		audio, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 1)))
+		audio := mustReadTalkAudio(t, testADTS(11, 1, 1))
 		audio.delay = 10 * time.Second
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
 			done <- receiveLiveTalk(ctx, client, &audioTestPublisher{}, time.Second, time.Second, true, audio)
 		}()
-		ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+		ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 		if err := writeFull(server, ack); err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +375,7 @@ func TestTalkSelectionAndCancellation(t *testing.T) {
 	})
 	t.Run("duration expires during delay", func(t *testing.T) {
 		client, server := testPipe(t)
-		audio, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 1)))
+		audio := mustReadTalkAudio(t, testADTS(11, 1, 1))
 		audio.delay = time.Second
 		ctx, cancel := context.WithTimeoutCause(context.Background(), 200*time.Millisecond, errSessionDurationElapsed)
 		defer cancel()
@@ -364,7 +383,7 @@ func TestTalkSelectionAndCancellation(t *testing.T) {
 		go func() {
 			done <- receiveLiveTalk(ctx, client, &audioTestPublisher{}, time.Second, time.Second, true, audio)
 		}()
-		ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+		ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 		if err := writeFull(server, ack); err != nil {
 			t.Fatal(err)
 		}
@@ -402,14 +421,14 @@ func (c failTalkMediaConn) Write(p []byte) (int, error) {
 func TestTalkSendFailureInterruptsLive(t *testing.T) {
 	client, server := testPipe(t)
 	wantErr := errors.New("synthetic write failure")
-	audio, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 1)))
+	audio := mustReadTalkAudio(t, testADTS(11, 1, 1))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		done <- receiveLiveTalk(ctx, failTalkMediaConn{Conn: client, err: wantErr}, &audioTestPublisher{}, time.Second, time.Second, true, audio)
 	}()
-	ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+	ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 	if err := writeFull(server, ack); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +467,11 @@ func TestSessionWriterSerializesWholePackets(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			for i := 0; i < 40; i++ {
-				packet, _ := EncodeCommand([]map[string]any{{"Q": n, "P": fmt.Sprint(i)}})
+				packet, err := EncodeCommand([]map[string]any{{"Q": n, "P": fmt.Sprint(i)}})
+				if err != nil {
+					errs <- err
+					return
+				}
 				if n == 1 {
 					packet = makePacketKind(6, 0, packetMedia, []byte{0x20, 1, 2, 3, 4, byte(i)})
 				}
@@ -485,8 +508,8 @@ func TestTalkSessionsAreIndependent(t *testing.T) {
 	defer cancel()
 	first, firstPeer := testPipe(t)
 	second, secondPeer := testPipe(t)
-	audio1, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 11)))
-	audio2, _ := readTalkAudio(bytes.NewReader(testADTS(8, 2, 22)))
+	audio1 := mustReadTalkAudio(t, testADTS(11, 1, 11))
+	audio2 := mustReadTalkAudio(t, testADTS(8, 2, 22))
 	results := make(chan error, 2)
 	go func() { results <- audio1.send(ctx, &sessionWriter{Conn: first}) }()
 	go func() { results <- audio2.send(ctx, &sessionWriter{Conn: second}) }()
@@ -515,7 +538,7 @@ func TestTalkSessionsAreIndependent(t *testing.T) {
 func TestTalkWriteFailure(t *testing.T) {
 	client, server := testPipe(t)
 	_ = server.Close()
-	audio, _ := readTalkAudio(bytes.NewReader(testADTS(11, 1, 1)))
+	audio := mustReadTalkAudio(t, testADTS(11, 1, 1))
 	if err := audio.send(context.Background(), &sessionWriter{Conn: client}); err == nil || errors.Is(err, io.EOF) {
 		t.Fatalf("expected write error, got %v", err)
 	}

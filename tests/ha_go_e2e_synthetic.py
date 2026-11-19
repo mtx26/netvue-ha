@@ -2,12 +2,10 @@
 
 import asyncio
 import ipaddress
-import json
 import logging
 import os
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -19,49 +17,6 @@ from homeassistant.components import camera
 from homeassistant.helpers import entity_registry as er
 
 logging.basicConfig(level=logging.WARNING)
-
-
-def packet(kind: int, body: bytes) -> bytes:
-    return struct.pack("<I8xHH", len(body), 0, kind) + body
-
-
-def flagged_packet(kind: int, body: bytes) -> bytes:
-    return struct.pack("<I8xHH", len(body), 1, kind) + body
-
-
-def command(unit: dict) -> bytes:
-    return packet(200, json.dumps([unit], separators=(",", ":")).encode())
-
-
-async def read_command(reader: asyncio.StreamReader) -> dict:
-    header = await reader.readexactly(16)
-    size, flag, kind = struct.unpack("<I8xHH", header)
-    if flag or kind != 200 or not 0 < size < 1048576:
-        raise RuntimeError("Unexpected synthetic camera command header")
-    units = json.loads(await reader.readexactly(size))
-    if not isinstance(units, list) or len(units) != 1:
-        raise RuntimeError("Unexpected synthetic camera command")
-    return units[0]
-
-
-class Discovery(asyncio.DatagramProtocol):
-    def __init__(self, host: str, port: int):
-        self.host = host
-        self.port = port
-        self.transport = None
-
-    def connection_made(self, transport):
-        self.transport = transport
-
-    def datagram_received(self, data, address):
-        size, flag, kind = struct.unpack("<I8xHH", data[:16])
-        units = json.loads(data[16:])
-        if flag or kind != 200 or size != len(data) - 16 or units[0].get("Q") != 8:
-            raise RuntimeError("Unexpected discovery request")
-        self.transport.sendto(command({
-            "A": 8, "V": 2, "C": 0,
-            "P": ["synthetic", "synthetic", self.host, self.port, "synthetic-key"],
-        }), address)
 
 
 async def wait_port(port: int, process: subprocess.Popen) -> None:
@@ -83,207 +38,22 @@ def private_ipv4(value: str) -> bool:
                ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
 
-async def synthetic_camera() -> None:
+def synthetic_camera() -> None:
+    """Replace this process with the shared Go Netvue camera simulator.
+
+    The simulator lives in tests/simulator/netvue-sim and is the only synthetic
+    camera implementation. CI builds it and exposes it as NETVUE_TEST_SIMULATOR.
+    """
     host = os.environ["NETVUE_TEST_CAMERA_HOST"]
     if not private_ipv4(host):
         raise RuntimeError("The synthetic camera must use a private IPv4 address")
-    video = subprocess.run([
-        "/usr/bin/ffmpeg", "-v", "error", "-f", "lavfi", "-i",
-        "testsrc=size=64x64:rate=10", "-frames:v", "1", "-pix_fmt", "yuv420p",
-        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-        "-x264-params", "repeat-headers=1", "-f", "h264", "pipe:1",
-    ], check=True, capture_output=True, timeout=20).stdout
-    if not video:
-        raise RuntimeError("Synthetic H.264 generation produced no frame")
-
-    writers = set()
-    login_count = 0
-    forced_drops = 0
-    next_login_fault = None
-    last_login_fault = None
-    next_live_fault = None
-    last_live_fault = None
-    next_media_fault = None
-    last_media_fault = None
-    reject_initial_login = os.environ.get("NETVUE_TEST_REJECT_INITIAL_LOGIN", "1") == "1"
-
-    async def camera_handler(reader, writer):
-        nonlocal login_count, forced_drops
-        nonlocal next_login_fault, last_login_fault
-        nonlocal next_live_fault, last_live_fault, next_media_fault, last_media_fault
-        writers.add(writer)
-        try:
-            login = await read_command(reader)
-            if login.get("Q") != 1:
-                raise RuntimeError("Expected synthetic login")
-            login_count += 1
-            fault = next_login_fault
-            next_login_fault = None
-            if fault is not None:
-                last_login_fault = fault
-                if fault == "close-connection":
-                    return
-                if fault == "login-timeout":
-                    await asyncio.sleep(5)
-                    return
-                if fault == "flagged-header":
-                    writer.write(flagged_packet(200, b"x"))
-                elif fault == "wrong-packet-kind":
-                    writer.write(packet(201, b"x"))
-                elif fault == "invalid-json":
-                    writer.write(packet(200, b"{"))
-                elif fault == "missing-result":
-                    writer.write(command({"A": 1, "V": 1}))
-                elif fault == "unsupported-version":
-                    writer.write(command({"A": 1, "V": 99, "C": 0}))
-                else:
-                    raise RuntimeError(f"Unknown synthetic login fault: {fault}")
-                await writer.drain()
-                return
-            rejected = reject_initial_login and login_count == 1
-            writer.write(command({"A": 1, "V": 1, "C": 5 if rejected else 0}))
-            await writer.drain()
-            if rejected:
-                return
-            live = await read_command(reader)
-            if live.get("Q") != 3:
-                raise RuntimeError("Expected synthetic LIVE request")
-            fault = next_live_fault
-            next_live_fault = None
-            if fault is not None:
-                last_live_fault = fault
-                if fault == "invalid-json":
-                    writer.write(packet(200, b"{"))
-                elif fault == "missing-result":
-                    writer.write(command({"A": 3, "V": 2}))
-                elif fault == "rejected-result":
-                    writer.write(command({"A": 3, "V": 2, "C": 1}))
-                else:
-                    raise RuntimeError(f"Unknown synthetic LIVE fault: {fault}")
-                await writer.drain()
-                return
-            writer.write(command({"A": 3, "V": 2, "C": 0}))
-            await writer.drain()
-            timestamp = 0
-            while True:
-                fault = next_media_fault
-                next_media_fault = None
-                if fault is not None:
-                    last_media_fault = fault
-                    if forced_drops:
-                        forced_drops -= 1
-                    if fault == "unsupported-type":
-                        writer.write(packet(201, b"\x30\x00\x00\x00\x00\x01"))
-                    elif fault == "truncated-video":
-                        writer.write(packet(201, b"\x10\x00"))
-                    else:
-                        raise RuntimeError(f"Unknown synthetic media fault: {fault}")
-                    await writer.drain()
-                    return
-                writer.write(packet(201, b"\x10" + struct.pack("<I", timestamp) + video))
-                await writer.drain()
-                timestamp += 100
-                if forced_drops:
-                    forced_drops -= 1
-                    return
-                await asyncio.sleep(0.1)
-        except (asyncio.IncompleteReadError, ConnectionError):
-            pass
-        finally:
-            writers.discard(writer)
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except ConnectionError:
-                pass
-
-    async def status_handler(reader, writer):
-        nonlocal forced_drops, next_login_fault, next_live_fault, next_media_fault
-        try:
-            request_line = await reader.readline()
-            await reader.readuntil(b"\r\n\r\n")
-            request = request_line.split()
-            path = request[1].decode() if len(request) > 1 else ""
-            if request_line.startswith(b"POST /fail-next "):
-                forced_drops += 1
-                status_code, status_text = 202, "Accepted"
-                result = {"forced_drops": forced_drops}
-            elif request_line.startswith(b"POST /fault-next/"):
-                _, _, stage, fault = path.split("/", 3)
-                modes = {
-                    "login": {
-                        "close-connection", "login-timeout", "flagged-header",
-                        "wrong-packet-kind", "invalid-json",
-                        "missing-result", "unsupported-version",
-                    },
-                    "live": {"invalid-json", "missing-result", "rejected-result"},
-                    "media": {"unsupported-type", "truncated-video"},
-                }
-                pending = {
-                    "login": next_login_fault,
-                    "live": next_live_fault,
-                    "media": next_media_fault,
-                }.get(stage)
-                if stage not in modes or fault not in modes[stage]:
-                    status_code, status_text = 400, "Bad Request"
-                    result = {"error": "unsupported synthetic fault stage or mode"}
-                elif pending is not None:
-                    status_code, status_text = 409, "Conflict"
-                    result = {"error": "a synthetic fault is already pending"}
-                else:
-                    if stage == "login":
-                        next_login_fault = fault
-                    elif stage == "live":
-                        next_live_fault = fault
-                    else:
-                        next_media_fault = fault
-                    forced_drops += 1
-                    status_code, status_text = 202, "Accepted"
-                    result = {"scheduled_fault": fault, "stage": stage}
-            elif request_line.startswith(b"GET /status "):
-                status_code, status_text = 200, "OK"
-                result = {
-                    "login_count": login_count,
-                    "last_login_fault": last_login_fault,
-                    "last_live_fault": last_live_fault,
-                    "last_media_fault": last_media_fault,
-                }
-            else:
-                status_code, status_text = 404, "Not Found"
-                result = {"error": "not found"}
-            body = json.dumps(result).encode()
-            writer.write(
-                f"HTTP/1.1 {status_code} {status_text}\r\n".encode()
-                + b"Content-Type: application/json\r\n"
-                + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
-                + body
-            )
-            await writer.drain()
-        except (asyncio.IncompleteReadError, ConnectionError):
-            pass
-        finally:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except ConnectionError:
-                pass
-
-    tcp = await asyncio.start_server(camera_handler, "0.0.0.0", 5555)
-    status = await asyncio.start_server(status_handler, "0.0.0.0", 5556)
-    udp, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-        lambda: Discovery(host, 5555), local_addr=("0.0.0.0", 36868)
-    )
-    print(f"Synthetic camera ready at {host}:5555", flush=True)
-    try:
-        await asyncio.Event().wait()
-    finally:
-        udp.close()
-        tcp.close()
-        status.close()
-        await tcp.wait_closed()
-        await status.wait_closed()
-        for writer in writers.copy():
-            writer.close()
+    simulator = os.environ.get("NETVUE_TEST_SIMULATOR")
+    if not simulator or not os.access(simulator, os.X_OK):
+        raise RuntimeError("Set NETVUE_TEST_SIMULATOR to the built netvue-sim executable")
+    arguments = [simulator, "-host", host]
+    if os.environ.get("NETVUE_TEST_REJECT_INITIAL_LOGIN", "1") == "1":
+        arguments.append("-reject-initial-login")
+    os.execv(simulator, arguments)
 
 
 async def camera_login_count(host: str) -> int:
@@ -311,12 +81,19 @@ async def wait_camera_ready(host: str) -> None:
 
 
 async def wait_camera_login_count(host: str, minimum: int, timeout: float = 20) -> int:
-    async with asyncio.timeout(timeout):
-        while True:
-            count = await camera_login_count(host)
-            if count >= minimum:
-                return count
-            await asyncio.sleep(0.1)
+    count = None
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                count = await camera_login_count(host)
+                if count >= minimum:
+                    return count
+                await asyncio.sleep(0.1)
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"Synthetic camera login count did not reach {minimum} within {timeout}s "
+            f"(last observed: {count})"
+        ) from exc
 
 
 async def decode_rtsp_stream(stream_name: str) -> None:
@@ -340,12 +117,19 @@ async def manager_camera(host: str) -> dict:
 
 
 async def wait_manager_camera_state(host: str, wanted: str, timeout: float = 20) -> dict:
-    async with asyncio.timeout(timeout):
-        while True:
-            camera_state = await manager_camera(host)
-            if camera_state["state"] == wanted:
-                return camera_state
-            await asyncio.sleep(0.1)
+    camera_state = None
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                camera_state = await manager_camera(host)
+                if camera_state["state"] == wanted:
+                    return camera_state
+                await asyncio.sleep(0.1)
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"Synthetic camera state did not become {wanted!r} within {timeout}s "
+            f"(last observed: {camera_state})"
+        ) from exc
 
 
 async def main():
@@ -530,7 +314,9 @@ async def main():
                 ) as response:
                     if response.status != 202:
                         raise RuntimeError("Could not schedule a synthetic login timeout")
-            await wait_camera_login_count(camera2_host, before_timeout + 2, timeout=25)
+            # Two retries can each wait up to the supervisor's 30-second backoff,
+            # with a 4-second authentication deadline between them.
+            await wait_camera_login_count(camera2_host, before_timeout + 2, timeout=75)
             after_timeout = await camera_status(camera2_host)
             if after_timeout["login_count"] != before_timeout + 2:
                 raise RuntimeError("Login timeout did not recover with exactly one retry")
@@ -558,7 +344,10 @@ async def main():
                     ) as response:
                         if response.status != 202:
                             raise RuntimeError(f"Could not schedule synthetic fault {fault}")
-                failed = await wait_manager_camera_state(camera2_host, "failed")
+                try:
+                    failed = await wait_manager_camera_state(camera2_host, "failed", timeout=45)
+                except RuntimeError as exc:
+                    raise RuntimeError(f"Synthetic fault {stage}/{fault} did not complete") from exc
                 after_fault = await camera_status(camera2_host)
                 expected_fault_logins = before_b + (1 if stage != "media" else 0)
                 if after_fault["login_count"] != expected_fault_logins:
@@ -628,6 +417,6 @@ async def main():
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--camera"]:
-        asyncio.run(synthetic_camera())
+        synthetic_camera()
     else:
-        asyncio.run(asyncio.wait_for(main(), 120))
+        asyncio.run(asyncio.wait_for(main(), 240))

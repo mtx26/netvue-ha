@@ -54,40 +54,57 @@ func TestReadPacketHandlesFragmentedStream(t *testing.T) {
 }
 
 func TestReadPacketRejectsTruncation(t *testing.T) {
-	for _, wire := range [][]byte{
-		[]byte{1, 2, 3},
-		makePacket(4, 0, []byte("ab")),
+	for _, test := range []struct {
+		name string
+		wire []byte
+	}{
+		{name: "partial header", wire: []byte{1, 2, 3}},
+		{name: "partial body", wire: makePacket(4, 0, []byte("ab"))},
 	} {
-		_, err := ReadPacket(bytes.NewReader(wire))
-		if !errors.Is(err, ErrConnectionClosed) {
-			t.Fatalf("expected ErrConnectionClosed, got %v", err)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ReadPacket(bytes.NewReader(test.wire))
+			if !errors.Is(err, ErrConnectionClosed) {
+				t.Fatalf("ReadPacket() error = %v, want ErrConnectionClosed", err)
+			}
+		})
 	}
 }
 
 func TestUnitIntRequiresJSONInteger(t *testing.T) {
 	for _, test := range []struct {
+		name     string
 		raw      string
 		wantOkay bool
 	}{
-		{raw: `{"C":0}`, wantOkay: true},
-		{raw: `{"C":4}`, wantOkay: true},
-		{raw: `{"C":0.0}`},
-		{raw: `{"C":"0"}`},
-		{raw: `{"C":null}`},
-		{raw: `{}`},
+		{name: "zero integer", raw: `{"C":0}`, wantOkay: true},
+		{name: "positive integer", raw: `{"C":4}`, wantOkay: true},
+		{name: "decimal", raw: `{"C":0.0}`},
+		{name: "string", raw: `{"C":"0"}`},
+		{name: "null", raw: `{"C":null}`},
+		{name: "missing", raw: `{}`},
 	} {
-		units, err := ParseUnits([]byte("[" + test.raw + "]"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, okay := unitInt(units[0], "C"); okay != test.wantOkay {
-			t.Fatalf("unitInt() accepted=%v for %s, want %v", okay, test.raw, test.wantOkay)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			units, err := ParseUnits([]byte("[" + test.raw + "]"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, okay := unitInt(units[0], "C"); okay != test.wantOkay {
+				t.Fatalf("unitInt() accepted=%v for %s, want %v", okay, test.raw, test.wantOkay)
+			}
+		})
 	}
 	if _, err := ParseUnits([]byte(`[null]`)); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("expected ErrProtocol for null command unit, got %v", err)
 	}
+}
+
+func mustEncodeCommand(t *testing.T, units []map[string]any) []byte {
+	t.Helper()
+	packet, err := EncodeCommand(units)
+	if err != nil {
+		t.Fatalf("EncodeCommand() failed: %v", err)
+	}
+	return packet
 }
 
 func FuzzParseDatagram(f *testing.F) {

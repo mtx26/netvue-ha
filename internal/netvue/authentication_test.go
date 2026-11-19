@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestAuthenticationRequiresExplicitResultAndSendsOnce(t *testing.T) {
+func TestAuthenticationRequiresExplicitResultAndSendsOneLoginRequest(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		response map[string]any
@@ -31,45 +31,59 @@ func TestAuthenticationRequiresExplicitResultAndSendsOnce(t *testing.T) {
 			serverResult := make(chan error, 1)
 			go func() {
 				request, err := ReadPacket(server)
+				if err == nil && request.Kind != packetCommand {
+					err = ErrProtocol
+				}
+				if err == nil {
+					var units []map[string]json.RawMessage
+					units, err = ParseUnits(request.Body)
+					if err == nil && len(units) != 1 {
+						err = ErrProtocol
+					}
+					if err == nil {
+						var action, version int
+						if json.Unmarshal(units[0]["Q"], &action) != nil || action != 1 ||
+							json.Unmarshal(units[0]["V"], &version) != nil || version != 1 {
+							err = ErrProtocol
+						}
+						var params []json.RawMessage
+						if err == nil && (json.Unmarshal(units[0]["P"], &params) != nil || len(params) != 5) {
+							err = ErrProtocol
+						} else if err == nil {
+							var key, username, host string
+							var nonce int32
+							var port int
+							if json.Unmarshal(params[0], &key) != nil || key != camera.key ||
+								json.Unmarshal(params[1], &nonce) != nil ||
+								json.Unmarshal(params[2], &username) != nil || username != localUserName ||
+								json.Unmarshal(params[3], &host) != nil || host != camera.host ||
+								json.Unmarshal(params[4], &port) != nil || port != camera.port {
+								err = ErrProtocol
+							}
+						}
+					}
+				}
 				if err != nil {
 					serverResult <- err
 					return
 				}
-				if request.Kind != packetCommand {
-					serverResult <- ErrProtocol
-					return
-				}
-				units, err := ParseUnits(request.Body)
-				if err != nil {
-					serverResult <- err
-					return
-				}
-				if len(units) != 1 {
-					serverResult <- ErrProtocol
-					return
-				}
-				paramsField, ok := units[0]["P"]
-				if !ok {
-					serverResult <- ErrProtocol
-					return
-				}
-				var params []json.RawMessage
-				if err := json.Unmarshal(paramsField, &params); err != nil || len(params) != 5 {
-					serverResult <- ErrProtocol
-					return
-				}
-				var sentKey string
-				if json.Unmarshal(params[0], &sentKey) != nil || sentKey != camera.key {
-					serverResult <- ErrProtocol
-					return
-				}
+
 				response, err := EncodeCommand([]map[string]any{test.response})
 				if err == nil {
 					err = writeFull(server, response)
 				}
+				if err == nil {
+					_, err = ReadPacket(server)
+					if err == nil {
+						err = errors.New("authentication sent an extra request")
+					} else if errors.Is(err, ErrConnectionClosed) {
+						err = nil
+					}
+				}
 				serverResult <- err
 			}()
 			got, err := authenticate(context.Background(), client, camera, time.Second)
+			_ = client.Close()
 			if err != nil && !test.wantErr {
 				t.Fatal(err)
 			}

@@ -1,6 +1,7 @@
 package netvue
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -33,7 +34,7 @@ func TestParseAudioFrame(t *testing.T) {
 				t.Fatalf("isAudio = %t, want %t", isAudio, test.wantAudio)
 			}
 			if isAudio && (frame.timestamp != 0x12345678 || frame.pcm != test.wantPCM ||
-				string(frame.payload) != string([]byte{1, 2})) {
+				!bytes.Equal(frame.payload, []byte{1, 2})) {
 				t.Fatalf("unexpected frame: %+v", frame)
 			}
 		})
@@ -44,36 +45,51 @@ func TestParseAudioFrame(t *testing.T) {
 }
 
 func TestParseAudioParameters(t *testing.T) {
-	unit := map[string]json.RawMessage{
-		"P": json.RawMessage(`[[0,1,1,[1,0]], [1,1,2,[16000,16,1]]]`),
-	}
-	parameters, err := parseAudioParameters(unit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parameters == nil || *parameters != (audioParameters{sampleRate: 16000, sampleSize: 16, channels: 1}) {
-		t.Fatalf("unexpected audio parameters: %+v", parameters)
-	}
-	unit["P"] = json.RawMessage(`[[1,1,2,[8000,1,1]]]`)
-	parameters, err = parseAudioParameters(unit)
-	if err != nil || parameters == nil || *parameters != (audioParameters{sampleRate: 8000, sampleSize: 1, channels: 1}) {
-		t.Fatalf("observed LIVE audio parameters = %+v, error = %v", parameters, err)
-	}
-	for _, raw := range []string{
-		`null`,
-		`[[1,1,2,[16000,16]]]`,
-		`[[1,1,2,[8000,null,1]]]`,
-		`[[1,1,2,[16000,16,3]]]`,
-		`[[1,1,2,[96000,16,1]]]`,
+	for _, test := range []struct {
+		name       string
+		raw        string
+		want       *audioParameters
+		wantErrors []error
+	}{
+		{
+			name: "audio parameters after a non-audio channel",
+			raw:  `[[0,1,1,[1,0]], [1,1,2,[16000,16,1]]]`,
+			want: &audioParameters{sampleRate: 16000, sampleSize: 16, channels: 1},
+		},
+		{
+			name: "observed mono LIVE parameters",
+			raw:  `[[1,1,2,[8000,1,1]]]`,
+			want: &audioParameters{sampleRate: 8000, sampleSize: 1, channels: 1},
+		},
+		{name: "null channel list", raw: `null`, wantErrors: []error{ErrProtocol}},
+		{name: "missing channel parameter", raw: `[[1,1,2,[16000,16]]]`, wantErrors: []error{ErrProtocol}},
+		{name: "null sample size", raw: `[[1,1,2,[8000,null,1]]]`, wantErrors: []error{ErrProtocol}},
+		{name: "unsupported channel count", raw: `[[1,1,2,[16000,16,3]]]`, wantErrors: []error{ErrProtocol}},
+		{
+			name: "unsupported sample rate",
+			raw:  `[[1,1,2,[96000,16,1]]]`,
+			wantErrors: []error{
+				ErrProtocol,
+				ErrUnsupportedAudioParameters,
+			},
+		},
 	} {
-		unit["P"] = json.RawMessage(raw)
-		if _, err := parseAudioParameters(unit); !errors.Is(err, ErrProtocol) {
-			t.Errorf("parseAudioParameters(%s) error = %v, want ErrProtocol", raw, err)
-		}
-	}
-	unit["P"] = json.RawMessage(`[[1,1,2,[96000,16,1]]]`)
-	if _, err := parseAudioParameters(unit); !errors.Is(err, ErrUnsupportedAudioParameters) {
-		t.Fatalf("out-of-range audio parameters error = %v, want ErrUnsupportedAudioParameters", err)
+		t.Run(test.name, func(t *testing.T) {
+			parameters, err := parseAudioParameters(map[string]json.RawMessage{
+				"P": json.RawMessage(test.raw),
+			})
+			if test.want != nil {
+				if err != nil || parameters == nil || *parameters != *test.want {
+					t.Fatalf("parameters=%+v error=%v, want %+v", parameters, err, *test.want)
+				}
+				return
+			}
+			for _, want := range test.wantErrors {
+				if !errors.Is(err, want) {
+					t.Fatalf("parseAudioParameters() error = %v, want errors.Is(_, %v)", err, want)
+				}
+			}
+		})
 	}
 }
 
@@ -255,7 +271,7 @@ func TestNewPCMTrackPacketizesNetworkByteOrderL16(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(packets) != 1 || string(packets[0].packet.Payload) != string([]byte{0x12, 0x34}) {
+	if len(packets) != 1 || !bytes.Equal(packets[0].packet.Payload, []byte{0x12, 0x34}) {
 		t.Fatalf("unexpected LPCM RTP packets: %+v", packets)
 	}
 }

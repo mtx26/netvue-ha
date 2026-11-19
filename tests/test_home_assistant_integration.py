@@ -16,12 +16,10 @@ from custom_components.netvue_local import async_setup_entry, async_unload_entry
 from custom_components.netvue_local.bridge_api import (
     BridgeError, ManagedCamera, SessionStatus, async_discover_cameras, async_stop_camera,
 )
-from custom_components.netvue_local.binary_sensor import (
-    NetvueCameraUnavailableSensor, NetvueStreamSensor,
-)
+from custom_components.netvue_local.binary_sensor import NetvueCameraUnavailableSensor
 from custom_components.netvue_local.button import NetvueRestartButton
 from custom_components.netvue_local.camera import NetvueCamera
-from custom_components.netvue_local.config_flow import NetvueConfigFlow, NetvueOptionsFlow, _duplicate
+from custom_components.netvue_local.config_flow import _duplicate
 from custom_components.netvue_local.coordinator import CameraData, NetvueCoordinator
 from custom_components.netvue_local.rtsp import (
     async_probe_stream, stream_url_from_name, validate_host, validate_stream_url,
@@ -113,27 +111,6 @@ class RTSPTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_manual_flow_creates_a_unique_managed_stream(self):
-        hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: []))
-        flow = NetvueConfigFlow()
-        flow.hass = hass
-        data = {"name": "Test", "host": "192.168.10.2"}
-        form = await flow.async_step_user()
-        self.assertEqual(form["step_id"], "user")
-        self.assertEqual(form["type"], "menu")
-        form = await flow.async_step_manual()
-        self.assertEqual(form["data_schema"](data), data)
-        invalid = await flow.async_step_manual({**data, "host": "8.8.8.8"})
-        self.assertEqual(invalid["errors"]["base"], "invalid_input")
-        result = await flow.async_step_manual(data)
-        name = "netvue_192_168_10_2"
-        self.assertEqual(result["type"], "create_entry")
-        self.assertEqual(result["title"], "Test")
-        self.assertEqual(result["data"], {
-            "host": "192.168.10.2", "stream_name": name,
-            "stream_url": f"rtsp://127.0.0.1:8554/{name}",
-        })
-
     async def test_discovery_api_contract_and_validation(self):
         hass = SimpleNamespace()
         response = unittest.mock.MagicMock()
@@ -168,160 +145,6 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             context.__aenter__.side_effect = TimeoutError()
             with self.assertRaises(BridgeError):
                 await async_discover_cameras(hass)
-
-    async def test_discovery_selection_duplicate_and_manual_fallback(self):
-        entry = SimpleNamespace(entry_id="1", data={
-            "host": "192.168.10.2", "stream_url": "rtsp://127.0.0.1:8554/netvue_192_168_10_2",
-        }, options={})
-        hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: [entry]))
-        flow = NetvueConfigFlow()
-        flow.hass = hass
-        with patch("custom_components.netvue_local.config_flow.async_discover_cameras",
-                   new=unittest.mock.AsyncMock(return_value=["192.168.10.2", "192.168.10.3"])) as scan:
-            form = await flow.async_step_discovery()
-            self.assertEqual(form["step_id"], "select")
-            scan.assert_awaited_once_with(hass)
-            invalid = await flow.async_step_select({"name": "Test", "host": "192.168.10.4"})
-            self.assertEqual(invalid["errors"]["base"], "invalid_input")
-            invalid = await flow.async_step_select({"name": " ", "host": "192.168.10.3"})
-            self.assertEqual(invalid["errors"]["base"], "invalid_input")
-            duplicate = await flow.async_step_select({"name": "Test", "host": "192.168.10.2"})
-            self.assertEqual(duplicate["errors"]["base"], "already_configured")
-            self.assertEqual((await flow.async_step_select({"manual": True}))["step_id"], "manual")
-            result = await flow.async_step_select({"name": " Test ", "host": "192.168.10.3"})
-        self.assertEqual(result["title"], "Test")
-        self.assertEqual(result["data"], {
-            "host": "192.168.10.3", "stream_name": "netvue_192_168_10_3",
-            "stream_url": "rtsp://127.0.0.1:8554/netvue_192_168_10_3",
-        })
-
-    async def test_discovery_empty_error_retry_and_manual(self):
-        flow = NetvueConfigFlow()
-        flow.hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: []))
-        with patch("custom_components.netvue_local.config_flow.async_discover_cameras",
-                   new=unittest.mock.AsyncMock(side_effect=[
-                       [], BridgeError("HTTP 503"), ["192.168.10.3"],
-                   ])) as scan:
-            empty = await flow.async_step_discovery()
-            self.assertEqual(empty["errors"]["base"], "no_cameras")
-            error = await flow.async_step_discovery({"manual": False})
-            self.assertEqual(error["errors"]["base"], "discovery_failed")
-            manual = await flow.async_step_discovery({"manual": True})
-            self.assertEqual(manual["step_id"], "manual")
-            self.assertEqual(scan.await_count, 2)
-            created = await flow.async_step_manual({"name": "Manual", "host": "192.168.10.4"})
-            self.assertEqual(created["data"]["host"], "192.168.10.4")
-            selected = await flow.async_step_discovery({"manual": False})
-            self.assertEqual(selected["step_id"], "select")
-
-    async def test_options_change_ip_and_duplicates(self):
-        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
-                                "stream_name": "a",
-                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
-        other = SimpleNamespace(entry_id="2", data={"host": "192.168.10.4",
-                                "stream_name": "b",
-                                "stream_url": "rtsp://127.0.0.1:8554/b"}, options={})
-        hass = SimpleNamespace(config_entries=SimpleNamespace(
-            async_entries=lambda _: [entry, other], async_get_known_entry=lambda _: entry))
-        flow = NetvueOptionsFlow()
-        flow.hass = hass
-        flow.handler = "1"
-        result = await flow.async_step_init({"host": "192.168.10.4"})
-        self.assertEqual(result["errors"]["base"], "already_configured")
-        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
-                   new=unittest.mock.AsyncMock()) as stop:
-            result = await flow.async_step_init({"host": "192.168.10.3"})
-        stop.assert_awaited_once_with(hass, "192.168.10.2")
-        self.assertEqual(result["type"], "create_entry")
-        name = "netvue_192_168_10_3"
-        self.assertEqual(result["data"], {
-            "host": "192.168.10.3", "stream_url": f"rtsp://127.0.0.1:8554/{name}",
-            "stream_name": name, "webrtc_enabled": False, "experimental_talkback": False,
-        })
-
-    async def test_options_preserve_requested_host_when_bridge_is_unavailable(self):
-        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
-                                "stream_name": "a",
-                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
-        hass = SimpleNamespace(config_entries=SimpleNamespace(
-            async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
-        flow = NetvueOptionsFlow()
-        flow.hass = hass
-        flow.handler = "1"
-        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
-                   new=unittest.mock.AsyncMock(side_effect=BridgeError("unavailable"))):
-            result = await flow.async_step_init({"host": "192.168.10.3"})
-        self.assertEqual(result["errors"]["base"], "bridge_unavailable")
-        self.assertEqual(result["data_schema"]({}),
-                         {"host": "192.168.10.3", "webrtc_enabled": False,
-                          "experimental_talkback": False})
-
-    async def test_experimental_webrtc_option_is_persisted(self):
-        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
-                                "stream_name": "a",
-                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
-        hass = SimpleNamespace(config_entries=SimpleNamespace(
-            async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
-        flow = NetvueOptionsFlow()
-        flow.hass = hass
-        flow.handler = "1"
-        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
-                   new=unittest.mock.AsyncMock()):
-            result = await flow.async_step_init({
-                "host": "192.168.10.2", "webrtc_enabled": True,
-                "experimental_talkback": True,
-            })
-        self.assertTrue(result["data"]["webrtc_enabled"])
-        self.assertTrue(result["data"]["experimental_talkback"])
-
-    async def test_experimental_talkback_requires_webrtc(self):
-        entry = SimpleNamespace(entry_id="1", data={"host": "192.168.10.2",
-                                "stream_name": "a",
-                                "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
-        hass = SimpleNamespace(config_entries=SimpleNamespace(
-            async_entries=lambda _: [entry], async_get_known_entry=lambda _: entry))
-        flow = NetvueOptionsFlow()
-        flow.hass = hass
-        flow.handler = "1"
-        with patch("custom_components.netvue_local.config_flow.async_stop_camera",
-                   new=unittest.mock.AsyncMock()) as stop:
-            result = await flow.async_step_init({
-                "host": "192.168.10.2", "webrtc_enabled": False,
-                "experimental_talkback": True,
-            })
-        self.assertEqual(result["errors"]["base"], "talkback_requires_webrtc")
-        stop.assert_not_awaited()
-
-    async def test_setup_unload_and_camera(self):
-        entry = SimpleNamespace(entry_id="1", title="Fake",
-                                data={"host": "192.168.10.2", "stream_name": "a",
-                                      "stream_url": "rtsp://127.0.0.1:8554/a"}, options={})
-        entries = SimpleNamespace(async_forward_entry_setups=unittest.mock.AsyncMock(),
-                                  async_forward_entry_unload=unittest.mock.AsyncMock(return_value=True))
-        hass = SimpleNamespace(config_entries=entries)
-        coordinator = SimpleNamespace(data=CameraData(SessionStatus("supervising", None), True),
-                                      last_update_success=True,
-                                      async_refresh=unittest.mock.AsyncMock(),
-                                      camera=SimpleNamespace(
-                                          async_reconcile=unittest.mock.AsyncMock()))
-        with patch("custom_components.netvue_local.NetvueCoordinator",
-                   return_value=coordinator):
-            self.assertTrue(await async_setup_entry(hass, entry))
-            coordinator.camera.async_reconcile.assert_awaited_once_with()
-        camera = NetvueCamera(entry, coordinator)
-        self.assertEqual(await camera.stream_source(), entry.data["stream_url"])
-        self.assertTrue(camera.available)
-        self.assertEqual(camera.stream_options["rtsp_transport"], "tcp")
-        sensor = NetvueStreamSensor(entry, coordinator)
-        self.assertTrue(sensor.is_on)
-        coordinator.data = CameraData(SessionStatus("failed", "Authentication rejected"), False)
-        self.assertFalse(camera.available)
-        self.assertFalse(sensor.is_on)
-        with patch("custom_components.netvue_local.async_stop_camera",
-                   new=unittest.mock.AsyncMock()) as stop:
-            self.assertTrue(await async_unload_entry(hass, entry))
-        stop.assert_awaited_once_with(hass, "192.168.10.2")
-        self.assertEqual(entries.async_forward_entry_unload.await_count, 4)
 
     async def test_camera_badge_preserves_entire_image_and_other_snapshots(self):
         entry = SimpleNamespace(

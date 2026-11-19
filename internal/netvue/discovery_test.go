@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -32,7 +32,10 @@ func TestDiscoverLANFiltersAndDeduplicates(t *testing.T) {
 	serverErr := make(chan error, 1)
 	go func() {
 		buf := make([]byte, 1024)
-		_ = server.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if err := server.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			serverErr <- err
+			return
+		}
 		n, peer, err := server.ReadFromUDP(buf)
 		if err != nil {
 			serverErr <- err
@@ -54,7 +57,10 @@ func TestDiscoverLANFiltersAndDeduplicates(t *testing.T) {
 		}
 		serverErr <- nil
 	}()
-	_, subnet, _ := net.ParseCIDR("127.0.0.0/30")
+	_, subnet, err := net.ParseCIDR("127.0.0.0/30")
+	if err != nil {
+		t.Fatal(err)
+	}
 	hosts, err := discoverLAN(context.Background(), net.ParseIP("127.0.0.1"), subnet, server.LocalAddr().(*net.UDPAddr))
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +68,7 @@ func TestDiscoverLANFiltersAndDeduplicates(t *testing.T) {
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(hosts, []string{"127.0.0.2"}) {
+	if !slices.Equal(hosts, []string{"127.0.0.2"}) {
 		t.Fatalf("discovered hosts = %v", hosts)
 	}
 }
@@ -73,7 +79,10 @@ func TestDiscoverLANEmptyAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	_, subnet, _ := net.ParseCIDR("127.0.0.0/8")
+	_, subnet, err := net.ParseCIDR("127.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
 	hosts, err := discoverLAN(context.Background(), net.ParseIP("127.0.0.1"), subnet, server.LocalAddr().(*net.UDPAddr))
 	if err != nil || len(hosts) != 0 || hosts == nil {
 		t.Fatalf("empty discovery = %v, %v", hosts, err)
@@ -146,21 +155,24 @@ func FuzzParseDiscovery(f *testing.F) {
 
 func TestValidateLANIPv4RejectsPublicAndNonIPv4(t *testing.T) {
 	for _, test := range []struct {
+		name    string
 		address string
 		valid   bool
 	}{
-		{address: "203.0.113.10"},
-		{address: "2001:db8::1"},
-		{address: "not-an-address"},
-		{address: "192.168.1.12", valid: true},
-		{address: "10.1.2.3", valid: true},
-		{address: "127.0.0.1", valid: true},
+		{name: "public IPv4", address: "203.0.113.10"},
+		{name: "IPv6", address: "2001:db8::1"},
+		{name: "invalid text", address: "not-an-address"},
+		{name: "private class C", address: "192.168.1.12", valid: true},
+		{name: "private class A", address: "10.1.2.3", valid: true},
+		{name: "loopback", address: "127.0.0.1", valid: true},
 	} {
-		_, err := validateLANIPv4(test.address)
-		if gotValid := err == nil; gotValid != test.valid {
-			t.Fatalf("validateLANIPv4(%q) valid=%v, want %v (err=%v)",
-				test.address, gotValid, test.valid, err)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			_, err := validateLANIPv4(test.address)
+			if gotValid := err == nil; gotValid != test.valid {
+				t.Fatalf("validateLANIPv4(%q) valid=%v, want %v (err=%v)",
+					test.address, gotValid, test.valid, err)
+			}
+		})
 	}
 }
 

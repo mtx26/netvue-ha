@@ -89,8 +89,13 @@ func TestOpusAACStreamingFFmpeg(t *testing.T) {
 		t.Fatal("no AAC before input EOF")
 	}
 	close(source.packets)
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("AAC encoder did not stop after input EOF: %v", ctx.Err())
 	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
@@ -98,7 +103,10 @@ func TestOpusAACStreamingFFmpeg(t *testing.T) {
 		t.Fatalf("AAC frame count = %d", len(sink.frames))
 	}
 	for _, frame := range sink.frames {
-		if len(frame) < 8 || frame[0] != 0xff || frame[1] != 0xf1 || frame[2]>>6 != 1 || (frame[2]>>2)&15 != 11 || (frame[3]>>6) != 1 {
+		if len(frame) < 8 {
+			t.Fatalf("short ADTS frame: %x", frame)
+		}
+		if frame[0] != 0xff || frame[1] != 0xf1 || frame[2]>>6 != 1 || (frame[2]>>2)&15 != 11 || (frame[3]>>6) != 1 {
 			t.Fatalf("unexpected ADTS header: %x", frame[:7])
 		}
 	}
@@ -121,12 +129,22 @@ func TestOpusAACRealTimeFirstFrame(t *testing.T) {
 	for i := 0; i < 180; i++ {
 		select {
 		case <-ticker.C:
-			source.packets <- &rtp.Packet{Header: rtp.Header{SequenceNumber: uint16(i), Timestamp: uint32(i * 960)}, Payload: []byte{0xf8, 0xff, 0xfe}}
+			packet := &rtp.Packet{Header: rtp.Header{SequenceNumber: uint16(i), Timestamp: uint32(i * 960)}, Payload: []byte{0xf8, 0xff, 0xfe}}
+			select {
+			case source.packets <- packet:
+			case <-ctx.Done():
+				t.Fatal("timed out while sending real-time Opus input")
+			}
 		case <-sink.first:
 			t.Logf("first AAC frame after %s of real-time input", time.Since(start))
 			close(source.packets)
-			if err := <-done; err != nil {
-				t.Fatal(err)
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatalf("AAC encoder did not stop after input EOF: %v", ctx.Err())
 			}
 			return
 		case err := <-done:
@@ -147,8 +165,15 @@ func TestOpusAACEncoderEarlyExit(t *testing.T) {
 	defer cancel()
 	source := &testAudioSource{ctx: ctx, packets: make(chan *rtp.Packet)}
 	sink := &testTalkSink{first: make(chan struct{})}
-	if err := transcodeOpusToAAC(ctx, executable, source, sink); err == nil || ctx.Err() != nil {
-		t.Fatalf("early encoder exit not propagated promptly: %v", err)
+	done := make(chan error, 1)
+	go func() { done <- transcodeOpusToAAC(ctx, executable, source, sink) }()
+	select {
+	case err := <-done:
+		if err == nil || ctx.Err() != nil {
+			t.Fatalf("early encoder exit not propagated promptly: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("early encoder exit was not propagated before deadline")
 	}
 }
 
@@ -230,8 +255,15 @@ func TestOpusAACNonSilentSignal(t *testing.T) {
 	}
 	close(source.packets)
 	sink := &testTalkSink{first: make(chan struct{})}
-	if err := transcodeOpusToAAC(ctx, ffmpeg, source, sink); err != nil {
-		t.Fatal(err)
+	done := make(chan error, 1)
+	go func() { done <- transcodeOpusToAAC(ctx, ffmpeg, source, sink) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("Opus-to-AAC conversion did not stop before deadline: %v", ctx.Err())
 	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()

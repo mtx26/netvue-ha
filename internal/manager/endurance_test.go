@@ -66,8 +66,9 @@ func TestManagerEnduranceIndependentCamerasAndFailure(t *testing.T) {
 	}
 	activeMu.Lock()
 	if _, stillActive := active["192.168.10.20"]; stillActive || len(active) != healthyCameras-1 {
+		snapshot := fmt.Sprint(active)
 		activeMu.Unlock()
-		t.Fatalf("stopping one camera affected unexpected sessions: active = %v", active)
+		t.Fatalf("stopping one camera affected unexpected sessions: active = %s", snapshot)
 	}
 	activeMu.Unlock()
 
@@ -320,8 +321,8 @@ func BenchmarkManagerEnduranceCameraSnapshot(b *testing.B) {
 	})
 	for i := 0; i < 16; i++ {
 		host := fmt.Sprintf("192.168.10.%d", 20+i)
-		if _, _, err := manager.AddCamera(host, fmt.Sprintf("bench_%d", i)); err != nil {
-			b.Fatal(err)
+		if _, added, err := manager.AddCamera(host, fmt.Sprintf("bench_%d", i)); err != nil || !added {
+			b.Fatalf("AddCamera(%q) = added %v, error %v", host, added, err)
 		}
 	}
 

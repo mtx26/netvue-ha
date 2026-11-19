@@ -27,14 +27,41 @@ func TestTalkCommand(t *testing.T) {
 	if code := runCommand(context.Background(), args, nil, nil, nil, runner); code != 0 || !called {
 		t.Fatalf("code=%d called=%t", code, called)
 	}
-	for _, invalid := range [][]string{
-		{"--source", "192.0.2.1", "--camera", "192.0.2.2", "--rtsp", "rtsp://127.0.0.1:8554/talk", "--duration", "1s"},
-		{"--source", "192.0.2.1", "--camera", "192.0.2.2", "--rtsp", "rtsp://127.0.0.1:8554/talk", "--duration", "3m", "--audio", "clip"},
-		{"--source", "192.0.2.1", "--camera", "192.0.2.2", "--rtsp", "rtsp://127.0.0.1:8554/talk", "--duration", "10s", "--audio", "clip", "--delay", "11s"},
+}
+
+func TestParseTalkCommandLimitsAndRequiredFlags(t *testing.T) {
+	base := []string{"--source", "192.0.2.1", "--camera", "192.0.2.2",
+		"--rtsp", "rtsp://127.0.0.1:8554/talk"}
+	for _, test := range []struct {
+		name    string
+		flags   []string
+		wantErr bool
+	}{
+		{name: "missing duration", flags: []string{"--audio", "clip.aac"}, wantErr: true},
+		{name: "missing audio", flags: []string{"--duration", "45s"}, wantErr: true},
+		{name: "malformed duration", flags: []string{"--duration", "later", "--audio", "clip.aac"}, wantErr: true},
+		{name: "zero duration", flags: []string{"--duration", "0s", "--audio", "clip.aac"}, wantErr: true},
+		{name: "negative duration", flags: []string{"--duration", "-1s", "--audio", "clip.aac"}, wantErr: true},
+		{name: "duration over maximum", flags: []string{"--duration", "2m1s", "--audio", "clip.aac"}, wantErr: true},
+		{name: "negative delay", flags: []string{"--duration", "45s", "--audio", "clip.aac", "--delay", "-1ns"}, wantErr: true},
+		{name: "delay over maximum", flags: []string{"--duration", "45s", "--audio", "clip.aac", "--delay", "10s1ns"}, wantErr: true},
+		{name: "maximum duration and delay", flags: []string{"--duration", "2m", "--audio", "clip.aac", "--delay", "10s"}},
 	} {
-		if _, err := parseCommandFlags("talk", invalid); err == nil {
-			t.Fatalf("accepted invalid flags %v", invalid)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			args := append(append([]string(nil), base...), test.flags...)
+			_, err := parseCommandFlags("talk", args)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("parseCommandFlags() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestTalkCommandRequiresRunner(t *testing.T) {
+	args := []string{"talk", "--source", "192.0.2.1", "--camera", "192.0.2.2",
+		"--rtsp", "rtsp://127.0.0.1:8554/talk", "--duration", "45s", "--audio", "clip.aac"}
+	if code := runCommand(context.Background(), args, nil, nil, nil, nil); code != 1 {
+		t.Fatalf("runCommand() = %d, want 1 when talkback runner is unavailable", code)
 	}
 }
 

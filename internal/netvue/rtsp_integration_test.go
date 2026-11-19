@@ -24,6 +24,7 @@ import (
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
 	tscodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
+	"github.com/mtx26/netvue-ha/internal/netvue/netvuetest"
 	"github.com/pion/rtp"
 )
 
@@ -334,11 +335,8 @@ func (handler *publisherTestRTSPHandler) OnSessionClose(*gortsplib.ServerHandler
 }
 
 func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
-	mediamtx := os.Getenv("NETVUE_TEST_MEDIAMTX")
-	ffmpeg := os.Getenv("NETVUE_TEST_FFMPEG")
-	if mediamtx == "" || ffmpeg == "" {
-		t.Skip("set NETVUE_TEST_MEDIAMTX and NETVUE_TEST_FFMPEG to run the loopback integration test")
-	}
+	mediamtx := netvuetest.Executable(t, "NETVUE_TEST_MEDIAMTX", "mediamtx")
+	ffmpeg := netvuetest.Executable(t, "NETVUE_TEST_FFMPEG", "ffmpeg")
 	dir := t.TempDir()
 	videoPath := filepath.Join(dir, "synthetic.ts")
 	generateSyntheticVideo(t, ffmpeg, videoPath)
@@ -419,12 +417,9 @@ func TestMediaMTXPublicationDecodesWithFFmpeg(t *testing.T) {
 }
 
 func TestMediaMTXAudioVideoPublicationDecodesWithFFmpeg(t *testing.T) {
-	mediamtx := os.Getenv("NETVUE_TEST_MEDIAMTX")
-	ffmpeg := os.Getenv("NETVUE_TEST_FFMPEG")
+	mediamtx := netvuetest.Executable(t, "NETVUE_TEST_MEDIAMTX", "mediamtx")
+	ffmpeg := netvuetest.Executable(t, "NETVUE_TEST_FFMPEG", "ffmpeg")
 	ffprobe := os.Getenv("NETVUE_TEST_FFPROBE")
-	if mediamtx == "" || ffmpeg == "" {
-		t.Skip("set NETVUE_TEST_MEDIAMTX and NETVUE_TEST_FFMPEG to run the loopback integration test")
-	}
 	dir := t.TempDir()
 	videoPath := filepath.Join(dir, "synthetic.ts")
 	audioPath := filepath.Join(dir, "synthetic.aac")

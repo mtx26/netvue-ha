@@ -16,14 +16,12 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	"github.com/mtx26/netvue-ha/internal/netvue/netvuetest"
 )
 
 func TestMediaMTXContinuousReaderResolutionChange(t *testing.T) {
-	mediamtx := os.Getenv("NETVUE_TEST_MEDIAMTX")
-	ffmpeg := os.Getenv("NETVUE_TEST_FFMPEG")
-	if mediamtx == "" || ffmpeg == "" {
-		t.Skip("set NETVUE_TEST_MEDIAMTX and NETVUE_TEST_FFMPEG")
-	}
+	mediamtx := netvuetest.Executable(t, "NETVUE_TEST_MEDIAMTX", "mediamtx")
+	ffmpeg := netvuetest.Executable(t, "NETVUE_TEST_FFMPEG", "ffmpeg")
 	dir := t.TempDir()
 	small := multiCameraFrames(t, ffmpeg, filepath.Join(dir, "small.ts"), "red", "160x90")
 	large := multiCameraFrames(t, ffmpeg, filepath.Join(dir, "large.ts"), "blue", "320x180")

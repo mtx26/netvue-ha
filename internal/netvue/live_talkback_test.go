@@ -55,7 +55,7 @@ func TestLiveTalkOnReceivingSession(t *testing.T) {
 	if _, err := controller.Open(ctx); !errors.Is(err, ErrTalkUnavailable) {
 		t.Fatalf("unready Open: %v", err)
 	}
-	ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+	ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 	if err := writeFull(server, ack); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestLiveTalkOnReceivingSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A later command is a barrier: the preceding video has been processed.
-	barrier, _ := EncodeCommand([]map[string]any{{"A": 99}})
+	barrier := mustEncodeCommand(t, []map[string]any{{"A": 99}})
 	if err := writeFull(server, barrier); err != nil {
 		t.Fatal(err)
 	}
@@ -159,19 +159,19 @@ func TestLiveTalkDirectionRejectionDoesNotStopVideo(t *testing.T) {
 	go func() {
 		done <- receiveLiveWithTalkController(ctx, client, &audioTestPublisher{}, time.Second, time.Second, true, nil, controller)
 	}()
-	ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+	ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 	if err := writeFull(server, ack); err != nil {
 		t.Fatal(err)
 	}
 	assertDirection(t, readTalkPacket(t, server), 1)
-	reject, _ := EncodeCommand([]map[string]any{{"A": 5, "V": 1, "C": 1}})
+	reject := mustEncodeCommand(t, []map[string]any{{"A": 5, "V": 1, "C": 1}})
 	if err := writeFull(server, reject); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeFull(server, mediaPacket(0, []byte{1})); err != nil {
 		t.Fatal(err)
 	}
-	barrier, _ := EncodeCommand([]map[string]any{{"A": 99}})
+	barrier := mustEncodeCommand(t, []map[string]any{{"A": 99}})
 	if err := writeFull(server, barrier); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestLiveTalkExplicitRejectionSignalsStreamAndPreservesCameraAudioAndVideo(t
 	go func() {
 		done <- receiveLiveWithTalkController(ctx, client, publisher, time.Second, time.Second, true, nil, controller)
 	}()
-	ack, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
+	ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{8000, 1, 1}}}}})
 	if err := writeFull(server, ack); err != nil {
 		t.Fatal(err)
 	}
@@ -202,18 +202,26 @@ func TestLiveTalkExplicitRejectionSignalsStreamAndPreservesCameraAudioAndVideo(t
 	if err := writeFull(server, mediaPacket(0, []byte{1})); err != nil {
 		t.Fatal(err)
 	}
-	barrier, _ := EncodeCommand([]map[string]any{{"A": 99}})
+	barrier := mustEncodeCommand(t, []map[string]any{{"A": 99}})
 	if err := writeFull(server, barrier); err != nil {
 		t.Fatal(err)
 	}
-	opened := make(chan *TalkStream, 1)
-	go func() { stream, _ := controller.Open(ctx); opened <- stream }()
-	assertDirection(t, readTalkPacket(t, server), 3)
-	stream := <-opened
-	if stream == nil {
-		t.Fatal("open failed")
+	type openResult struct {
+		stream *TalkStream
+		err    error
 	}
-	reject, _ := EncodeCommand([]map[string]any{{"A": 5, "V": 1, "C": 1}})
+	opened := make(chan openResult, 1)
+	go func() {
+		stream, err := controller.Open(ctx)
+		opened <- openResult{stream: stream, err: err}
+	}()
+	assertDirection(t, readTalkPacket(t, server), 3)
+	result := <-opened
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	stream := result.stream
+	reject := mustEncodeCommand(t, []map[string]any{{"A": 5, "V": 1, "C": 1}})
 	if err := writeFull(server, reject); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +268,7 @@ func TestLiveTalkCanceledWhileWaitingForWriter(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("send: %v", err)
 	}
-	packet, _ := EncodeCommand([]map[string]any{{"A": 99}})
+	packet := mustEncodeCommand(t, []map[string]any{{"A": 99}})
 	written := make(chan error, 1)
 	go func() { written <- writeFull(client, packet) }()
 	if got := readTalkPacket(t, server); got.Kind != packetCommand {
@@ -300,8 +308,7 @@ func TestLiveTalkChangedSelectionRestoresDirection(t *testing.T) {
 		done <- receiveLiveWithTalkController(ctx, client, &audioTestPublisher{}, time.Second, time.Second, true, nil, controller)
 	}()
 	selection := func(rate int) []byte {
-		p, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{rate, 1, 1}}}}})
-		return p
+		return mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0, "P": [][]any{{1, 1, 2, []any{rate, 1, 1}}}}})
 	}
 	if err := writeFull(server, selection(8000)); err != nil {
 		t.Fatal(err)
@@ -310,17 +317,25 @@ func TestLiveTalkChangedSelectionRestoresDirection(t *testing.T) {
 	if err := writeFull(server, mediaPacket(0, []byte{1})); err != nil {
 		t.Fatal(err)
 	}
-	barrier, _ := EncodeCommand([]map[string]any{{"A": 99}})
+	barrier := mustEncodeCommand(t, []map[string]any{{"A": 99}})
 	if err := writeFull(server, barrier); err != nil {
 		t.Fatal(err)
 	}
-	opened := make(chan *TalkStream, 1)
-	go func() { stream, _ := controller.Open(ctx); opened <- stream }()
-	assertDirection(t, readTalkPacket(t, server), 3)
-	stream := <-opened
-	if stream == nil {
-		t.Fatal("open failed")
+	type openResult struct {
+		stream *TalkStream
+		err    error
 	}
+	opened := make(chan openResult, 1)
+	go func() {
+		stream, err := controller.Open(ctx)
+		opened <- openResult{stream: stream, err: err}
+	}()
+	assertDirection(t, readTalkPacket(t, server), 3)
+	result := <-opened
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	stream := result.stream
 	if err := writeFull(server, selection(16000)); err != nil {
 		t.Fatal(err)
 	}
@@ -348,15 +363,22 @@ func TestLiveTalkIsolationAndReconnect(t *testing.T) {
 	params := &audioParameters{sampleRate: 8000, channels: 1}
 	a.attachIfAbsent(ctx, &sessionWriter{Conn: first}, params)
 	b.attachIfAbsent(ctx, &sessionWriter{Conn: second}, params)
+	type openResult struct {
+		stream *TalkStream
+		err    error
+	}
 	open := func(c *LiveTalkback, peer net.Conn) *TalkStream {
-		done := make(chan *TalkStream, 1)
-		go func() { s, _ := c.Open(ctx); done <- s }()
+		done := make(chan openResult, 1)
+		go func() {
+			stream, err := c.Open(ctx)
+			done <- openResult{stream: stream, err: err}
+		}()
 		assertDirection(t, readTalkPacket(t, peer), 3)
-		s := <-done
-		if s == nil {
-			t.Fatal("open failed")
+		result := <-done
+		if result.err != nil {
+			t.Fatalf("Open() failed: %v", result.err)
 		}
-		return s
+		return result.stream
 	}
 	s1, s2 := open(a, firstPeer), open(b, secondPeer)
 	a.detach()

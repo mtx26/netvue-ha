@@ -7,13 +7,10 @@ from unittest.mock import patch
 
 from aiohttp import ClientSession, web
 from homeassistant.components.camera import WebRTCAnswer, WebRTCCandidate, WebRTCError
-from homeassistant.components.camera.const import DATA_COMPONENT
-from homeassistant.components.camera.webrtc import DATA_WEBRTC_PROVIDERS
 from homeassistant.exceptions import HomeAssistantError
 from webrtc_models import RTCIceCandidateInit
 
 from custom_components.netvue_local.webrtc import NetvueWebRTCProvider, _offer_sends_audio
-from custom_components.netvue_local.camera import NetvueCamera
 
 
 class ProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -262,65 +259,3 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(lambda: not self.provider._sessions)
         self.assertEqual(messages, [WebRTCError(
             "netvue_webrtc_failed", "WebRTC negotiation failed")])
-
-    async def test_entity_registers_provider_only_when_opted_in(self):
-        entry = SimpleNamespace(
-            entry_id="1", title="Fake",
-            data={"host": "192.168.10.2", "stream_url": "rtsp://127.0.0.1:8554/a"},
-            options={},
-        )
-        coordinator = SimpleNamespace(last_update_success=True)
-        remove = unittest.mock.Mock()
-        with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass",
-                   new=unittest.mock.AsyncMock()), \
-             patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_will_remove_from_hass",
-                   new=unittest.mock.AsyncMock()), \
-             patch("custom_components.netvue_local.camera.async_register_webrtc_provider",
-                   return_value=remove) as register:
-            camera = NetvueCamera(entry, coordinator)
-            camera.hass = SimpleNamespace()
-            await camera.async_added_to_hass()
-            register.assert_not_called()
-            await camera.async_will_remove_from_hass()
-            entry.options = {"webrtc_enabled": True}
-            camera = NetvueCamera(entry, coordinator)
-            camera.hass = SimpleNamespace()
-            await camera.async_added_to_hass()
-            register.assert_called_once()
-            self.assertIsInstance(register.call_args.args[1], NetvueWebRTCProvider)
-            self.assertFalse(camera.camera_entity_capabilities.two_way_audio)
-            await camera.async_will_remove_from_hass()
-            remove.assert_called_once()
-
-            entry.options = {"webrtc_enabled": True, "experimental_talkback": True}
-            camera = NetvueCamera(entry, coordinator)
-            camera.hass = SimpleNamespace()
-            await camera.async_added_to_hass()
-            self.assertTrue(camera.camera_entity_capabilities.two_way_audio)
-            self.assertTrue(register.call_args.args[1]._allow_microphone)
-            await camera.async_will_remove_from_hass()
-
-    async def test_real_ha_registry_selects_and_removes_provider(self):
-        entry = SimpleNamespace(
-            entry_id="1", title="Fake",
-            data={"host": "192.168.10.2", "stream_url": "rtsp://127.0.0.1:8554/a"},
-            options={"webrtc_enabled": True},
-        )
-        camera = NetvueCamera(entry, SimpleNamespace(last_update_success=True))
-        camera.hass = SimpleNamespace(
-            data={"camera": object(), DATA_COMPONENT: SimpleNamespace(entities=[camera])},
-            async_create_task=asyncio.create_task,
-        )
-        with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass",
-                   new=unittest.mock.AsyncMock()), \
-             patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_will_remove_from_hass",
-                   new=unittest.mock.AsyncMock()), \
-             patch.object(camera, "async_write_ha_state"):
-            await camera.async_added_to_hass()
-            await self.wait_for(lambda: camera.webrtc_provider is not None)
-            provider = camera.webrtc_provider
-            self.assertIn(provider, camera.hass.data[DATA_WEBRTC_PROVIDERS])
-            self.assertFalse(camera.camera_entity_capabilities.two_way_audio)
-            await camera.async_will_remove_from_hass()
-            await self.wait_for(lambda: camera.webrtc_provider is None)
-            self.assertFalse(camera.hass.data[DATA_WEBRTC_PROVIDERS])

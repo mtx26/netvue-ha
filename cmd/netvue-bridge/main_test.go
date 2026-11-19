@@ -183,6 +183,27 @@ func TestRunCommandTreatsCanceledContextAsNormalStop(t *testing.T) {
 	}
 }
 
+func TestRunCommandTreatsRunnerCancellationAsNormalStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := false
+	runTest := func(context.Context, string, string, string, time.Duration) error {
+		called = true
+		cancel()
+		return context.Canceled
+	}
+
+	code := runCommand(ctx, []string{
+		"test",
+		"--source", "192.0.2.10",
+		"--camera", "192.0.2.20",
+		"--rtsp", "rtsp://127.0.0.1:8554/test",
+		"--duration", "1s",
+	}, runTest, nil, nil, nil)
+	if code != 0 || !called {
+		t.Fatalf("runCommand() = %d, test runner called = %v", code, called)
+	}
+}
+
 func TestRunCommandReportsShutdownErrorAfterContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	called := false

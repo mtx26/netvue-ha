@@ -50,6 +50,15 @@ func TestRetryableSessionErrorClassification(t *testing.T) {
 	}
 }
 
+func TestRetryableSessionErrorFatalTakesPrecedenceOverRetryableCause(t *testing.T) {
+	for _, fatal := range []error{ErrAuthenticationRejected, ErrProtocol, ErrMediaFrame, ErrVideoFatal} {
+		err := errors.Join(fatal, io.EOF, testNetworkError{})
+		if retryableSessionError(err) {
+			t.Errorf("%v combined with a retryable cause was classified as retryable", fatal)
+		}
+	}
+}
+
 func TestRetryableSessionErrorBlocksMalformedURL(t *testing.T) {
 	err := &url.Error{Op: "parse", URL: "rtsp://[", Err: errors.New("missing bracket")}
 	if retryableSessionError(err) {

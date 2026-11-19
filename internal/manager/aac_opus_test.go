@@ -24,7 +24,10 @@ func TestAACAccessUnitToADTS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(frame) != 10 || frame[0] != 0xff || frame[1] != 0xf1 ||
+	if len(frame) != 10 {
+		t.Fatalf("ADTS frame length = %d, want 10: %x", len(frame), frame)
+	}
+	if frame[0] != 0xff || frame[1] != 0xf1 ||
 		(frame[2]>>6) != 1 || (frame[2]>>2)&15 != 11 ||
 		((frame[2]&1)<<2|frame[3]>>6) != 1 {
 		t.Fatalf("invalid AAC-LC ADTS header: %x", frame[:7])
@@ -36,15 +39,20 @@ func TestAACAccessUnitToADTS(t *testing.T) {
 }
 
 func TestAACAccessUnitToADTSRejectsUnsupportedFormats(t *testing.T) {
-	for _, audio := range []*format.MPEG4Audio{
-		nil,
-		{Config: &mpeg4audio.AudioSpecificConfig{Type: mpeg4audio.ObjectType(1), SampleRate: 8000, ChannelConfig: 1}},
-		{Config: &mpeg4audio.AudioSpecificConfig{Type: mpeg4audio.ObjectTypeAACLC, SampleRate: 8000}},
-		{Config: &mpeg4audio.AudioSpecificConfig{Type: mpeg4audio.ObjectTypeAACLC, SampleRate: 12345, ChannelConfig: 1}},
+	for _, test := range []struct {
+		name  string
+		audio *format.MPEG4Audio
+	}{
+		{"missing format", nil},
+		{"unsupported object type", &format.MPEG4Audio{Config: &mpeg4audio.AudioSpecificConfig{Type: mpeg4audio.ObjectType(1), SampleRate: 8000, ChannelConfig: 1}}},
+		{"missing channel configuration", &format.MPEG4Audio{Config: &mpeg4audio.AudioSpecificConfig{Type: mpeg4audio.ObjectTypeAACLC, SampleRate: 8000}}},
+		{"unsupported sample rate", &format.MPEG4Audio{Config: &mpeg4audio.AudioSpecificConfig{Type: mpeg4audio.ObjectTypeAACLC, SampleRate: 12345, ChannelConfig: 1}}},
 	} {
-		if _, err := aacAccessUnitToADTS(audio, []byte{1}); err == nil {
-			t.Fatalf("accepted unsupported audio format: %+v", audio)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := aacAccessUnitToADTS(test.audio, []byte{1}); err == nil {
+				t.Fatalf("accepted unsupported audio format: %+v", test.audio)
+			}
+		})
 	}
 	if _, err := aacAccessUnitToADTS(&format.MPEG4Audio{Config: &mpeg4audio.AudioSpecificConfig{
 		Type: mpeg4audio.ObjectTypeAACLC, SampleRate: 8000, ChannelConfig: 1,
@@ -94,8 +102,13 @@ func TestAACToOpusRTPWithFFmpeg(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- transcodeAACToOpusRTP(ctx, ffmpeg, source, track) }()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("AAC-to-Opus conversion did not stop before deadline: %v", ctx.Err())
 	}
 	close(track.packets)
 	decoder, err := opus.NewDecoderWithOutput(48000, 2)

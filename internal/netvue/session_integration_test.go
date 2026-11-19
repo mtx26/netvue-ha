@@ -7,6 +7,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-ha/internal/netvue/netvuetest"
 )
 
 func TestRunSessionStopsAfterRejectedAuthentication(t *testing.T) {
@@ -32,12 +34,14 @@ func testRunSessionStopsAfterAuthentication(t *testing.T, result any, wantError 
 	targetIP := net.ParseIP("127.0.0.2").To4()
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: targetIP, Port: discoveryPort})
 	if err != nil {
-		t.Skipf("loopback discovery port is unavailable: %v", err)
+		netvuetest.RequireIntegration(t, "loopback discovery port is unavailable: %v", err)
+		return
 	}
 	defer udp.Close()
 	tcp, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: targetIP})
 	if err != nil {
-		t.Skipf("secondary loopback address is unavailable: %v", err)
+		netvuetest.RequireIntegration(t, "secondary loopback address is unavailable: %v", err)
+		return
 	}
 	defer tcp.Close()
 	rtspListener, err := net.Listen("tcp4", "127.0.0.1:0")

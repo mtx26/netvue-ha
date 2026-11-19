@@ -15,6 +15,17 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def require_integration(case: unittest.TestCase, reason: str) -> None:
+    """Skip a test whose external prerequisite is missing.
+
+    NETVUE_REQUIRE_INTEGRATION=1 (set by CI) turns the skip into a failure, like
+    netvuetest.RequireIntegration in the Go tests.
+    """
+    if os.environ.get("NETVUE_REQUIRE_INTEGRATION") == "1":
+        case.fail(f"NETVUE_REQUIRE_INTEGRATION=1 but a prerequisite is unavailable: {reason}")
+    case.skipTest(reason)
+
+
 class PortainerConfigTest(unittest.TestCase):
     def test_services_keep_container_security_settings(self):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
@@ -65,7 +76,7 @@ class PortainerConfigTest(unittest.TestCase):
     def test_mediamtx_runtime_listeners_are_isolated(self):
         binary = os.environ.get("NETVUE_TEST_MEDIAMTX")
         if not binary or sys.platform != "linux":
-            self.skipTest("requires Linux and NETVUE_TEST_MEDIAMTX")
+            require_integration(self, "requires Linux and NETVUE_TEST_MEDIAMTX")
         config = yaml.safe_load((ROOT / "deployment/mediamtx.yml").read_text())
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
         stack_environment = stack["services"]["mediamtx"]["environment"]

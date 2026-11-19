@@ -377,9 +377,10 @@ func TestAudioDiagnosticIsActionable(t *testing.T) {
 func TestReceiveLiveFallsBackToVideoWhenAudioSelectionIsRejected(t *testing.T) {
 	client, server := testPipe(t)
 	publisher := &generationTestPublisher{}
+	rejected := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 1}})
+	accepted := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 1, "C": 0}})
 	result := make(chan error, 1)
 	go func() {
-		rejected, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 1}})
 		if err := writeFull(server, rejected); err != nil {
 			result <- err
 			return
@@ -400,7 +401,6 @@ func TestReceiveLiveFallsBackToVideoWhenAudioSelectionIsRejected(t *testing.T) {
 			}
 		}
 		if err == nil {
-			accepted, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 1, "C": 0}})
 			err = writeFull(server, accepted)
 		}
 		if err == nil {
@@ -565,11 +565,14 @@ func TestReceiveLiveConfirmationVersions(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			client, server := testPipe(t)
 			publisher := &generationTestPublisher{}
+			ack := mustEncodeCommand(t, []map[string]any{test.unit})
+			sent := make(chan error, 1)
 			go func() {
-				ack, _ := EncodeCommand([]map[string]any{test.unit})
-				if writeFull(server, ack) == nil {
-					_ = writeFull(server, mediaPacket(1, []byte{1}))
+				err := writeFull(server, ack)
+				if err == nil && test.wantSuccess {
+					err = writeFull(server, mediaPacket(1, []byte{1}))
 				}
+				sent <- err
 			}()
 			ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, errSessionDurationElapsed)
 			defer cancel()
@@ -586,6 +589,9 @@ func TestReceiveLiveConfirmationVersions(t *testing.T) {
 			}
 			if test.diagnostic != "" && SessionDiagnostic(err) != test.diagnostic {
 				t.Fatalf("diagnostic = %q, want %q", SessionDiagnostic(err), test.diagnostic)
+			}
+			if err := <-sent; err != nil {
+				t.Fatalf("server could not send LIVE response: %v", err)
 			}
 		})
 	}
@@ -631,10 +637,14 @@ func TestReceiveLiveCancellationWakesBlockedRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	publisher := &generationTestPublisher{total: 1, current: 1, generation: 1, pushed: make(chan struct{})}
+	acknowledgment := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 2, "C": 0}})
+	serverDone := make(chan error, 1)
 	go func() {
-		acknowledgment, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 2, "C": 0}})
-		_ = writeFull(server, acknowledgment)
-		_ = writeFull(server, mediaPacket(1, []byte{1}))
+		if err := writeFull(server, acknowledgment); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- writeFull(server, mediaPacket(1, []byte{1}))
 	}()
 	result := make(chan error, 1)
 	go func() {
@@ -653,6 +663,9 @@ func TestReceiveLiveCancellationWakesBlockedRead(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("blocked LIVE read did not stop after cancellation")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server could not send LIVE packets: %v", err)
 	}
 }
 
@@ -687,14 +700,21 @@ func TestReceiveLiveDoesNotConvertParentDeadlineToSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	publisher := &generationTestPublisher{total: 1, current: 1, generation: 1}
+	acknowledgment := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 2, "C": 0}})
+	serverDone := make(chan error, 1)
 	go func() {
-		acknowledgment, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 2, "C": 0}})
-		_ = writeFull(server, acknowledgment)
-		_ = writeFull(server, mediaPacket(1, []byte{1}))
+		if err := writeFull(server, acknowledgment); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- writeFull(server, mediaPacket(1, []byte{1}))
 	}()
 	err := receiveLive(ctx, client, publisher)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected caller deadline error, got %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server could not send LIVE packets: %v", err)
 	}
 }
 
@@ -717,11 +737,21 @@ func TestReceiveLiveReclassifiesPushErrorWhenContextEnds(t *testing.T) {
 				entered: make(chan struct{}),
 				release: make(chan struct{}),
 			}
+			acknowledgment := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 2, "C": 0}})
+			serverDone := make(chan error, 1)
 			go func() {
-				acknowledgment, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 2, "C": 0}})
-				_ = writeFull(server, acknowledgment)
-				_ = writeFull(server, mediaPacket(1, []byte{1}))
-				_ = writeFull(server, mediaPacket(2, []byte{2}))
+				packets := [][]byte{
+					acknowledgment,
+					mediaPacket(1, []byte{1}),
+					mediaPacket(2, []byte{2}),
+				}
+				for _, packet := range packets {
+					if err := writeFull(server, packet); err != nil {
+						serverDone <- err
+						return
+					}
+				}
+				serverDone <- nil
 			}()
 			result := make(chan error, 1)
 			go func() {
@@ -745,6 +775,9 @@ func TestReceiveLiveReclassifiesPushErrorWhenContextEnds(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("receive loop did not stop after context ended")
 			}
+			if err := <-serverDone; err != nil {
+				t.Fatalf("server could not send LIVE packets: %v", err)
+			}
 		})
 	}
 }
@@ -752,11 +785,20 @@ func TestReceiveLiveReclassifiesPushErrorWhenContextEnds(t *testing.T) {
 func TestReceiveLiveRejectsInactivePublicationAtSessionEnd(t *testing.T) {
 	client, server := testPipe(t)
 	publisher := &generationTestPublisher{resetOnly: true}
+	acknowledgment := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 2, "C": 0}})
+	serverDone := make(chan error, 1)
 	go func() {
-		acknowledgment, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 2, "C": 0}})
-		_ = writeFull(server, acknowledgment)
-		_ = writeFull(server, mediaPacket(1, []byte{1}))
-		_ = writeFull(server, mediaPacket(2, []byte{2}))
+		for _, packet := range [][]byte{
+			acknowledgment,
+			mediaPacket(1, []byte{1}),
+			mediaPacket(2, []byte{2}),
+		} {
+			if err := writeFull(server, packet); err != nil {
+				serverDone <- err
+				return
+			}
+		}
+		serverDone <- nil
 	}()
 	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, errSessionDurationElapsed)
 	defer cancel()
@@ -768,17 +810,29 @@ func TestReceiveLiveRejectsInactivePublicationAtSessionEnd(t *testing.T) {
 		t.Fatalf("unexpected publication generations: total=%d current=%d",
 			publisher.PublishedFrames(), publisher.CurrentPublicationFrames())
 	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server could not send LIVE packets: %v", err)
+	}
 }
 
 func TestReceiveLiveTracksNewPublicationGeneration(t *testing.T) {
 	client, server := testPipe(t)
 	publisher := &generationTestPublisher{}
+	acknowledgment := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 2, "C": 0}})
+	serverDone := make(chan error, 1)
 	go func() {
-		acknowledgment, _ := EncodeCommand([]map[string]any{{"A": 3, "V": 2, "C": 0}})
-		_ = writeFull(server, acknowledgment)
-		_ = writeFull(server, mediaPacket(1, []byte{1}))
-		_ = writeFull(server, mediaPacket(2, []byte{2}))
-		_ = writeFull(server, mediaPacket(3, []byte{3}))
+		for _, packet := range [][]byte{
+			acknowledgment,
+			mediaPacket(1, []byte{1}),
+			mediaPacket(2, []byte{2}),
+			mediaPacket(3, []byte{3}),
+		} {
+			if err := writeFull(server, packet); err != nil {
+				serverDone <- err
+				return
+			}
+		}
+		serverDone <- nil
 	}()
 	ctx, cancel := context.WithTimeoutCause(context.Background(), 100*time.Millisecond, errSessionDurationElapsed)
 	defer cancel()
@@ -788,6 +842,9 @@ func TestReceiveLiveTracksNewPublicationGeneration(t *testing.T) {
 	if publisher.Generation() != 2 || publisher.CurrentPublicationFrames() != 1 {
 		t.Fatalf("unexpected publication generation: generation=%d current=%d",
 			publisher.Generation(), publisher.CurrentPublicationFrames())
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server could not send LIVE packets: %v", err)
 	}
 }
 
