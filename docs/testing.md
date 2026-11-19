@@ -70,7 +70,9 @@ go test -race -count=1 ./tests/e2e/ ./internal/netvue/
 `tests/e2e` vérifie bridge → MediaMTX → lecteur (vidéo et audio décodables,
 synchronisation, reconnexion, changement de résolution, nettoyage), l'isolation
 d'une panne entre deux caméras et le chemin WebRTC → Go → AAC → caméra
-(contenu et cadence). Il exige le port local 8554 libre.
+(contenu et cadence). Le test de résolution réessaie le décodage avec des
+délais bornés pendant que MediaMTX remplace la publication RTSP. Il exige le
+port local 8554 libre.
 
 Le scénario HA → Go → caméras simulées → MediaMTX → HA
 (`tests/ha_go_e2e_synthetic.py`) s'exécute dans des conteneurs sur un réseau

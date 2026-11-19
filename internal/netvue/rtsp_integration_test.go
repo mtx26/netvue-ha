@@ -688,6 +688,9 @@ paths:
 	t.Cleanup(func() {
 		_ = command.Process.Kill()
 		_ = command.Wait()
+		if t.Failed() {
+			t.Logf("MediaMTX logs: %s", logs.String())
+		}
 	})
 
 	deadline := time.Now().Add(5 * time.Second)

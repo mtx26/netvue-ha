@@ -44,17 +44,6 @@ func runContinuousAsync(t *testing.T, target, rtspURL string) context.CancelFunc
 	return stop
 }
 
-func captureVideo(t *testing.T, ffmpeg, url string, width, height int) [3]byte {
-	t.Helper()
-	ctx, cancel := netvuetest.Within(30 * time.Second)
-	defer cancel()
-	pixel, err := netvuetest.DecodeVideoPixel(ctx, ffmpeg, url, width, height)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pixel
-}
-
 func captureAudioPeak(t *testing.T, ffmpeg, url string) int {
 	t.Helper()
 	ctx, cancel := netvuetest.Within(30 * time.Second)
@@ -72,6 +61,29 @@ func isColor(pixel [3]byte, red bool) bool {
 	}
 	return netvuetest.IsBlue(pixel)
 }
+
+func waitForVideo(t *testing.T, ffmpeg, url string, width, height int, red bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pixel, err := netvuetest.DecodeVideoPixel(ctx, ffmpeg, url, width, height)
+		cancel()
+		if err == nil && isColor(pixel, red) {
+			return
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("decoded pixel %v does not match the expected fixture", pixel)
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		<-timer.C
+	}
+	t.Fatalf("video %dx%d was not published before the deadline: %v", width, height, lastErr)
+}
+
 // Every protocol failure returned by the simulator must stop RunSession
 // with a protocol error instead of hanging or succeeding.
 func TestSimulatorFaultsStopRunSession(t *testing.T) {
@@ -143,9 +155,7 @@ func TestSimulatorPublishesDecodableAudioVideoAcrossReconnects(t *testing.T) {
 	if s := camera.State(); s.Logins < 1 || s.LiveRequests < 1 {
 		t.Fatalf("camera did not authenticate and receive a LIVE request: %+v", s)
 	}
-	if !isColor(captureVideo(t, ffmpeg, url, 160, 96), true) {
-		t.Fatal("decoded video is not the red fixture")
-	}
+	waitForVideo(t, ffmpeg, url, 160, 96, true)
 	if peak := captureAudioPeak(t, ffmpeg, url); peak < 1000 {
 		t.Fatalf("decoded audio is silent (peak %d)", peak)
 	}
@@ -158,15 +168,11 @@ func TestSimulatorPublishesDecodableAudioVideoAcrossReconnects(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !isColor(captureVideo(t, ffmpeg, url, 160, 96), true) {
-		t.Fatal("video did not recover after the reconnection")
-	}
+	waitForVideo(t, ffmpeg, url, 160, 96, true)
 
 	// Resolution change without restarting the reader's source URL.
 	camera.SetVideo(netvuetest.SolidH264(320, 192, 0, 0, 255, 10))
-	if !isColor(captureVideo(t, ffmpeg, url, 320, 192), false) {
-		t.Fatal("blue 320x192 video was not published after the resolution change")
-	}
+	waitForVideo(t, ffmpeg, url, 320, 192, false)
 
 	stop()
 	if err := camera.Wait(ctx, "cleanup", func(s netvuetest.Snapshot) bool { return s.Connections == 0 && s.Streaming == 0 }); err != nil {

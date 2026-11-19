@@ -14,6 +14,7 @@ test silencieusement ignoré, endurance séparée. Voir [testing.md](../docs/tes
 - Go : fuzzers ajoutés (audio/ADTS, talkback, SDP WebRTC, AAC→ADTS), tests de concurrence (Open talkback, fin de session, 6 caméras supervisées, `Close` du manager), cas de supervision.
 - Reprise des tests existants : cas nommés dans les parseurs/audio, assertions plus explicites dans l'authentification, vérification des erreurs de fixtures et écritures dans session/talkback, setup RTSP partagé, assertions complètes sur SPS/PPS. Les tests de découverte résiliente et de média déjà structurés ont été conservés.
 - Un test de supervision multi-caméra avait une échéance trop courte sous charge ; son délai d'échec est maintenant borné à 5 s. Le test de cadence talkback compare à la durée AAC du fixture avec une tolérance explicite, plutôt qu'à un seuil fixe trop strict.
+- Après le premier run GitHub, le scénario MediaMTX/E2E a été corrigé : le lecteur FFmpeg de résolution était lancé pendant l'intervalle de retrait/républication de la route (404). Le test attend maintenant le décodage de la bonne résolution/couleur, avec plusieurs essais bornés et 5 s par décodage.
 - HA : 27 tests sur vrai HA (flows, entités, rechargement, suppression, WebRTC, two_way_audio) ; 9 tests à base de `SimpleNamespace` supprimés (doublons).
 - E2E : `tests/e2e` (lecture MediaMTX, multi-caméra avec panne isolée, WebRTC→AAC→caméra).
 
