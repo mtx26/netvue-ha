@@ -83,6 +83,10 @@ Le scénario HA → Go → caméras simulées → MediaMTX → HA
 (`tests/ha_go_e2e_synthetic.py`) s'exécute dans des conteneurs sur un réseau
 Docker `--internal` ; la séquence de commandes de référence est le job
 `integration` de [ci.yml](../.github/workflows/ci.yml).
+L'injection HTTP d'une panne (`/fault-next/{stage}/{fault}`) coupe toujours la
+session courante : une nouvelle authentification est attendue avant la panne,
+y compris pour une panne média. Une reconnexion supplémentaire après une erreur
+fatale reste un échec.
 
 ## Endurance
 

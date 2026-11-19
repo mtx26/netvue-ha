@@ -18,6 +18,7 @@ test silencieusement ignoré, endurance séparée. Voir [testing.md](../docs/tes
 - HA : 27 tests sur vrai HA (flows, entités, rechargement, suppression, WebRTC, two_way_audio) ; 9 tests à base de `SimpleNamespace` supprimés (doublons).
 - E2E : `tests/e2e` (lecture MediaMTX, multi-caméra avec panne isolée, WebRTC→AAC→caméra).
 - Run GitHub `44510504917` : les tests Netvue passent, mais les trois E2E tentent de lancer `go build` dans le conteneur HA sans Go. Le harnais accepte maintenant `NETVUE_TEST_GO_BRIDGE`, fourni par la CI avec le binaire déjà construit ; la compilation locale reste disponible en l'absence de cette variable.
+- Run GitHub `44512017267` : les tests Go d'intégration et E2E passent ; le scénario HA échoue sur le compteur d'authentifications après injection média. L'API du simulateur commun coupe la connexion pour tous les types de panne, contrairement à l'attente conservée pour l'ancien simulateur. Le scénario exige désormais exactement une nouvelle authentification pour chaque injection, média compris, sans autoriser de tentative supplémentaire après l'erreur fatale.
 
 ## Tests exécutés (Windows, local)
 - `go build`, `go vet` : OK. `go test -race -count=1 ./...` avec FFmpeg 9.0.2 et MediaMTX 1.21.4 réels : tous OK (~47 s). Sans ces outils : OK, tests dépendants ignorés.
@@ -26,10 +27,11 @@ test silencieusement ignoré, endurance séparée. Voir [testing.md](../docs/tes
 - HA : 75/75 (Python 3.14.10, venv hors dépôt), ~40 s.
 - `actionlint` sur les deux workflows : OK.
 - Correctif du binaire E2E : test de régression avec `PATH` sans Go passé sous `-race`, `go vet ./tests/e2e` et `actionlint` sur les deux workflows passés. Désactivation temporaire du chemin précompilé : échec attendu « go executable file not found » ; comportement correct restauré et test relancé avec succès.
+- Correctif du compteur HA : `TestFaultsDropAndVideoChange` passé sous `-race` ; syntaxe Python validée par Pylance. L'expression réelle du scénario a été évaluée avec les compteurs CI (22 → 23) pour les trois étapes ; une tentative supplémentaire (24) reste rejetée. Ce contrôle ciblé ne remplace pas l'exécution HA/Docker complète.
 - Mutations (défaut introduit → échec constaté → restauré) : authentification sans résultat, en-tête ADTS, `cancel()` du manager, erreur fatale de supervision (non détectée au départ → test ajouté), absence de reconnexion, AAC talkback tronqué, RTSP indisponible, déchargement sans suppression de session, micro toujours autorisé.
 
 ## Limites
-- Les deux premiers runs GitHub ont révélé successivement la transition RTSP puis la compilation E2E dans un conteneur sans Go. Une CI complète verte après correction reste à confirmer ; les temps globaux et téléchargements ne sont pas encore mesurés.
+- Les trois premiers runs GitHub ont révélé successivement la transition RTSP, la compilation E2E dans un conteneur sans Go, puis une attente de compteur média héritée de l'ancien simulateur. Une CI complète verte après correction reste à confirmer ; les temps globaux et téléchargements ne sont pas encore mesurés.
 - Une tentative récente de `go test ./...` n'est pas verte : la variable locale `NETVUE_TEST_FFPROBE` pointait par erreur vers FFmpeg, et les tests `tests/e2e` ont échoué sur l'indisponibilité de l'encodeur audio. La suite complète reste à revalider dans l'environnement Linux de CI ; les tests RTSP ciblés avec la configuration corrigée passent.
 - `ha_go_e2e_synthetic.py` (Docker) non exécuté avec le nouveau simulateur ; absence de Docker local.
 - Mutation de suppression du pacing talkback non détectée lors du premier essai ; l'assertion de cadence a depuis été rendue plus robuste, mais la mutation n'a pas été rejouée. L'isolation multi-caméra n'a pas été mutée.

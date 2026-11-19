@@ -349,7 +349,8 @@ async def main():
                 except RuntimeError as exc:
                     raise RuntimeError(f"Synthetic fault {stage}/{fault} did not complete") from exc
                 after_fault = await camera_status(camera2_host)
-                expected_fault_logins = before_b + (1 if stage != "media" else 0)
+                # The control endpoint drops the current session for every stage.
+                expected_fault_logins = before_b + 1
                 if after_fault["login_count"] != expected_fault_logins:
                     raise RuntimeError(
                         f"Fault {fault} caused unexpected login count "
