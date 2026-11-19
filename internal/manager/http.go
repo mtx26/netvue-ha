@@ -26,6 +26,7 @@ func (manager *Manager) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cameras/{host}/start", manager.handleStartCamera)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/stop", manager.handleStopCamera)
 	mux.HandleFunc("DELETE /api/v1/cameras/{host}", manager.handleDeleteCamera)
+	mux.HandleFunc("GET /api/v1/webrtc/ice", manager.handleWebRTCICE)
 	mux.HandleFunc("PUT /api/v1/cameras/{host}/webrtc/{session_id}", manager.handleWebRTCOffer)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/webrtc/{session_id}/candidates", manager.handleWebRTCCandidate)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/webrtc/{session_id}/events", manager.handleWebRTCEvents)
@@ -185,10 +186,15 @@ func Run(ctx context.Context, source, listenAddress string) error {
 	if err := validateLoopbackAddress(listenAddress); err != nil {
 		return err
 	}
+	turn, err := cloudflareTURNFromEnv()
+	if err != nil {
+		return err
+	}
 	manager, err := New(ctx, source)
 	if err != nil {
 		return err
 	}
+	manager.turn = turn
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

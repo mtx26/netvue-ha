@@ -57,6 +57,7 @@ type Manager struct {
 	runWithTalk   func(context.Context, string, string, string, *netvue.LiveTalkback) error
 	openAudio     func(context.Context, string) (talkSink, error)
 	ffmpegPath    func() (string, error)
+	turn          *cloudflareTURN
 	discoverLAN   func(context.Context, string) ([]string, error)
 	cameras       map[string]*cameraSession
 	peers         map[string]*webRTCPeer

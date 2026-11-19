@@ -40,6 +40,7 @@ class FakeBridge:
         self.discovered: list[str] = []
         self.requests: list[tuple[str, str]] = []
         self.status_override: int | None = None
+        self.turn_response: dict | None = None
         self.port = _free_port()
         self._runner: web.AppRunner | None = None
 
@@ -51,6 +52,7 @@ class FakeBridge:
         app = web.Application()
         base = "/api/v1/cameras"
         app.router.add_post("/api/v1/discovery", self._discovery)
+        app.router.add_get("/api/v1/webrtc/ice", self._ice)
         app.router.add_post(base, self._create)
         app.router.add_get(base + "/{host}", self._get)
         app.router.add_post(base + "/{host}/start", self._start)
@@ -77,6 +79,11 @@ class FakeBridge:
     async def _discovery(self, request):
         return self._forced(request) or web.json_response(
             {"cameras": [{"host": host} for host in self.discovered]})
+
+    async def _ice(self, request):
+        if self.turn_response is None:
+            return web.Response(status=204)
+        return web.json_response(self.turn_response)
 
     async def _create(self, request):
         if (forced := self._forced(request)) is not None:

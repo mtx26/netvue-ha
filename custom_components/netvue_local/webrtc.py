@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from time import monotonic
 from urllib.parse import quote
 
 from aiohttp import ClientError
@@ -17,7 +18,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from mashumaro import MissingField
-from webrtc_models import RTCIceCandidateInit
+from webrtc_models import RTCIceCandidateInit, RTCIceServer
 
 from . import bridge_api
 from .const import DOMAIN
@@ -27,6 +28,49 @@ _EVENT_TIMEOUT = 35
 _MAX_EVENTS_SIZE = 256 * 1024
 _MAX_EVENTS = 128
 _AUDIO_DIRECTIONS = {"sendrecv", "sendonly", "recvonly", "inactive"}
+
+
+@dataclass(frozen=True)
+class TurnCredentials:
+    servers: tuple[RTCIceServer, ...]
+    expires: float
+
+    def usable(self) -> tuple[RTCIceServer, ...]:
+        return self.servers if monotonic() < self.expires else ()
+
+
+async def async_get_turn_credentials(hass: HomeAssistant) -> TurnCredentials | None:
+    """Return None if TURN is disabled, or an empty result if temporarily unavailable."""
+    client = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(bridge_api.REQUEST_TIMEOUT):
+            async with client.get(f"{bridge_api.API_URL}/webrtc/ice") as response:
+                if response.status in (204, 404):
+                    return None
+                if response.status == 503:
+                    return TurnCredentials((), 0)
+                response.raise_for_status()
+                data = await response.json()
+        if not isinstance(data, dict):
+            raise ValueError("invalid ICE response")
+        servers = data.get("ice_servers")
+        expires_in = data.get("expires_in")
+        if (not isinstance(servers, list) or not servers or
+                type(expires_in) is not int or not 0 < expires_in <= 3600):
+            raise ValueError("invalid ICE response")
+        for server in servers:
+            if (not isinstance(server, dict) or not isinstance(server.get("urls"), list)
+                    or not server["urls"] or not all(isinstance(url, str) for url in server["urls"])
+                    or not isinstance(server.get("username"), str) or not server["username"]
+                    or not isinstance(server.get("credential"), str) or not server["credential"]):
+                raise ValueError("invalid ICE server")
+        return TurnCredentials(
+            tuple(RTCIceServer.from_dict(server) for server in servers),
+            monotonic() + expires_in,
+        )
+    except (ClientError, TimeoutError, ValueError, MissingField) as exc:
+        # Do not log the response body or its temporary credentials.
+        raise HomeAssistantError("Unable to read Netvue TURN configuration") from exc
 
 
 def _offer_sends_audio(sdp: str) -> bool:

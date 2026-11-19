@@ -23,6 +23,7 @@ import (
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/pion/opus"
 	"github.com/pion/rtp"
+	"github.com/pion/turn/v5"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -586,6 +587,11 @@ func TestWebRTCOfferRejectsUnsupportedAudioBeforeAllocation(t *testing.T) {
 }
 
 func TestWebRTCVideoOnlyDoesNotRequireEncoder(t *testing.T) {
+	t.Run("direct", func(t *testing.T) { testWebRTCVideoOnly(t, nil) })
+	t.Run("through TURN", func(t *testing.T) { testWebRTCVideoOnly(t, localTURN(t)) })
+}
+
+func testWebRTCVideoOnly(t *testing.T, servers []webrtc.ICEServer) {
 	handler := &testRTSPHandler{}
 	server := &gortsplib.Server{Handler: handler, RTSPAddress: "127.0.0.1:0"}
 	if err := server.Start(); err != nil {
@@ -607,6 +613,9 @@ func TestWebRTCVideoOnlyDoesNotRequireEncoder(t *testing.T) {
 		return nil
 	})
 	manager.source = "127.0.0.1"
+	if len(servers) != 0 {
+		manager.turn = &cloudflareTURN{servers: servers, expires: time.Now().Add(time.Hour)}
+	}
 	manager.ffmpegPath = func() (string, error) { return "", errors.New("encoder absent") }
 	host := "192.168.10.20"
 	if _, _, err := manager.AddCamera(host, "test"); err != nil {
@@ -616,7 +625,14 @@ func TestWebRTCVideoOnlyDoesNotRequireEncoder(t *testing.T) {
 	manager.mu.Lock()
 	manager.cameras[host].RTSPURL = fmt.Sprintf("rtsp://127.0.0.1:%d/test", server.NetListener().Addr().(*net.TCPAddr).Port)
 	manager.mu.Unlock()
-	browser, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	config := webrtc.Configuration{ICEServers: servers}
+	if len(servers) != 0 {
+		config.ICETransportPolicy = webrtc.ICETransportPolicyRelay
+	}
+	var settings webrtc.SettingEngine
+	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	settings.SetIncludeLoopbackCandidate(true)
+	browser, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,6 +644,21 @@ func TestWebRTCVideoOnlyDoesNotRequireEncoder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(servers) != 0 {
+		gathered := webrtc.GatheringCompletePromise(browser)
+		if err := browser.SetLocalDescription(offer); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-gathered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("browser relay gathering timed out")
+		}
+		offer = *browser.LocalDescription()
+		if !strings.Contains(offer.SDP, " typ relay") {
+			t.Fatal("browser did not gather a relay candidate")
+		}
+	}
 	api := manager.Handler()
 	path := "/api/v1/cameras/" + host + "/webrtc/video_only"
 	response := requestWebRTC(t, api, http.MethodPut, path, map[string]string{"offer": offer.SDP})
@@ -638,8 +669,14 @@ func TestWebRTCVideoOnlyDoesNotRequireEncoder(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"answer"`) {
 		t.Fatalf("video-only answer: %d %s", response.Code, response.Body)
 	}
+	if len(servers) != 0 {
+		waitForRelayedWebRTC(t, browser, api, path, response)
+	}
 	if response = requestWebRTC(t, api, http.MethodDelete, path, nil); response.Code != http.StatusNoContent {
 		t.Fatalf("video-only close: %d", response.Code)
+	}
+	if len(servers) != 0 {
+		return
 	}
 	// A microphone offer must fail explicitly when the encoder is unavailable.
 	if _, err := browser.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly}); err != nil {
@@ -652,6 +689,84 @@ func TestWebRTCVideoOnlyDoesNotRequireEncoder(t *testing.T) {
 	response = requestWebRTC(t, api, http.MethodPut, path+"_mic", map[string]string{"offer": offer.SDP})
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("microphone without encoder: %d %s", response.Code, response.Body)
+	}
+}
+
+func localTURN(t *testing.T) []webrtc.ICEServer {
+	t.Helper()
+	const username, realm, password = "test-user", "netvue-test", "test-password"
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := turn.NewServer(turn.ServerConfig{
+		Realm: realm,
+		AuthHandler: func(ra *turn.RequestAttributes) (string, []byte, bool) {
+			return username, turn.GenerateAuthKey(username, realm, password), ra.Username == username
+		},
+		PacketConnConfigs: []turn.PacketConnConfig{{
+			PacketConn: conn,
+			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
+				RelayAddress: net.ParseIP("127.0.0.1"), Address: "127.0.0.1",
+			},
+		}},
+	})
+	if err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	return []webrtc.ICEServer{{
+		URLs: []string{"turn:" + conn.LocalAddr().String() + "?transport=udp"}, Username: username, Credential: password,
+	}}
+}
+
+func waitForRelayedWebRTC(t *testing.T, browser *webrtc.PeerConnection, api http.Handler, path string, response *httptest.ResponseRecorder) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	gotRelay := false
+	var after uint64
+	for !gotRelay {
+		var reply struct{ Events []webRTCEvent }
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &reply) != nil {
+			t.Fatalf("ICE events: HTTP %d", response.Code)
+		}
+		for _, event := range reply.Events {
+			after = event.Seq
+			switch event.Type {
+			case "answer":
+				if err := browser.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: event.Answer}); err != nil {
+					t.Fatal(err)
+				}
+			case "candidate":
+				if strings.Contains(event.Candidate.Candidate, " typ relay") {
+					if err := browser.AddICECandidate(*event.Candidate); err != nil {
+						t.Fatal(err)
+					}
+					gotRelay = true
+				}
+			case "error":
+				t.Fatalf("bridge ICE error: %s", event.Code)
+			}
+		}
+		if !gotRelay {
+			if ctx.Err() != nil {
+				t.Fatal("bridge did not gather a relay candidate")
+			}
+			response = httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s/events?after=%d", path, after), nil).WithContext(ctx)
+			api.ServeHTTP(response, req)
+		}
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for browser.ConnectionState() != webrtc.PeerConnectionStateConnected {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("relay-only WebRTC negotiation: %s", browser.ConnectionState())
+		case <-ticker.C:
+		}
 	}
 }
 

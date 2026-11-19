@@ -70,3 +70,17 @@ remplacent pas les validations réelles encore manquantes ci-dessus.
 - Le navigateur doit toujours joindre l'adresse IPv4 ICE du pont en UDP.
   Le tunnel HTTPS Cloudflare seul ne fournit pas cette route. Le microphone
   et le haut-parleur n'ont pas été testés sur la caméra réelle.
+
+## Suivi — accès distant via Cloudflare TURN
+
+Le pont peut maintenant obtenir et renouveler des identifiants TURN
+temporaires. Home Assistant les transmet uniquement à ses lecteurs Netvue
+en mode natif. Le test Go utilise une API Cloudflare simulée et vérifie
+distinctement qu'un pair WebRTC se connecte en passant par un relais TURN
+local, sans candidats directs échangés dans ce scénario. Le chemin LAN
+Netvue et les codecs ne changent pas.
+
+Aucun compte Cloudflare ni appareil réel n'a été utilisé pour ces tests.
+La validation restante est celle du trajet complet depuis un navigateur
+hors LAN, y compris le son au haut-parleur. Voir le
+[guide Portainer](../deployment/go-portainer.md#4-facultatif--utiliser-le-micro-à-distance-avec-cloudflare-turn).

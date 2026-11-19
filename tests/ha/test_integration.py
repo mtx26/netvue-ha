@@ -361,6 +361,26 @@ class WebRTCTests(HassTestCase):
     def providers(self):
         return self.hass.data.get(DATA_WEBRTC_PROVIDERS, set())
 
+    async def test_turn_is_private_to_native_netvue_camera(self):
+        server = {
+            "urls": ["turns:turn.cloudflare.com:443?transport=tcp"],
+            "username": "temporary-user", "credential": "temporary-password",
+        }
+        self.bridge.turn_response = {"ice_servers": [server], "expires_in": 1800}
+        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=True)
+        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
+        self.assertEqual(self.providers(), set())
+        self.assertEqual(entity.camera_capabilities.frontend_stream_types, {camera.StreamType.WEB_RTC})
+        config = entity.async_get_webrtc_client_configuration().to_frontend_dict()
+        self.assertIn(server, config["configuration"]["iceServers"])
+
+        messages = []
+        await entity.async_handle_async_webrtc_offer(MIC_OFFER, "relayed", messages.append)
+        entity.close_webrtc_session("relayed")
+        async with asyncio.timeout(3):
+            while ("DELETE", f"/api/v1/cameras/{HOST}/webrtc/relayed") not in self.bridge.requests:
+                await asyncio.sleep(0.01)
+
     async def test_webrtc_provider_is_opt_in(self):
         entry = await self.create_entry()
         self.assertEqual(self.providers(), set())

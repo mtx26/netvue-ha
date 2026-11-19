@@ -237,7 +237,11 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	settings.SetIPFilter(func(ip net.IP) bool { return ip.Equal(sourceIP) })
 	settings.SetICEUDPMux(mux)
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
-	pc, err := api.NewPeerConnection(webrtc.Configuration{})
+	var config webrtc.Configuration
+	if manager.turn != nil {
+		config.ICEServers, _ = manager.turn.credentials(p.ctx)
+	}
+	pc, err := api.NewPeerConnection(config)
 	if err != nil {
 		_ = mux.Close()
 		return err

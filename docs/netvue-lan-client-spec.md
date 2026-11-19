@@ -331,6 +331,10 @@ microphone WebRTC/Opus → décodeur Opus → PCM
 audio caméra AAC → FFmpeg/libopus → RTP Opus/WebRTC
 ```
 
+Le relais Cloudflare TURN facultatif ne modifie pas ces formats ni la session
+LAN Netvue. Il transporte le média WebRTC chiffré entre le navigateur et le
+pont lorsque le chemin direct ne peut pas être utilisé.
+
 Le fournisseur WebRTC est opt-in et `two_way_audio` reste désactivé tant que
 la restitution physique n'est pas confirmée. L'absence de RTP microphone
 pendant 3 s ferme le talkback ; une reprise peut le rouvrir. Une seule

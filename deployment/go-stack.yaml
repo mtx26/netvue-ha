@@ -59,6 +59,9 @@ services:
       - ${NETVUE_SOURCE:?set the host LAN IPv4 address}
       - --listen
       - 127.0.0.1:8765
+    environment:
+      NETVUE_CLOUDFLARE_TURN_KEY_ID: "${NETVUE_CLOUDFLARE_TURN_KEY_ID:-}"
+      NETVUE_CLOUDFLARE_TURN_API_TOKEN: "${NETVUE_CLOUDFLARE_TURN_API_TOKEN:-}"
     stop_signal: SIGTERM
     stop_grace_period: 30s
     deploy:

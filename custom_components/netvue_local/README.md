@@ -153,15 +153,14 @@ de sélectionner un fournisseur par entité ni de garantir sa priorité face à
 go2rtc. Sans découverte de capacité Go convenue, l'activation manuelle peut
 annoncer WebRTC même si le serveur est incompatible ; l'offre échouera alors,
 sans repli automatique garanti côté lecteur. HLS reste annoncé par HA.
-Le fournisseur ne peut pas définir de configuration ICE propre via l'API
-provider : HA fournit celle de l'entité et ses serveurs ICE globaux. Le pair
-Go annonce uniquement l'IPv4 source configurée et utilise UDP ; l'accès depuis
-un navigateur hors de ce LAN n'est pas couvert sans route privée vers cette
-adresse (par exemple un VPN avec accès au sous-réseau du pont). Un accès
-HTTPS à Home Assistant via Cloudflare Tunnel ne relaie pas ce média UDP.
-Pour tester le microphone, utiliser un navigateur sur le LAN avec l'URL HTTPS
-de Home Assistant, ou un VPN fournissant cette route. Ne pas exposer les ports
-RTSP ou API pour résoudre ce problème. `two_way_audio=False` reste
+Sans TURN, le pair Go annonce uniquement l'IPv4 source configurée en UDP.
+Un accès HTTPS à Home Assistant via Cloudflare Tunnel ne relaie pas ce média.
+Si [Cloudflare TURN est configuré](../../deployment/go-portainer.md#4-facultatif--utiliser-le-micro-à-distance-avec-cloudflare-turn),
+Netvue utilise le mode WebRTC natif de HA pour fournir au navigateur des
+identifiants ICE temporaires pour ses caméras. Dans ce mode, HA ne propose
+plus HLS comme repli et ne sélectionne pas go2rtc pour ces entités.
+Le pont garde des candidats directs et ajoute les candidats du relais.
+`two_way_audio=False` reste
 le comportement par défaut : le microphone HA est masqué tant que l'option
 expérimentale d'essai n'est pas explicitement activée. Les conversions et la
 signalisation sont testées synthétiquement, mais ne prouvent ni l'acceptation

@@ -15,7 +15,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
       'deb http://snapshot.debian.org/archive/debian-security/20261105T000000Z bookworm-security main' \
       > /etc/apt/sources.list \
     && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/netvue-bridge /netvue-bridge
 LABEL org.opencontainers.image.source="https://github.com/mtx26/netvue-ha"
