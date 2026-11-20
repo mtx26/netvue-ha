@@ -217,3 +217,45 @@ test("the status card summarizes availability and renders optional session detai
   assert.equal(card._grid.children[1].children[1].children[1].textContent, "Unavailable");
   assert.equal(card._grid.children[1].children[2].children[1].className, "problem");
 });
+
+test("the status card discovers matching Netvue entities when no camera list is configured", () => {
+  const StatusCard = customElements.get("netvue-camera-status-card");
+  const hass = {
+    states: {
+      "camera.entry": {},
+      "binary_sensor.entry_camera_unavailable": { state: "off" },
+      "sensor.entry_session": { state: "supervising" },
+      "sensor.entry_diagnostic": { state: "healthy" },
+    },
+    entities: {
+      "camera.entry": { entity_id: "camera.entry", device_id: "device-1" },
+      "binary_sensor.entry_camera_unavailable": {
+        entity_id: "binary_sensor.entry_camera_unavailable",
+        device_id: "device-1",
+        translation_key: "camera_unavailable",
+      },
+      "sensor.entry_session": {
+        entity_id: "sensor.entry_session",
+        device_id: "device-1",
+        translation_key: "session",
+      },
+      "sensor.entry_diagnostic": {
+        entity_id: "sensor.entry_diagnostic",
+        device_id: "device-1",
+        translation_key: "diagnostic",
+      },
+    },
+  };
+  const card = new StatusCard();
+  assert.deepEqual(StatusCard.getStubConfig(hass).cameras, [{
+    camera: "camera.entry",
+    unavailable: "binary_sensor.entry_camera_unavailable",
+    session: "sensor.entry_session",
+    diagnostic: "sensor.entry_diagnostic",
+  }]);
+
+  card.setConfig({ type: "custom:netvue-camera-status-card" });
+  card.hass = hass;
+  card.connectedCallback();
+  assert.equal(card._count.textContent, "1/1 available");
+});

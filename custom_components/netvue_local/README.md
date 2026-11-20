@@ -77,6 +77,8 @@ name: Entrée   # facultatif
 
 La version 0.2.2 corrige le plantage `Illegal invocation` du lecteur. La
 version 0.2.3 ajoute le plein écran et deux cartes Lovelace complémentaires.
+La version 0.2.4 corrige l'ajout de la synthèse d'état sans configuration :
+elle détecte les entités Netvue liées au même appareil.
 Le bouton plein écran permet de revenir au tableau de bord avec Échap ou en
 appuyant de nouveau sur le bouton. Il est désactivé si le navigateur ne prend
 pas cette fonction en charge.
@@ -136,7 +138,8 @@ cameras:
 
 `camera` et `unavailable` sont requis ; `session` et `diagnostic` sont
 facultatifs. Le compteur « disponibles » repose sur le capteur
-**Caméra indisponible**.
+**Caméra indisponible**. Sans bloc `cameras`, la carte tente de retrouver
+automatiquement les entités liées à chaque caméra Netvue.
 
 La caméra Netvue est traitée en **demi-duplex** : pendant le push-to-talk,
 le pont coupe l'audio caméra envoyé à ce navigateur. Plusieurs spectateurs
