@@ -104,6 +104,8 @@ elle détecte les entités Netvue liées au même appareil.
 La version 0.2.5 ajoute les éditeurs visuels des trois cartes.
 La version 0.2.6 versionne aussi le chemin des modules importés afin d'éviter
 qu'un ancien fichier JavaScript reste en cache après une mise à jour.
+La version 0.2.7 remplace les emojis des contrôles par des icônes SVG
+uniformes et place le microphone, le son puis le plein écran dans cet ordre.
 Le bouton plein écran permet de revenir au tableau de bord avec Échap ou en
 appuyant de nouveau sur le bouton. Il est désactivé si le navigateur ne prend
 pas cette fonction en charge.
