@@ -16,6 +16,30 @@ func (fn turnTestTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	return fn(req)
 }
 
+func TestCloudflareTURNNotFoundDiagnostic(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, want string
+	}{
+		{"missing key", `{"error":"cannot find specified key"}`, "Cloudflare API HTTP 404: TURN key not found"},
+		{"other upstream error", `{"error":"private upstream detail"}`, "Cloudflare API HTTP 404"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			turn := &cloudflareTURN{keyID: "test-id", token: "test-token", client: &http.Client{
+				Transport: turnTestTransport(func(*http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(tt.body))}, nil
+				}),
+			}}
+			servers, err := turn.generate(context.Background())
+			if len(servers) != 0 || err == nil || !strings.HasPrefix(err.Error(), tt.want) {
+				t.Fatalf("unexpected result: servers=%d, error=%v", len(servers), err)
+			}
+			if tt.name == "other upstream error" && err.Error() != tt.want {
+				t.Fatal("unrecognized upstream content must not be logged")
+			}
+		})
+	}
+}
+
 func TestCloudflareTURNLocalCredentials(t *testing.T) {
 	t.Setenv("NETVUE_CLOUDFLARE_TURN_KEY_ID", "test-id")
 	t.Setenv("NETVUE_CLOUDFLARE_TURN_API_TOKEN", "test-api-token")

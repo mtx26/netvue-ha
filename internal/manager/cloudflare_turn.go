@@ -87,6 +87,15 @@ func (turn *cloudflareTURN) generate(ctx context.Context) ([]webrtc.ICEServer, e
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
+		if response.StatusCode == http.StatusNotFound {
+			var failure struct {
+				Error string `json:"error"`
+			}
+			if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&failure) == nil &&
+				failure.Error == "cannot find specified key" {
+				return nil, errors.New("Cloudflare API HTTP 404: TURN key not found; verify NETVUE_CLOUDFLARE_TURN_KEY_ID and the token issued for that key")
+			}
+		}
 		return nil, fmt.Errorf("Cloudflare API HTTP %d", response.StatusCode)
 	}
 	var result struct {

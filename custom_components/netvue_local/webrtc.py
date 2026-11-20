@@ -25,6 +25,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 _EVENT_TIMEOUT = 35
+_SESSION_HANDOFF_TIMEOUT = bridge_api.REQUEST_TIMEOUT + 1
 _MAX_EVENTS_SIZE = 256 * 1024
 _MAX_EVENTS = 128
 _AUDIO_DIRECTIONS = {"sendrecv", "sendonly", "recvonly", "inactive"}
@@ -182,10 +183,11 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
             raise HomeAssistantError("Invalid WebRTC offer or session identifier")
         if not self._allow_microphone and _offer_sends_audio(offer_sdp):
             raise HomeAssistantError("Experimental microphone control is disabled")
-        if self._sessions:
+        if session_id in self._sessions or len(self._sessions) >= 2:
             raise HomeAssistantError("WebRTC camera already has a session")
+        previous = next(iter(self._sessions.values()), None)
         state = self._sessions[session_id] = _Session(asyncio.Event(), asyncio.Lock())
-        worker = self._run(session_id, state, offer_sdp, send_message)
+        worker = self._run(session_id, state, offer_sdp, send_message, previous)
         try:
             state.task = self._entry.async_create_background_task(
                 self._hass, worker, "netvue WebRTC signalling", eager_start=False,
@@ -195,12 +197,24 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
             del self._sessions[session_id]
             raise
 
-    async def _run(self, session_id, state, offer, send_message):
+    async def _run(
+        self, session_id: str, state: _Session, offer: str,
+        send_message: WebRTCSendMessage, previous: _Session | None,
+    ) -> None:
         url = self._session_url(session_id)
         state.started = True
+        needs_close = previous is None
         try:
+            # HA can send the next offer before the previous unsubscribe or DELETE completes.
+            if not state.closing and previous is not None and previous.task is not None:
+                _, pending = await asyncio.wait(
+                    (previous.task,), timeout=_SESSION_HANDOFF_TIMEOUT,
+                )
+                if pending:
+                    raise HomeAssistantError("WebRTC camera already has a session")
             if state.closing:
                 return
+            needs_close = True
             await self._request("PUT", url, payload={"offer": offer})
             state.opened = True
             state.ready.set()
@@ -247,8 +261,9 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
             state.ready.set()
             try:
                 # The manager must tombstone the id even if the PUT timed out.
-                async with state.lock:
-                    await self._request("DELETE", url)
+                if needs_close:
+                    async with state.lock:
+                        await self._request("DELETE", url)
             except HomeAssistantError as exc:
                 _LOGGER.warning("Unable to close WebRTC session: %s", exc)
             finally:

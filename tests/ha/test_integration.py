@@ -390,6 +390,69 @@ class WebRTCTests(HassTestCase):
         with self.assertRaisesRegex(HomeAssistantError, "does not support WebRTC"):
             await entity.async_handle_async_webrtc_offer("offer", "s", lambda _: None)
 
+    async def test_microphone_offer_waits_for_previous_session_to_close(self):
+        self.bridge.turn_response = {
+            "ice_servers": [{
+                "urls": ["turns:turn.cloudflare.com:443?transport=tcp"],
+                "username": "temporary-user", "credential": "temporary-password",
+            }],
+            "expires_in": 1800,
+        }
+        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=True)
+        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
+        provider = entity._netvue_provider
+        prefix = f"/api/v1/cameras/{HOST}/webrtc"
+        delete_started, release_delete = asyncio.Event(), asyncio.Event()
+        original_request = provider._request
+
+        async def hold_delete(method, url, **kwargs):
+            if method == "DELETE" and url.endswith("/view"):
+                delete_started.set()
+                await release_delete.wait()
+            return await original_request(method, url, **kwargs)
+
+        async def wait_for_put(session):
+            async with asyncio.timeout(3):
+                while ("PUT", f"{prefix}/{session}") not in self.bridge.requests:
+                    await asyncio.sleep(0.01)
+
+        messages = []
+        with patch.object(provider, "_request", side_effect=hold_delete):
+            await entity.async_handle_async_webrtc_offer(
+                MIC_OFFER.replace("sendonly", "recvonly"), "view", messages.append,
+            )
+            try:
+                await wait_for_put("view")
+                await entity.async_handle_async_webrtc_offer(MIC_OFFER, "mic", messages.append)
+                await asyncio.sleep(0)
+                entity.close_webrtc_session("view")
+                async with asyncio.timeout(3):
+                    await delete_started.wait()
+                self.assertNotIn(("PUT", f"{prefix}/mic"), self.bridge.requests)
+            finally:
+                release_delete.set()
+            await wait_for_put("mic")
+            self.assertLess(self.bridge.requests.index(("DELETE", f"{prefix}/view")),
+                            self.bridge.requests.index(("PUT", f"{prefix}/mic")))
+            self.assertEqual(messages, [])
+
+    async def test_offer_does_not_replace_an_active_viewer(self):
+        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=True)
+        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
+        prefix = f"/api/v1/cameras/{HOST}/webrtc"
+        messages = []
+        await entity.async_handle_async_webrtc_offer(MIC_OFFER, "first", messages.append)
+        with patch("custom_components.netvue_local.webrtc._SESSION_HANDOFF_TIMEOUT", 0):
+            await entity.async_handle_async_webrtc_offer(MIC_OFFER, "second", messages.append)
+            async with asyncio.timeout(3):
+                while not messages:
+                    await asyncio.sleep(0.01)
+        self.assertIn("already has a session", messages[0].message)
+        self.assertIn(("PUT", f"{prefix}/first"), self.bridge.requests)
+        self.assertNotIn(("PUT", f"{prefix}/second"), self.bridge.requests)
+        self.assertNotIn(("DELETE", f"{prefix}/second"), self.bridge.requests)
+        self.assertNotIn(("DELETE", f"{prefix}/first"), self.bridge.requests)
+
     async def test_webrtc_registers_provider_without_two_way_audio(self):
         entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=False)
         entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))

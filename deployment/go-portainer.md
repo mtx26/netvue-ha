@@ -58,8 +58,13 @@ l'API du pont restent sur `127.0.0.1`.
 
 1. Dans le [tableau de bord Cloudflare Realtime](https://dash.cloudflare.com/?to=/:account/calls),
    crée une [clé TURN](https://developers.cloudflare.com/realtime/turn/generate-credentials/).
-   Récupère l'**ID de la clé** et son **jeton API**. Ce ne sont ni l'ID
-   du tunnel Cloudflare Tunnel ni le jeton `cloudflared`.
+   Si le lien ouvre **Serverless SFU**, sélectionne **TURN** dans la
+   navigation Realtime : **ne crée pas d'application SFU** pour Netvue.
+   Récupère l'**ID de la clé TURN** et le **jeton API généré pour cette
+   même clé**. L'App ID et l'App Secret d'une application SFU ne
+   fonctionnent pas, même s'ils ressemblent aux valeurs TURN. N'utilise
+   pas non plus l'ID ou le jeton de Cloudflare Tunnel, ni un jeton API
+   Cloudflare générique.
 2. Mets à jour la stack Portainer avec le [`go-stack.yaml`](./go-stack.yaml)
    et une image Go contenant le support TURN. Dans **Environment
    variables**, ajoute ces deux valeurs, puis redéploie :
@@ -90,10 +95,21 @@ l'API du pont restent sur `127.0.0.1`.
 **Dépannage.** Le pont doit joindre `rtc.live.cloudflare.com` en HTTPS
 (TCP 443). Le pont et le navigateur doivent pouvoir joindre
 `turn.cloudflare.com` en UDP 3478 ou en TURN/TLS sur TCP 443. Ces
-connexions sont sortantes. Une erreur `Cloudflare API HTTP 401` ou `403`
-dans les journaux du pont indique de vérifier le couple ID/jeton. Un
+connexions sont sortantes. Une erreur `Cloudflare API HTTP 404` peut
+indiquer que Cloudflare ne trouve pas la clé TURN. Vérifie que l'ID
+correspond à une clé encore présente dans **Realtime → TURN** et que
+le jeton vient de cette même clé. Si tu n'as plus le bon jeton, crée une
+nouvelle clé TURN, remplace **les deux variables** dans Portainer et
+redéploie. Pour `401` ou `403`, vérifie aussi le couple ID/jeton. Un
 échec TURN n'arrête pas la publication RTSP : WebRTC direct reste
 possible sur le LAN.
+
+Si HA affiche `WebRTC camera already has a session`, ferme les autres
+vues en direct de cette caméra (onglets, tableau de bord, autre appareil)
+et réessaie depuis une seule vue. Le pont accepte une session WebRTC par
+caméra. Quand HA ouvre une nouvelle session pour activer le micro,
+l'intégration attend brièvement la fermeture de l'ancienne sans couper
+un autre spectateur.
 
 **Repli et coût.** Avec TURN configuré, les caméras Netvue ayant activé
 WebRTC utilisent le lecteur WebRTC natif de HA, **sans repli HLS** dans
