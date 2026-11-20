@@ -37,7 +37,7 @@ class FakeBridge:
 
     def __init__(self) -> None:
         self.cameras: dict[str, dict] = {}
-        self.discovered: list[str] = []
+        self.discovered: list[str | dict] = []
         self.requests: list[tuple[str, str]] = []
         self.status_override: int | None = None
         self.turn_response: dict | None = None
@@ -78,7 +78,8 @@ class FakeBridge:
 
     async def _discovery(self, request):
         return self._forced(request) or web.json_response(
-            {"cameras": [{"host": host} for host in self.discovered]})
+            {"cameras": [{"host": host} if isinstance(host, str) else host
+                         for host in self.discovered]})
 
     async def _ice(self, request):
         if self.turn_response is None:

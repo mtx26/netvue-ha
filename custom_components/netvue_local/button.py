@@ -5,13 +5,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .bridge_api import BridgeError
-from .const import DOMAIN
-from .coordinator import NetvueCoordinator
+from .coordinator import NetvueCoordinator, NetvueEntity
 
 
 async def async_setup_entry(
@@ -20,7 +17,7 @@ async def async_setup_entry(
     async_add_entities([NetvueRestartButton(entry, entry.runtime_data)])
 
 
-class NetvueRestartButton(CoordinatorEntity[NetvueCoordinator], ButtonEntity):
+class NetvueRestartButton(NetvueEntity, ButtonEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "restart_session"
     _attr_device_class = ButtonDeviceClass.RESTART
@@ -29,9 +26,6 @@ class NetvueRestartButton(CoordinatorEntity[NetvueCoordinator], ButtonEntity):
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_restart"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Netvue"
-        )
 
     @property
     def available(self) -> bool:

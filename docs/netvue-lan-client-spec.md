@@ -141,11 +141,13 @@ Les positions utilisées par le pont dans son tableau `P` sont :
 
 | Position | Utilisation | Précaution |
 |---:|---|---|
-| 0–1 | Identifiant appareil et version | Noms donnés par le parseur Android ; Go ne les utilise pas. |
+| 0 | Série | Le parseur Android la nomme `deviceID`; Go l'expose si la chaîne est valide. |
+| 1 | Firmware annoncé | Le parseur Android la nomme `version`; Go l'expose si la chaîne est valide. |
 | 2 | Adresse IPv4 annoncée | Vérifier qu'elle correspond à l'émetteur et à la cible attendue. |
 | 3 | Port TCP annoncé | Entier de 1 à 65535 ; ne pas supposer 5555 universel. |
-| 4 | Clé locale | Chaîne non vide et sensible ; ne pas l'afficher. |
-| 5, puis 0 | Indicateur de capacité audio | Optionnel ; sa présence ou son absence ne prouve pas tous les codecs. |
+| 4 | Clé locale | Chaîne non vide et sensible ; exclue de l'API et des logs. |
+| 5, indices 0–3 | Capacités audio, flip, lumière, carte SD | Chaque booléen reste optionnel; absence ≠ `false`. |
+| 5, indices 4–5 | SSID et `wifiSL` | Optionnels; le niveau est exposé comme entier brut, sans unité supposée. |
 
 Le [parseur Android V2](./decompiled/sources/com/netviewtech/client/packet/camera/cmd/ack/NvCameraCMDBroadcastDiscoveryAckV2.java#L32)
 lit aussi dans `P[5]` les indicateurs flip, lumière, carte SD, le SSID et un
@@ -153,8 +155,11 @@ entier nommé `wifiSL`. Les positions facultatives `P[6]`, `P[7]` et `P[8]`
 sont nommées respectivement `ability`, `clientVersion` et `offlineToken` par
 ce parseur. Le [finder](./decompiled/sources/com/netviewtech/client/discover/camera/NvCameraFinder.java#L136)
 transfère ces champs dans le nœud de l'application ; leur nom ne suffit pas à
-établir leur sémantique complète côté firmware. Identifiants, SSID et token
-sont sensibles et ne doivent pas être publiés. Le pont n'en dépend pas.
+établir leur sémantique complète côté firmware. Go publie les champs optionnels
+confirmés dans `metadata` des réponses manager discovery et caméra. Le SSID,
+qui identifie potentiellement le réseau local, n'est exposé que dans cette API
+locale et n'est pas journalisé. La clé `P[4]`, `offlineToken`, `ability` et
+`clientVersion` ne sont pas exposés.
 
 Go accepte un résultat `C` absent dans la découverte ; s'il existe, il doit
 être un entier nul. La réponse, son adresse et sa longueur doivent être

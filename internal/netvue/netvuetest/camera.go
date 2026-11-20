@@ -29,6 +29,10 @@ const (
 type Options struct {
 	// Host is the loopback or private IPv4 address of this camera (required).
 	Host string
+	// SerialNumber and FirmwareVersion are advertised by discovery; empty values
+	// use stable synthetic defaults.
+	SerialNumber    string
+	FirmwareVersion string
 	// DiscoveryBind is the UDP address to bind; empty means Host. A container
 	// camera answering broadcasts binds 0.0.0.0.
 	DiscoveryBind string
@@ -42,9 +46,17 @@ type Options struct {
 	// FrameInterval is the video cadence; defaults to 100ms.
 	FrameInterval time.Duration
 	// Audio advertises an audio channel and streams AudioFrames (ADTS).
-	Audio       bool
-	AudioFrames [][]byte
-	AudioRate   int // defaults to 8000
+	Audio bool
+	// Flip, Light and SDCard are advertised discovery capabilities.
+	Flip     bool
+	Light    bool
+	SDCard   bool
+	WiFiSSID string
+	// WiFiSignalLevel is the raw integer announced by discovery, without an
+	// assumed unit.
+	WiFiSignalLevel *int
+	AudioFrames     [][]byte
+	AudioRate       int // defaults to 8000
 	// AudioChannels defaults to 1.
 	AudioChannels int
 	// RejectLogins makes the first N logins answer with a rejection (C=5).
@@ -126,6 +138,12 @@ func Listen(opts Options) (*Camera, error) {
 	}
 	if opts.AudioChannels == 0 {
 		opts.AudioChannels = 1
+	}
+	if opts.SerialNumber == "" {
+		opts.SerialNumber = "sim-device"
+	}
+	if opts.FirmwareVersion == "" {
+		opts.FirmwareVersion = "sim-firmware"
 	}
 	if opts.Video == nil {
 		opts.Video = SolidH264(64, 64, 255, 0, 0, 10)
@@ -353,9 +371,19 @@ func (c *Camera) discoveryLoop() {
 			c.protocolError("unexpected discovery request")
 			continue
 		}
+		capabilities := []any{c.opts.Audio, c.opts.Flip, c.opts.Light, c.opts.SDCard}
+		if c.opts.WiFiSSID != "" || c.opts.WiFiSignalLevel != nil {
+			capabilities = append(capabilities, c.opts.WiFiSSID)
+			if c.opts.WiFiSignalLevel != nil {
+				capabilities = append(capabilities, *c.opts.WiFiSignalLevel)
+			}
+		}
 		reply := Command(map[string]any{
 			"A": 8, "V": 2, "C": 0,
-			"P": []any{"sim-device", "sim-firmware", c.opts.Host, c.Port(), c.key, []bool{c.opts.Audio}},
+			"P": []any{
+				c.opts.SerialNumber, c.opts.FirmwareVersion, c.opts.Host, c.Port(),
+				c.key, capabilities,
+			},
 		})
 		if _, err := c.udp.WriteTo(reply, remote); err != nil {
 			return

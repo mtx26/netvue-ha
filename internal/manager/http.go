@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/mtx26/netvue-ha/internal/netvue"
 )
 
 type addCameraRequest struct {
@@ -51,19 +53,17 @@ func (manager *Manager) handleDiscovery(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 	stop := context.AfterFunc(manager.ctx, cancel)
 	defer stop()
-	hosts, err := manager.discoverLAN(ctx, manager.source)
+	discovered, err := manager.discoverLAN(ctx, manager.source)
 	if err != nil {
 		writeManagerError(w, err)
 		return
 	}
-	type discoveredCamera struct {
-		Host string `json:"host"`
+	cameras, err := manager.cacheDiscoveryResults(discovered)
+	if err != nil {
+		writeManagerError(w, err)
+		return
 	}
-	cameras := make([]discoveredCamera, 0, len(hosts))
-	for _, host := range hosts {
-		cameras = append(cameras, discoveredCamera{Host: host})
-	}
-	writeJSON(w, http.StatusOK, map[string][]discoveredCamera{"cameras": cameras})
+	writeJSON(w, http.StatusOK, map[string][]netvue.DiscoveryResult{"cameras": cameras})
 }
 
 func (manager *Manager) handleStatus(w http.ResponseWriter, _ *http.Request) {

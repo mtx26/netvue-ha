@@ -67,12 +67,24 @@ et CRC : ceux-ci sont émis à zéro, et leur sémantique n'est pas établie.
 
 | Étape | Message | Comportement établi |
 |---|---|---|
-| Découverte | UDP/36868, requête `Q=8`, `V=2`, `P=[]`; réponse `A=8`, `V=2`. | Le Go vérifie l'émetteur et la concordance de l'adresse annoncée avec la cible. Dans `P`, `P[2]` est l'hôte annoncé, `P[3]` le port TCP, `P[4]` une clé locale, et `P[5][0]` l'indicateur audio si présent. Le parseur Android nomme `P[0]` identifiant de l'appareil et `P[1]` version de firmware ; Go ne les utilise pas. `C` peut manquer; s'il est présent, Go exige un entier nul. |
+| Découverte | UDP/36868, requête `Q=8`, `V=2`, `P=[]`; réponse `A=8`, `V=2`. | Le Go vérifie l'émetteur et la concordance de l'adresse annoncée avec la cible. `P[0]` (série), `P[1]` (firmware) et les propriétés de `P[5]` sont conservés comme metadata optionnelles; `P[2]` est l'hôte, `P[3]` le port TCP, `P[4]` la clé locale. `C` peut manquer; s'il est présent, Go exige un entier nul. |
 | Login LAN classique | TCP, commande `Q=1`, `V=1`; `P` contient clé locale, entier aléatoire 32 bits, nom d'utilisateur local, hôte et port annoncés. | L'entier est présent dans la requête Android; sa fonction côté caméra n'est pas connue. Le code Android utilise un login TCP sans chiffrement applicatif apparent. Go garde la clé en mémoire et ne la journalise pas. |
 | ACK login | `A=1`, `V=1` ou `V=2`, résultat `C`. | Les objets ACK Android peuvent garder une valeur « succès » par défaut si `C` manque; aucune validation explicite de `C` n'est visible dans le gestionnaire LAN étudié. Go exige un résultat entier explicite et ne poursuit qu'avec `C=0`. Il s'agit d'une validation stricte volontaire, pas d'une reproduction exacte de l'APK. |
 
 CameraII emploie une autre authentification, un autre transport et des données
 de session distinctes; ces détails ne sont pas représentés par le client Go.
+
+L'API manager ajoute `connection_port` et `metadata` à la réponse discovery;
+le statut des caméras fournit les mêmes champs après une découverte de session.
+Cette information vient de la réponse UDP déjà nécessaire à la connexion, sans
+requête supplémentaire ni accès cloud. Une recherche LAN explicite rafraîchit
+le cache. Série et firmware conservent leur dernière valeur non vide; les
+capacités, le SSID et le signal reflètent la dernière réponse valide et sont
+effacés si cette réponse omet ces champs. Un booléen ou niveau reçu
+explicitement, même `false` ou `0`, est conservé.
+L'API expose uniquement la série, le firmware, les capacités audio/flip/lumière/
+carte SD, le SSID et le niveau Wi-Fi brut. Elle n'expose ni clé locale,
+`offlineToken`, `ability` ni `clientVersion`; le SSID n'est jamais journalisé.
 
 ### LIVE, sélection et direction audio
 

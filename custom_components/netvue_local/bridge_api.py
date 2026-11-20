@@ -1,6 +1,7 @@
 """Loopback API client for the Netvue Bridge session manager."""
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import NamedTuple
 from urllib.parse import quote
 from weakref import WeakValueDictionary
@@ -21,9 +22,43 @@ class BridgeError(Exception):
     """The local bridge could not accept the requested camera session."""
 
 
+@dataclass(frozen=True)
+class CameraMetadata:
+    """Optional descriptive data, never used as camera identity or logged."""
+
+    serial_number: str | None = None
+    firmware_version: str | None = None
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    wifi_ssid: str | None = None
+    wifi_signal_level: int | None = None
+
+
 class SessionStatus(NamedTuple):
     state: str
     error: str | None
+    metadata: CameraMetadata | None = None
+    connection_port: int | None = None
+
+
+def _camera_metadata(data) -> CameraMetadata | None:
+    """Ignore unknown/invalid optional fields without rejecting an older bridge."""
+    if not isinstance(data, dict):
+        return None
+    serial = data.get("serial_number")
+    firmware = data.get("firmware_version")
+    ssid = data.get("wifi_ssid")
+    signal = data.get("wifi_signal_level")
+    capabilities = data.get("capabilities")
+    return CameraMetadata(
+        serial_number=serial if isinstance(serial, str) and serial else None,
+        firmware_version=firmware if isinstance(firmware, str) and firmware else None,
+        capabilities={
+            key: capabilities[key] for key in ("audio", "flip", "light", "sd_card")
+            if isinstance(capabilities, dict) and type(capabilities.get(key)) is bool
+        },
+        wifi_ssid=ssid if isinstance(ssid, str) else None,
+        wifi_signal_level=signal if type(signal) is int else None,
+    )
 
 
 async def async_discover_cameras(hass: HomeAssistant) -> list[str]:
@@ -93,7 +128,11 @@ async def _camera_response(response, host: str, stream_name: str) -> SessionStat
             or data.get("state") not in ("supervising", "stopping", "stopped", "failed")
             or ("error" in data and not isinstance(data["error"], str))):
         raise BridgeError("Bridge returned inconsistent camera settings")
-    return SessionStatus(data["state"], data.get("error"))
+    port = data.get("connection_port")
+    return SessionStatus(
+        data["state"], data.get("error"), _camera_metadata(data.get("metadata")),
+        port if type(port) is int and 1 <= port <= 65535 else None,
+    )
 
 
 class ManagedCamera:

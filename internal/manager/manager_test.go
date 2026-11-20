@@ -546,26 +546,180 @@ func TestManagerHTTPDiscovery(t *testing.T) {
 		<-ctx.Done()
 		return nil
 	})
-	manager.discoverLAN = func(_ context.Context, source string) ([]string, error) {
+	audio := true
+	signal := -48
+	discoveredCamera := netvue.DiscoveryResult{
+		Host:           "192.168.10.20",
+		ConnectionPort: 9000,
+		Metadata: &netvue.DiscoveryMetadata{
+			SerialNumber:    "synthetic-serial",
+			FirmwareVersion: "synthetic-firmware",
+			Capabilities:    &netvue.DeviceCapabilities{Audio: &audio},
+			WiFiSSID:        "synthetic-wifi",
+			WiFiSignalLevel: &signal,
+		},
+	}
+	manager.discoverLAN = func(_ context.Context, source string) ([]netvue.DiscoveryResult, error) {
 		if source != "192.168.10.2" {
 			t.Errorf("unexpected source %q", source)
 		}
-		return []string{"192.168.10.20"}, nil
+		return []netvue.DiscoveryResult{discoveredCamera}, nil
 	}
 	handler := manager.Handler()
 	result := request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusOK)
-	if result.Body.String() != "{\"cameras\":[{\"host\":\"192.168.10.20\"}]}\n" {
-		t.Fatalf("discovery response = %q", result.Body.String())
+	var response struct {
+		Cameras []netvue.DiscoveryResult `json:"cameras"`
 	}
-	manager.discoverLAN = func(context.Context, string) ([]string, error) { return nil, nil }
+	if err := json.Unmarshal(result.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Cameras) != 1 || response.Cameras[0].Host != discoveredCamera.Host ||
+		response.Cameras[0].ConnectionPort != discoveredCamera.ConnectionPort ||
+		response.Cameras[0].Metadata == nil ||
+		response.Cameras[0].Metadata.FirmwareVersion != "synthetic-firmware" {
+		t.Fatalf("discovery response = %+v", response.Cameras)
+	}
+	for _, sensitive := range []string{
+		"synthetic-key", "offline-token", "secretAccessKey",
+		`"key"`, `"offline_token"`, `"ability"`, `"client_version"`,
+	} {
+		if strings.Contains(result.Body.String(), sensitive) {
+			t.Fatalf("discovery response exposed %q: %s", sensitive, result.Body.String())
+		}
+	}
+	manager.discoverLAN = func(context.Context, string) ([]netvue.DiscoveryResult, error) {
+		return nil, nil
+	}
 	result = request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusOK)
 	if result.Body.String() != "{\"cameras\":[]}\n" {
 		t.Fatalf("empty discovery response = %q", result.Body.String())
 	}
-	manager.discoverLAN = func(context.Context, string) ([]string, error) {
+	manager.discoverLAN = func(context.Context, string) ([]netvue.DiscoveryResult, error) {
 		return nil, errors.New("discovery failed")
 	}
 	request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusInternalServerError)
+}
+
+func TestManagerDiscoveryUpdatesMetadataWithoutRestartingCamera(t *testing.T) {
+	var starts atomic.Int32
+	started := make(chan string, 2)
+	manager := newTestManager(t, func(ctx context.Context, _, host, _ string) error {
+		starts.Add(1)
+		started <- host
+		<-ctx.Done()
+		return nil
+	})
+	handler := manager.Handler()
+
+	audio := true
+	signal := -42
+	initialMetadata := &netvue.DiscoveryMetadata{
+		SerialNumber:    "duplicate-serial",
+		FirmwareVersion: "fw-1",
+		Capabilities:    &netvue.DeviceCapabilities{Audio: &audio},
+		WiFiSSID:        "local-network",
+		WiFiSignalLevel: &signal,
+	}
+	manager.discoverLAN = func(context.Context, string) ([]netvue.DiscoveryResult, error) {
+		return []netvue.DiscoveryResult{
+			{Host: "192.168.10.20", ConnectionPort: 9000, Metadata: initialMetadata},
+			{Host: "192.168.10.21", ConnectionPort: 9001, Metadata: initialMetadata},
+		}, nil
+	}
+	result := request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusOK)
+	var discoveryResponse struct {
+		Cameras []netvue.DiscoveryResult `json:"cameras"`
+	}
+	if err := json.Unmarshal(result.Body.Bytes(), &discoveryResponse); err != nil {
+		t.Fatal(err)
+	}
+	if len(discoveryResponse.Cameras) != 2 ||
+		discoveryResponse.Cameras[0].Host != "192.168.10.20" ||
+		discoveryResponse.Cameras[1].Host != "192.168.10.21" {
+		t.Fatalf("discovery results were not kept distinct and sorted: %+v", discoveryResponse.Cameras)
+	}
+
+	for _, host := range []string{"192.168.10.20", "192.168.10.21"} {
+		body := fmt.Sprintf(`{"host":%q,"stream_name":%q}`, host, "camera_"+strings.ReplaceAll(host, ".", "_"))
+		request(t, handler, http.MethodPost, "/api/v1/cameras", body, http.StatusAccepted)
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("camera session did not start")
+		}
+	}
+	first, found := manager.Camera("192.168.10.20")
+	if !found || first.Metadata == nil || first.Metadata.SerialNumber != "duplicate-serial" ||
+		first.Metadata.FirmwareVersion != "fw-1" || first.ConnectionPort != 9000 {
+		t.Fatalf("camera metadata after registration = %+v, found %v", first, found)
+	}
+	second, found := manager.Camera("192.168.10.21")
+	if !found || second.Metadata == nil || second.Metadata.SerialNumber != "duplicate-serial" {
+		t.Fatalf("duplicate serial cameras were conflated: %+v, found %v", second, found)
+	}
+
+	updatedSignal := 0
+	audio = false
+	manager.discoverLAN = func(context.Context, string) ([]netvue.DiscoveryResult, error) {
+		return []netvue.DiscoveryResult{{
+			Host:           "192.168.10.20",
+			ConnectionPort: 9010,
+			Metadata: &netvue.DiscoveryMetadata{
+				FirmwareVersion: "fw-2",
+				Capabilities:    &netvue.DeviceCapabilities{Audio: &audio},
+				WiFiSignalLevel: &updatedSignal,
+			},
+		}}, nil
+	}
+	request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusOK)
+	first, found = manager.Camera("192.168.10.20")
+	if !found || first.Metadata == nil ||
+		first.Metadata.SerialNumber != "duplicate-serial" ||
+		first.Metadata.FirmwareVersion != "fw-2" ||
+		first.Metadata.WiFiSSID != "" ||
+		first.Metadata.WiFiSignalLevel == nil || *first.Metadata.WiFiSignalLevel != 0 ||
+		first.Metadata.Capabilities == nil ||
+		first.Metadata.Capabilities.Audio == nil || *first.Metadata.Capabilities.Audio ||
+		first.ConnectionPort != 9010 {
+		t.Fatalf("camera metadata after refresh = %+v, found %v", first, found)
+	}
+	manager.discoverLAN = func(context.Context, string) ([]netvue.DiscoveryResult, error) {
+		return []netvue.DiscoveryResult{{
+			Host: "192.168.10.20", ConnectionPort: 9020,
+		}}, nil
+	}
+	request(t, handler, http.MethodPost, "/api/v1/discovery", "", http.StatusOK)
+	first, found = manager.Camera("192.168.10.20")
+	if !found || first.Metadata == nil ||
+		first.Metadata.SerialNumber != "duplicate-serial" ||
+		first.Metadata.FirmwareVersion != "fw-2" ||
+		first.Metadata.WiFiSSID != "" ||
+		first.Metadata.WiFiSignalLevel != nil || first.Metadata.Capabilities != nil ||
+		first.ConnectionPort != 9020 {
+		t.Fatalf("camera metadata after omitted fields = %+v, found %v", first, found)
+	}
+	if got := starts.Load(); got != 2 {
+		t.Fatalf("metadata refresh restarted camera sessions: starts = %d, want 2", got)
+	}
+	status := request(t, handler, http.MethodGet, "/api/v1/status", "", http.StatusOK)
+	var managerStatus struct {
+		Cameras []Camera `json:"cameras"`
+	}
+	if err := json.Unmarshal(status.Body.Bytes(), &managerStatus); err != nil {
+		t.Fatal(err)
+	}
+	foundUpdatedFirmware := false
+	for _, camera := range managerStatus.Cameras {
+		if camera.Host == "192.168.10.20" {
+			foundUpdatedFirmware = camera.Metadata != nil &&
+				camera.Metadata.FirmwareVersion == "fw-2"
+		}
+	}
+	if !foundUpdatedFirmware {
+		t.Fatalf("status API did not expose updated firmware: %s", status.Body.String())
+	}
 }
 
 func TestManagerHTTPDiscoveryConcurrentAndShutdown(t *testing.T) {
@@ -574,7 +728,7 @@ func TestManagerHTTPDiscoveryConcurrentAndShutdown(t *testing.T) {
 		return nil
 	})
 	started := make(chan struct{})
-	manager.discoverLAN = func(ctx context.Context, _ string) ([]string, error) {
+	manager.discoverLAN = func(ctx context.Context, _ string) ([]netvue.DiscoveryResult, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()

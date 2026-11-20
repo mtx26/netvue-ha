@@ -53,6 +53,28 @@ arrêté ou en échec et ne garantit pas la disponibilité immédiate du flux. U
 supervisée peut reconnecter, sans exposer dans HA la cause de chaque erreur
 transitoire.
 
+### Métadonnées locales et diagnostic
+
+Si le pont les fournit, la fiche appareil indique le fabricant **Netvue**, le
+numéro de série et le firmware. Aucun modèle n'est inféré. La série n'est pas
+un identifiant : deux entrées avec une même série restent des appareils séparés.
+Les identifiants existants des appareils et des entités sont conservés.
+
+Les métadonnées sont facultatives, y compris avec un ancien pont. Les mises à
+jour du coordinator actualisent le firmware sans recréer les entités ni
+redémarrer le flux. Si une réponse omet la série ou le firmware, le registre
+conserve la dernière valeur connue.
+
+Le capteur **Diagnostic** existant regroupe les attributs facultatifs
+`connection_port`, `wifi_ssid`, `wifi_signal_level` (entier brut **sans unité
+connue**) et `capabilities` (`audio`, `flip`, `light`, `sd_card`). Une capacité
+absente ou nulle est inconnue, pas fausse ; seules les valeurs booléennes
+connues sont exposées. À chaque réponse valide, les valeurs facultatives absentes
+sont effacées des attributs de diagnostic; série et firmware conservent leur
+dernière valeur non vide. Une absence de réponse ne purge pas le dernier état
+connu. Aucune entité supplémentaire ni requête cloud n'est ajoutée, et
+l'intégration ne journalise pas ces métadonnées.
+
 ### Miniature de caméra
 
 HA demande une image JPEG de 80 × 80 pixels pour le badge à côté du nom.

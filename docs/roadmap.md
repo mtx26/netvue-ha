@@ -21,7 +21,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Supervision | Reconnexion et fonctionnement continu |
 | 🧪 | Multi-caméra | Sessions indépendantes |
 | 🧪 | Home Assistant | Intégration complète |
-| 🧪 | Découverte LAN | Découverte UDP réelle confirmée en [phase 35](../findings/phase35-decouverte-lan-ha.md) ; création depuis HA et autres modèles à valider |
+| 🧪 | Découverte LAN | Série, firmware et capacités V2 exposés et testés hors ligne ; découverte réelle confirmée en [phase 35](../findings/phase35-decouverte-lan-ha.md), autres modèles et présence des metadata à valider |
 | ✅ | CI multi-composants | Go/race/vet, tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) ; la publication A/V synthétique est désormais incluse |
 | 🧪 | Refonte tests et CI (phases 47–48) | PR : tests Go/HA rapides systématiques, jobs d'intégration ignorés uniquement pour les changements documentaires ; validation complète conservée sur `main`. Aucun SKIP toléré, fuzzing et tests E2E synthétiques ; **run GitHub complet vert après la phase 48 à confirmer** ([rapport phase 47](../findings/phase47-refonte-tests-ci.md), [phase 48](../findings/phase48-fiabilite-ci-tests.md)) |
 | ✅ | Validation réelle courte (phase 36) | 30 s de H.264 décodées depuis la session active de la caméra ; le digest déployé n'est pas relié au commit local ([rapport](../findings/phase36-validation-reelle.md)) |

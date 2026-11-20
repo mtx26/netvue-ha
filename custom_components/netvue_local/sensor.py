@@ -4,12 +4,9 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
-from .coordinator import CameraData, NetvueCoordinator
+from .coordinator import CameraData, NetvueCoordinator, NetvueEntity
 
 
 _DIAGNOSTIC_OPTIONS = [
@@ -37,7 +34,7 @@ async def async_setup_entry(
     ])
 
 
-class NetvueSessionSensor(CoordinatorEntity[NetvueCoordinator], SensorEntity):
+class NetvueSessionSensor(NetvueEntity, SensorEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "session"
     _attr_device_class = SensorDeviceClass.ENUM
@@ -47,9 +44,6 @@ class NetvueSessionSensor(CoordinatorEntity[NetvueCoordinator], SensorEntity):
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_session"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Netvue"
-        )
 
     @property
     def available(self) -> bool:
@@ -69,7 +63,7 @@ class NetvueSessionSensor(CoordinatorEntity[NetvueCoordinator], SensorEntity):
         return {}
 
 
-class NetvueDiagnosticSensor(CoordinatorEntity[NetvueCoordinator], SensorEntity):
+class NetvueDiagnosticSensor(NetvueEntity, SensorEntity):
     """Translate bridge/session status into a concise, actionable diagnosis."""
 
     _attr_has_entity_name = True
@@ -81,9 +75,6 @@ class NetvueDiagnosticSensor(CoordinatorEntity[NetvueCoordinator], SensorEntity)
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_diagnostic"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Netvue"
-        )
 
     @property
     def available(self) -> bool:
@@ -95,15 +86,26 @@ class NetvueDiagnosticSensor(CoordinatorEntity[NetvueCoordinator], SensorEntity)
         return _diagnostic_state(data) if data is not None else None
 
     @property
-    def extra_state_attributes(self) -> dict[str, str]:
+    def extra_state_attributes(self) -> dict[str, object]:
         data = self.coordinator.data
         if data is None:
             return {}
+        attributes: dict[str, object] = {}
+        if data.session:
+            if data.session.connection_port is not None:
+                attributes["connection_port"] = data.session.connection_port
+            if (metadata := data.session.metadata) is not None:
+                if metadata.wifi_ssid is not None:
+                    attributes["wifi_ssid"] = metadata.wifi_ssid
+                if metadata.wifi_signal_level is not None:
+                    attributes["wifi_signal_level"] = metadata.wifi_signal_level
+                if metadata.capabilities:
+                    attributes["capabilities"] = metadata.capabilities
         if data.manager_error:
-            return {"details": data.manager_error}
-        if data.session and data.session.error:
-            return {"details": data.session.error}
-        return {}
+            attributes["details"] = data.manager_error
+        elif data.session and data.session.error:
+            attributes["details"] = data.session.error
+        return attributes
 
 
 def _diagnostic_state(data: CameraData) -> str:

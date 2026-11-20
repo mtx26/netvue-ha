@@ -39,6 +39,17 @@ func runSession(ctx context.Context, source, target, rtspURL string, duration ti
 }
 
 func runSessionWithLiveTalk(ctx context.Context, source, target, rtspURL string, duration time.Duration, talk *talkAudio, live *LiveTalkback) error {
+	return runSessionWithLiveTalkAndDiscovery(ctx, source, target, rtspURL, duration, talk, live, nil)
+}
+
+func runSessionWithLiveTalkAndDiscovery(
+	ctx context.Context,
+	source, target, rtspURL string,
+	duration time.Duration,
+	talk *talkAudio,
+	live *LiveTalkback,
+	onDiscovery func(DiscoveryResult),
+) error {
 	if err := validateSessionDuration(duration); err != nil {
 		return err
 	}
@@ -71,6 +82,9 @@ func runSessionWithLiveTalk(ctx context.Context, source, target, rtspURL string,
 	device, err := discover(sessionCtx, sourceIP.String(), targetIP.String())
 	if err != nil {
 		return atStage("discovery", fmt.Errorf("Netvue discovery failed: %w", err))
+	}
+	if onDiscovery != nil {
+		onDiscovery(device.discoveryResult())
 	}
 	if talk != nil && !device.audio {
 		return talkFailure("camera did not advertise an audio channel", ErrUnsupportedAudioParameters)

@@ -24,17 +24,38 @@ var continuousRetryPolicy = retryPolicy{
 
 // RunContinuous retries recoverable session failures until ctx is canceled.
 func RunContinuous(ctx context.Context, source, target, rtspURL string) error {
-	return RunContinuousWithTalkback(ctx, source, target, rtspURL, nil)
+	return RunContinuousWithTalkbackAndDiscovery(ctx, source, target, rtspURL, nil, nil)
 }
 
 // RunContinuousWithTalkback binds the controller only to each active session.
 func RunContinuousWithTalkback(ctx context.Context, source, target, rtspURL string, live *LiveTalkback) error {
+	return RunContinuousWithTalkbackAndDiscovery(ctx, source, target, rtspURL, live, nil)
+}
+
+// RunContinuousWithDiscovery reports each valid discovery without affecting the session.
+func RunContinuousWithDiscovery(
+	ctx context.Context,
+	source, target, rtspURL string,
+	onDiscovery func(DiscoveryResult),
+) error {
+	return RunContinuousWithTalkbackAndDiscovery(ctx, source, target, rtspURL, nil, onDiscovery)
+}
+
+// RunContinuousWithTalkbackAndDiscovery binds talkback and observes local discovery results.
+func RunContinuousWithTalkbackAndDiscovery(
+	ctx context.Context,
+	source, target, rtspURL string,
+	live *LiveTalkback,
+	onDiscovery func(DiscoveryResult),
+) error {
 	cameraLabel := "invalid address"
 	if ip, err := validateLANIPv4(target); err == nil {
 		cameraLabel = ip.String()
 	}
 	runSession := func(ctx context.Context) error {
-		return runSessionWithLiveTalk(ctx, source, target, rtspURL, 0, nil, live)
+		return runSessionWithLiveTalkAndDiscovery(
+			ctx, source, target, rtspURL, 0, nil, live, onDiscovery,
+		)
 	}
 	return supervise(ctx, cameraLabel, runSession, continuousRetryPolicy, waitForRetry)
 }

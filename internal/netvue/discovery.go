@@ -8,7 +8,9 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 )
 
 var errDiscoveryRejected = errors.New("camera rejected discovery response")
@@ -17,13 +19,52 @@ const (
 	discoveryPort        = 36868
 	discoveryTimeout     = 2 * time.Second
 	maxDiscoveredCameras = 256
+	maxDiscoveryTextSize = 128
 )
 
 var ErrDiscoveryTimeout = errors.New("Netvue discovery timed out")
 
+// DeviceCapabilities contains only capabilities explicitly advertised in discovery.
+type DeviceCapabilities struct {
+	Audio  *bool `json:"audio,omitempty"`
+	Flip   *bool `json:"flip,omitempty"`
+	Light  *bool `json:"light,omitempty"`
+	SDCard *bool `json:"sd_card,omitempty"`
+}
+
+// DiscoveryMetadata contains optional, non-secret fields from the LAN response.
+type DiscoveryMetadata struct {
+	SerialNumber    string              `json:"serial_number,omitempty"`
+	FirmwareVersion string              `json:"firmware_version,omitempty"`
+	Capabilities    *DeviceCapabilities `json:"capabilities,omitempty"`
+	WiFiSSID        string              `json:"wifi_ssid,omitempty"`
+	// WiFiSignalLevel is the advertised integer; its unit is not established.
+	WiFiSignalLevel *int                `json:"wifi_signal_level,omitempty"`
+}
+
+// DiscoveryResult is the safe subset of a camera's discovery response.
+type DiscoveryResult struct {
+	Host           string             `json:"host"`
+	ConnectionPort int                `json:"connection_port"`
+	Metadata       *DiscoveryMetadata `json:"metadata,omitempty"`
+}
+
 // DiscoverLAN sends one discovery request to the source interface's subnet.
 // Only hosts compatible with the existing unicast session protocol are returned.
 func DiscoverLAN(ctx context.Context, source string) ([]string, error) {
+	discovered, err := DiscoverLANMetadata(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	hosts := make([]string, 0, len(discovered))
+	for _, camera := range discovered {
+		hosts = append(hosts, camera.Host)
+	}
+	return hosts, nil
+}
+
+// DiscoverLANMetadata returns the non-sensitive metadata advertised by cameras.
+func DiscoverLANMetadata(ctx context.Context, source string) ([]DiscoveryResult, error) {
 	sourceIP, err := validateLANIPv4(source)
 	if err != nil {
 		return nil, fmt.Errorf("invalid source address: %w", err)
@@ -50,10 +91,24 @@ func DiscoverLAN(ctx context.Context, source string) ([]string, error) {
 			for i := range broadcast {
 				broadcast[i] = subnet.IP.To4()[i] | ^subnet.Mask[i]
 			}
-			return discoverLAN(ctx, sourceIP, subnet, &net.UDPAddr{IP: broadcast, Port: discoveryPort})
+			return discoverLANMetadata(
+				ctx,
+				sourceIP,
+				subnet,
+				&net.UDPAddr{IP: broadcast, Port: discoveryPort},
+			)
 		}
 	}
 	return nil, errors.New("source address is not assigned to a local interface")
+}
+
+// DiscoverCameraMetadata requests one camera's local discovery response.
+func DiscoverCameraMetadata(ctx context.Context, source, target string) (DiscoveryResult, error) {
+	device, err := discover(ctx, source, target)
+	if err != nil {
+		return DiscoveryResult{}, err
+	}
+	return device.discoveryResult(), nil
 }
 
 func openDiscoverySocket(ctx context.Context, source net.IP, target *net.UDPAddr) (*net.UDPConn, func() bool, error) {
@@ -89,13 +144,30 @@ func openDiscoverySocket(ctx context.Context, source net.IP, target *net.UDPAddr
 }
 
 func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *net.UDPAddr) ([]string, error) {
+	discovered, err := discoverLANMetadata(ctx, source, subnet, target)
+	if err != nil {
+		return nil, err
+	}
+	hosts := make([]string, 0, len(discovered))
+	for _, camera := range discovered {
+		hosts = append(hosts, camera.Host)
+	}
+	return hosts, nil
+}
+
+func discoverLANMetadata(
+	ctx context.Context,
+	source net.IP,
+	subnet *net.IPNet,
+	target *net.UDPAddr,
+) ([]DiscoveryResult, error) {
 	conn, stopCancel, err := openDiscoverySocket(ctx, source, target)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
 	defer stopCancel()
-	found := make(map[string]struct{})
+	found := make(map[string]DiscoveryResult)
 	buffer := make([]byte, 65535)
 	for {
 		n, remote, err := conn.ReadFromUDP(buffer)
@@ -104,12 +176,14 @@ func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *
 				return nil, ctxErr
 			}
 			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
-				hosts := make([]string, 0, len(found))
-				for host := range found {
-					hosts = append(hosts, host)
+				cameras := make([]DiscoveryResult, 0, len(found))
+				for _, camera := range found {
+					cameras = append(cameras, camera)
 				}
-				sort.Strings(hosts)
-				return hosts, nil
+				sort.Slice(cameras, func(i, j int) bool {
+					return cameras[i].Host < cameras[j].Host
+				})
+				return cameras, nil
 			}
 			return nil, fmt.Errorf("receive discovery response: %w", err)
 		}
@@ -117,21 +191,23 @@ func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *
 			continue
 		}
 		host := remote.IP.String()
-		if _, err := parseDiscovery(buffer[:n], host, host); err != nil {
+		device, err := parseDiscovery(buffer[:n], host, host)
+		if err != nil {
 			continue
 		}
 		if _, exists := found[host]; !exists && len(found) == maxDiscoveredCameras {
 			return nil, errors.New("too many discovery responses")
 		}
-		found[host] = struct{}{}
+		found[host] = device.discoveryResult()
 	}
 }
 
 type camera struct {
-	host  string
-	port  int
-	key   string
-	audio bool
+	host     string
+	port     int
+	key      string
+	audio    bool
+	metadata *DiscoveryMetadata
 }
 
 func discover(ctx context.Context, source, target string) (camera, error) {
@@ -241,15 +317,87 @@ func parseDiscovery(data []byte, source, expected string) (camera, error) {
 			return camera{}, withReason("invalid or mismatched discovery endpoint", fmt.Errorf("%w: discovery endpoint does not match target", ErrProtocol))
 		}
 		audio := false
+		metadata := &DiscoveryMetadata{
+			SerialNumber:    optionalDiscoveryString(params[0]),
+			FirmwareVersion: optionalDiscoveryString(params[1]),
+		}
 		if len(params) > 5 {
 			var capabilities []json.RawMessage
-			if json.Unmarshal(params[5], &capabilities) == nil && len(capabilities) > 0 {
-				_ = json.Unmarshal(capabilities[0], &audio)
+			if json.Unmarshal(params[5], &capabilities) == nil {
+				deviceCapabilities := &DeviceCapabilities{
+					Audio:  optionalDiscoveryBool(capabilities, 0),
+					Flip:   optionalDiscoveryBool(capabilities, 1),
+					Light:  optionalDiscoveryBool(capabilities, 2),
+					SDCard: optionalDiscoveryBool(capabilities, 3),
+				}
+				if deviceCapabilities.Audio != nil {
+					audio = *deviceCapabilities.Audio
+				}
+				if deviceCapabilities.Audio != nil ||
+					deviceCapabilities.Flip != nil ||
+					deviceCapabilities.Light != nil ||
+					deviceCapabilities.SDCard != nil {
+					metadata.Capabilities = deviceCapabilities
+				}
+				if len(capabilities) > 4 {
+					metadata.WiFiSSID = optionalDiscoveryString(capabilities[4])
+				}
+				if len(capabilities) > 5 {
+					metadata.WiFiSignalLevel = optionalDiscoveryInt(capabilities, 5)
+				}
 			}
 		}
-		return camera{host: expectedIP.String(), port: port, key: key, audio: audio}, nil
+		if metadata.SerialNumber == "" &&
+			metadata.FirmwareVersion == "" &&
+			metadata.Capabilities == nil &&
+			metadata.WiFiSSID == "" &&
+			metadata.WiFiSignalLevel == nil {
+			metadata = nil
+		}
+		return camera{
+			host:     expectedIP.String(),
+			port:     port,
+			key:      key,
+			audio:    audio,
+			metadata: metadata,
+		}, nil
 	}
 	return camera{}, withReason("no supported discovery response", fmt.Errorf("%w: no supported discovery response", ErrProtocol))
+}
+
+func optionalDiscoveryString(raw json.RawMessage) string {
+	var value *string
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return ""
+	}
+	valueText := strings.TrimSpace(*value)
+	if len(valueText) == 0 || len(valueText) > maxDiscoveryTextSize ||
+		strings.IndexFunc(valueText, unicode.IsControl) >= 0 {
+		return ""
+	}
+	return valueText
+}
+
+func optionalDiscoveryBool(values []json.RawMessage, index int) *bool {
+	if index >= len(values) {
+		return nil
+	}
+	var value *bool
+	if err := json.Unmarshal(values[index], &value); err != nil {
+		return nil
+	}
+	return value
+}
+
+func optionalDiscoveryInt(values []json.RawMessage, index int) *int {
+	if index >= len(values) {
+		return nil
+	}
+	var value *int
+	if err := json.Unmarshal(values[index], &value); err != nil {
+		return nil
+	}
+	return value
 }
 
 func validateLANIPv4(value string) (net.IP, error) {
@@ -279,4 +427,12 @@ func (c camera) String() string {
 
 func (c camera) GoString() string {
 	return c.String()
+}
+
+func (c camera) discoveryResult() DiscoveryResult {
+	return DiscoveryResult{
+		Host:           c.host,
+		ConnectionPort: c.port,
+		Metadata:       c.metadata,
+	}
 }

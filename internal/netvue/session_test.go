@@ -5,11 +5,60 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-ha/internal/netvue/netvuetest"
 )
+
+func TestSessionDiscoveryCallbackReceivesMetadataBeforeAuthentication(t *testing.T) {
+	signal := -39
+	camera := netvuetest.Start(t, netvuetest.Options{
+		Host:            netvuetest.AllocHost(45),
+		SerialNumber:    "callback-serial",
+		FirmwareVersion: "callback-fw",
+		WiFiSSID:        "callback-network",
+		WiFiSignalLevel: &signal,
+		RejectLogins:    1,
+	})
+	rtspListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rtspListener.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+	var discovered DiscoveryResult
+	err = runSessionWithLiveTalkAndDiscovery(
+		ctx,
+		"127.0.0.1",
+		camera.Host(),
+		fmt.Sprintf("rtsp://%s/metadata", rtspListener.Addr()),
+		0,
+		nil,
+		nil,
+		func(result DiscoveryResult) { discovered = result },
+	)
+	if !errors.Is(err, ErrAuthenticationRejected) {
+		t.Fatalf("session error = %v, want simulated authentication rejection", err)
+	}
+	if discovered.Host != camera.Host() || discovered.ConnectionPort != camera.Port() ||
+		discovered.Metadata == nil ||
+		discovered.Metadata.SerialNumber != "callback-serial" ||
+		discovered.Metadata.FirmwareVersion != "callback-fw" ||
+		discovered.Metadata.WiFiSSID != "callback-network" ||
+		discovered.Metadata.WiFiSignalLevel == nil ||
+		*discovered.Metadata.WiFiSignalLevel != signal {
+		t.Fatalf("discovery callback result = %+v", discovered)
+	}
+	if got := camera.State().LiveRequests; got != 0 {
+		t.Fatalf("LIVE started after rejected login: requests = %d", got)
+	}
+}
 
 func TestLiveRequestIsOneExplicitCommand(t *testing.T) {
 	client, server := testPipe(t)

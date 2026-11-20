@@ -29,11 +29,13 @@ var (
 )
 
 type Camera struct {
-	Host       string `json:"host"`
-	StreamName string `json:"stream_name"`
-	RTSPURL    string `json:"rtsp_url"`
-	State      string `json:"state"`
-	Error      string `json:"error,omitempty"`
+	Host           string                    `json:"host"`
+	StreamName     string                    `json:"stream_name"`
+	RTSPURL        string                    `json:"rtsp_url"`
+	State          string                    `json:"state"`
+	Error          string                    `json:"error,omitempty"`
+	ConnectionPort int                       `json:"connection_port,omitempty"`
+	Metadata       *netvue.DiscoveryMetadata `json:"metadata,omitempty"`
 }
 
 type cameraSession struct {
@@ -59,7 +61,8 @@ type Manager struct {
 	openAudio     func(context.Context, string) (talkSink, error)
 	ffmpegPath    func() (string, error)
 	turn          *cloudflareTURN
-	discoverLAN   func(context.Context, string) ([]string, error)
+	discoverLAN   func(context.Context, string) ([]netvue.DiscoveryResult, error)
+	discovered    map[string]netvue.DiscoveryResult
 	cameras       map[string]*cameraSession
 	peers         map[string]*webRTCPeer
 	tombstones    map[string]time.Time
@@ -72,7 +75,20 @@ type Manager struct {
 func New(ctx context.Context, source string) (*Manager, error) {
 	manager, err := newManager(ctx, source, netvue.RunContinuous)
 	if err == nil {
-		manager.runWithTalk = netvue.RunContinuousWithTalkback
+		manager.runSession = func(ctx context.Context, source, target, rtspURL string) error {
+			return netvue.RunContinuousWithDiscovery(
+				ctx, source, target, rtspURL, manager.updateDiscoveryMetadata,
+			)
+		}
+		manager.runWithTalk = func(
+			ctx context.Context,
+			source, target, rtspURL string,
+			live *netvue.LiveTalkback,
+		) error {
+			return netvue.RunContinuousWithTalkbackAndDiscovery(
+				ctx, source, target, rtspURL, live, manager.updateDiscoveryMetadata,
+			)
+		}
 	}
 	return manager, err
 }
@@ -100,7 +116,8 @@ func newManager(
 		cancel:        cancel,
 		source:        source,
 		runSession:    runSession,
-		discoverLAN:   netvue.DiscoverLAN,
+		discoverLAN:   netvue.DiscoverLANMetadata,
+		discovered:    make(map[string]netvue.DiscoveryResult),
 		cameras:       make(map[string]*cameraSession),
 		peers:         make(map[string]*webRTCPeer),
 		tombstones:    make(map[string]time.Time),
@@ -142,6 +159,10 @@ func (manager *Manager) AddCamera(host, streamName string) (Camera, bool, error)
 	session := &cameraSession{Camera: Camera{
 		Host: host, StreamName: streamName, RTSPURL: rtspURL, State: stateSupervising,
 	}, talkback: netvue.NewLiveTalkback()}
+	discovery, discovered := manager.discovered[host]
+	if discovered {
+		manager.applyDiscoveryResultLocked(session, discovery)
+	}
 	manager.cameras[host] = session
 	manager.startLocked(session)
 	return session.Camera, true, nil
@@ -391,6 +412,138 @@ func (manager *Manager) startLocked(session *cameraSession) {
 	session.done = done
 	manager.wg.Add(1)
 	go manager.run(ctx, session, done)
+}
+
+func (manager *Manager) applyDiscoveryResultLocked(
+	session *cameraSession,
+	result netvue.DiscoveryResult,
+) {
+	session.ConnectionPort = result.ConnectionPort
+	session.Metadata = mergeDiscoveryMetadata(session.Metadata, result.Metadata)
+}
+
+func (manager *Manager) updateDiscoveryMetadata(result netvue.DiscoveryResult) {
+	host, err := normalizeCameraHost(result.Host)
+	if err != nil || host != result.Host ||
+		result.ConnectionPort < 1 || result.ConnectionPort > 65535 {
+		slog.Warn("Ignoring invalid camera metadata from discovery")
+		return
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.closed {
+		return
+	}
+	session := manager.cameras[host]
+	if session == nil {
+		return
+	}
+	manager.applyDiscoveryResultLocked(session, result)
+	manager.discovered[host] = cloneDiscoveryResult(result)
+}
+
+func (manager *Manager) cacheDiscoveryResults(
+	results []netvue.DiscoveryResult,
+) ([]netvue.DiscoveryResult, error) {
+	discovered := make(map[string]netvue.DiscoveryResult, len(results))
+	for _, result := range results {
+		host, err := normalizeCameraHost(result.Host)
+		if err != nil || host != result.Host ||
+			result.ConnectionPort < 1 || result.ConnectionPort > 65535 {
+			return nil, fmt.Errorf("%w: invalid discovery result", ErrInvalidCamera)
+		}
+		if _, exists := discovered[host]; exists {
+			continue
+		}
+		discovered[host] = cloneDiscoveryResult(result)
+	}
+
+	cameras := make([]netvue.DiscoveryResult, 0, len(discovered))
+	for _, result := range discovered {
+		cameras = append(cameras, result)
+	}
+	sort.Slice(cameras, func(i, j int) bool {
+		return cameras[i].Host < cameras[j].Host
+	})
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.closed || manager.ctx.Err() != nil {
+		return nil, ErrManagerClosed
+	}
+	manager.discovered = discovered
+	for _, result := range cameras {
+		if session := manager.cameras[result.Host]; session != nil {
+			manager.applyDiscoveryResultLocked(session, result)
+		}
+	}
+	return cameras, nil
+}
+
+func cloneDiscoveryResult(result netvue.DiscoveryResult) netvue.DiscoveryResult {
+	result.Metadata = cloneDiscoveryMetadata(result.Metadata)
+	return result
+}
+
+func cloneDiscoveryMetadata(metadata *netvue.DiscoveryMetadata) *netvue.DiscoveryMetadata {
+	if metadata == nil {
+		return nil
+	}
+	cloned := *metadata
+	if metadata.WiFiSignalLevel != nil {
+		signal := *metadata.WiFiSignalLevel
+		cloned.WiFiSignalLevel = &signal
+	}
+	if metadata.Capabilities != nil {
+		capabilities := *metadata.Capabilities
+		if metadata.Capabilities.Audio != nil {
+			value := *metadata.Capabilities.Audio
+			capabilities.Audio = &value
+		}
+		if metadata.Capabilities.Flip != nil {
+			value := *metadata.Capabilities.Flip
+			capabilities.Flip = &value
+		}
+		if metadata.Capabilities.Light != nil {
+			value := *metadata.Capabilities.Light
+			capabilities.Light = &value
+		}
+		if metadata.Capabilities.SDCard != nil {
+			value := *metadata.Capabilities.SDCard
+			capabilities.SDCard = &value
+		}
+		cloned.Capabilities = &capabilities
+	}
+	return &cloned
+}
+
+func mergeDiscoveryMetadata(
+	current, next *netvue.DiscoveryMetadata,
+) *netvue.DiscoveryMetadata {
+	merged := cloneDiscoveryMetadata(current)
+	if next == nil {
+		if merged != nil {
+			merged.WiFiSSID = ""
+			merged.WiFiSignalLevel = nil
+			merged.Capabilities = nil
+		}
+		return merged
+	}
+	if merged == nil {
+		merged = &netvue.DiscoveryMetadata{}
+	}
+	next = cloneDiscoveryMetadata(next)
+	if next.SerialNumber != "" {
+		merged.SerialNumber = next.SerialNumber
+	}
+	if next.FirmwareVersion != "" {
+		merged.FirmwareVersion = next.FirmwareVersion
+	}
+	merged.WiFiSSID = next.WiFiSSID
+	merged.WiFiSignalLevel = next.WiFiSignalLevel
+	merged.Capabilities = next.Capabilities
+	return merged
 }
 
 func (manager *Manager) run(ctx context.Context, session *cameraSession, done chan struct{}) {

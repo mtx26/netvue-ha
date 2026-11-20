@@ -15,13 +15,11 @@ from homeassistant.components.stream import CONF_RTSP_TRANSPORT
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from webrtc_models import RTCIceCandidateInit
 
-from .const import CONF_HOST, CONF_STREAM_URL, DOMAIN
-from .coordinator import NetvueCoordinator
+from .const import CONF_HOST, CONF_STREAM_URL
+from .coordinator import NetvueCoordinator, NetvueEntity
 from .webrtc import NetvueWebRTCProvider, TurnCredentials, async_get_turn_credentials
 
 _BADGE_SIZE = 80
@@ -62,18 +60,15 @@ async def async_setup_entry(
     async_add_entities([NetvueCamera(entry, entry.runtime_data)])
 
 
-class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
+class NetvueCamera(NetvueEntity, Camera):
     _attr_has_entity_name = True
     _attr_name = None
     _attr_supported_features = CameraEntityFeature.STREAM
 
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         Camera.__init__(self)
-        CoordinatorEntity.__init__(self, coordinator)
+        NetvueEntity.__init__(self, coordinator)
         self._attr_unique_id = entry.entry_id
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Netvue"
-        )
         url = entry.options.get(CONF_STREAM_URL, entry.data[CONF_STREAM_URL])
         self._url = url
         self._entry = entry

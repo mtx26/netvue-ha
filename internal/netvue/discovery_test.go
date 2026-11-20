@@ -3,12 +3,15 @@ package netvue
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-ha/internal/netvue/netvuetest"
 )
 
 func TestDiscoverLANFiltersAndDeduplicates(t *testing.T) {
@@ -99,7 +102,11 @@ func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 		"A": 8,
 		"V": 2,
 		"C": 0,
-		"P": []any{"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key", []bool{true, false, false, false}},
+		"P": []any{
+			"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key",
+			[]any{true, false, true, false, "local-wifi", -47},
+			map[string]any{"unverified": true}, 27, "offline-token",
+		},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +120,30 @@ func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 	}
 	if !result.audio {
 		t.Fatal("audio capability was not parsed from discovery")
+	}
+	if result.metadata == nil ||
+		result.metadata.SerialNumber != "fake-id" ||
+		result.metadata.FirmwareVersion != "fake-fw" ||
+		result.metadata.WiFiSSID != "local-wifi" ||
+		result.metadata.WiFiSignalLevel == nil ||
+		*result.metadata.WiFiSignalLevel != -47 {
+		t.Fatalf("unexpected discovery metadata: %+v", result.metadata)
+	}
+	if capabilities := result.metadata.Capabilities; capabilities == nil ||
+		capabilities.Audio == nil || !*capabilities.Audio ||
+		capabilities.Flip == nil || *capabilities.Flip ||
+		capabilities.Light == nil || !*capabilities.Light ||
+		capabilities.SDCard == nil || *capabilities.SDCard {
+		t.Fatalf("unexpected discovery capabilities: %+v", result.metadata.Capabilities)
+	}
+	serialized, err := json.Marshal(result.discoveryResult())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sensitive := range []string{"fake-key", "offline-token", "unverified"} {
+		if bytes.Contains(serialized, []byte(sensitive)) {
+			t.Fatalf("discovery API result exposed %q: %s", sensitive, serialized)
+		}
 	}
 	if fmt.Sprint(result) != "camera{192.168.10.2:5555}" {
 		t.Fatalf("camera string exposes unexpected information: %s", result)
@@ -132,6 +163,102 @@ func TestParseDiscoveryValidatesSourceAndEndpoint(t *testing.T) {
 				t.Fatalf("expected ErrProtocol, got %v", err)
 			}
 		})
+	}
+}
+
+func TestParseDiscoveryAcceptsOlderAndIncompleteOptionalFields(t *testing.T) {
+	tests := []struct {
+		name         string
+		params       []any
+		wantAudio    bool
+		wantMetadata bool
+	}{
+		{
+			name:         "legacy response without extended fields",
+			params:       []any{"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key"},
+			wantMetadata: true,
+		},
+		{
+			name: "partial capabilities",
+			params: []any{
+				"fake-id", "fake-fw", "192.168.10.2", 5555, "fake-key",
+				[]any{true},
+			},
+			wantAudio:    true,
+			wantMetadata: true,
+		},
+		{
+			name: "malformed optional values are ignored",
+			params: []any{
+				"bad\nserial", 12, "192.168.10.2", 5555, "fake-key",
+				[]any{nil, "true", 1, false, "\n", "not-an-int"},
+			},
+			wantMetadata: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			packet, err := EncodeCommand([]map[string]any{{"A": 8, "V": 2, "P": test.params}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := parseDiscovery(packet, "192.168.10.2", "192.168.10.2")
+			if err != nil {
+				t.Fatalf("parseDiscovery() error = %v", err)
+			}
+			if result.audio != test.wantAudio {
+				t.Errorf("audio = %v, want %v", result.audio, test.wantAudio)
+			}
+			if gotMetadata := result.metadata != nil; gotMetadata != test.wantMetadata {
+				t.Fatalf("metadata present = %v, want %v (%+v)", gotMetadata, test.wantMetadata, result.metadata)
+			}
+			if test.name == "malformed optional values are ignored" {
+				if result.metadata.SerialNumber != "" || result.metadata.FirmwareVersion != "" ||
+					result.metadata.WiFiSSID != "" || result.metadata.WiFiSignalLevel != nil {
+					t.Fatalf("malformed optional values were retained: %+v", result.metadata)
+				}
+				if result.metadata.Capabilities == nil ||
+					result.metadata.Capabilities.SDCard == nil ||
+					*result.metadata.Capabilities.SDCard {
+					t.Fatalf("valid SD-card capability was discarded: %+v", result.metadata.Capabilities)
+				}
+			}
+		})
+	}
+}
+
+func TestDiscoverCameraMetadataFromSimulator(t *testing.T) {
+	signal := -37
+	camera := netvuetest.Start(t, netvuetest.Options{
+		Host:            netvuetest.AllocHost(44),
+		SerialNumber:    "sim-serial",
+		FirmwareVersion: "sim-fw-2",
+		Audio:           true,
+		Flip:            true,
+		Light:           false,
+		SDCard:          true,
+		WiFiSSID:        "synthetic-wifi",
+		WiFiSignalLevel: &signal,
+	})
+	result, err := DiscoverCameraMetadata(context.Background(), "127.0.0.1", camera.Host())
+	if err != nil {
+		t.Fatalf("DiscoverCameraMetadata() error = %v", err)
+	}
+	if result.Host != camera.Host() || result.ConnectionPort != camera.Port() ||
+		result.Metadata == nil ||
+		result.Metadata.SerialNumber != "sim-serial" ||
+		result.Metadata.FirmwareVersion != "sim-fw-2" ||
+		result.Metadata.WiFiSSID != "synthetic-wifi" ||
+		result.Metadata.WiFiSignalLevel == nil ||
+		*result.Metadata.WiFiSignalLevel != signal {
+		t.Fatalf("discovery result = %+v", result)
+	}
+	if capabilities := result.Metadata.Capabilities; capabilities == nil ||
+		capabilities.Audio == nil || !*capabilities.Audio ||
+		capabilities.Flip == nil || !*capabilities.Flip ||
+		capabilities.Light == nil || *capabilities.Light ||
+		capabilities.SDCard == nil || !*capabilities.SDCard {
+		t.Fatalf("discovery capabilities = %+v", result.Metadata.Capabilities)
 	}
 }
 
