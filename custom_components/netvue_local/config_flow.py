@@ -14,6 +14,13 @@ from .rtsp import (
     stream_name_for_host, stream_url_from_name, validate_host,
 )
 
+def _configured_hosts(hass) -> set[str]:
+    return {
+        entry.options.get(CONF_HOST, entry.data[CONF_HOST])
+        for entry in hass.config_entries.async_entries(DOMAIN)
+    }
+
+
 def _duplicate(hass, host: str, url: str, exclude: str | None = None) -> bool:
     for entry in hass.config_entries.async_entries(DOMAIN):
         if entry.entry_id == exclude:
@@ -40,13 +47,15 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_manual()
         errors = {}
         try:
-            self._discovered_hosts = await async_discover_cameras(self.hass)
+            discovered = await async_discover_cameras(self.hass)
         except BridgeError:
             errors["base"] = "discovery_failed"
         else:
+            configured = _configured_hosts(self.hass)
+            self._discovered_hosts = [host for host in discovered if host not in configured]
             if self._discovered_hosts:
                 return await self.async_step_select()
-            errors["base"] = "no_cameras"
+            errors["base"] = "no_new_cameras" if discovered else "no_cameras"
         return self.async_show_form(
             step_id="discovery",
             data_schema=vol.Schema({vol.Required("manual", default=False): bool}),

@@ -110,15 +110,23 @@ class ConfigFlowTests(HassTestCase):
         await self.hass.async_block_till_done()
         self.assertEqual(list(self.bridge.cameras), [OTHER_HOST])
 
-    async def test_lan_discovery_skips_already_configured_host(self):
+    async def test_lan_discovery_hides_already_configured_hosts(self):
         await self.create_entry()
-        self.bridge.discovered = [HOST]
         flow = self.hass.config_entries.flow
+        self.bridge.discovered = [HOST, OTHER_HOST]
         result = await flow.async_init(DOMAIN, context={"source": "user"})
         result = await flow.async_configure(result["flow_id"], {"next_step_id": "discovery"})
-        result = await flow.async_configure(
-            result["flow_id"], {"name": "Again", "host": HOST, "manual": False})
-        self.assertEqual(result["errors"], {"base": "already_configured"})
+        self.assertEqual(result["step_id"], "select")
+        with self.assertRaises(InvalidData):
+            await flow.async_configure(
+                result["flow_id"], {"name": "Again", "host": HOST, "manual": False})
+        flow.async_abort(result["flow_id"])
+
+        self.bridge.discovered = [HOST]
+        result = await flow.async_init(DOMAIN, context={"source": "user"})
+        result = await flow.async_configure(result["flow_id"], {"next_step_id": "discovery"})
+        self.assertEqual(result["step_id"], "discovery")
+        self.assertEqual(result["errors"], {"base": "no_new_cameras"})
 
     async def test_lan_discovery_errors_then_manual_fallback(self):
         flow = self.hass.config_entries.flow

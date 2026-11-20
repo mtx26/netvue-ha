@@ -26,7 +26,8 @@
       "invalid_input": "Adresse IPv4 ou nom affiché invalide.",
       "already_configured": "Cette caméra est déjà configurée.",
       "discovery_failed": "La recherche a échoué ou le pont est indisponible.",
-      "no_cameras": "Aucune caméra trouvée."
+      "no_cameras": "Aucune caméra trouvée.",
+      "no_new_cameras": "Toutes les caméras trouvées sont déjà configurées."
     },
     "abort": {
       "already_configured": "Cette caméra est déjà configurée."

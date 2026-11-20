@@ -55,6 +55,8 @@ Analyser les journaux de production du 20/11/2026 (21:58–22:51 UTC) : coupures
   qu'une fois par adaptation ; un arrêt inattendu est journalisé une fois.
 - `internal/netvue/discovery.go` : les découvertes broadcast et unicast
   renvoient la requête toutes les 500 ms pendant la fenêtre de 2 s.
+- `custom_components/netvue_local/config_flow.py` : la recherche HA masque les
+  caméras déjà configurées (`no_new_cameras` si toutes le sont).
 
 ## Tests
 

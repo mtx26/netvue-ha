@@ -26,7 +26,8 @@
       "invalid_input": "Invalid IPv4 address or display name.",
       "already_configured": "This camera is already configured.",
       "discovery_failed": "Discovery failed or the bridge is unavailable.",
-      "no_cameras": "No cameras found."
+      "no_cameras": "No cameras found.",
+      "no_new_cameras": "All cameras found are already configured."
     },
     "abort": {
       "already_configured": "This camera is already configured."
