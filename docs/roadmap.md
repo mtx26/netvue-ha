@@ -57,6 +57,7 @@ fiable, performante, modulaire et simple à installer.
 | État | Fonctionnalité | Objectif |
 |---|---|---|
 | 💡 | Détection de mouvement | Comparer Netvue, Go et Frigate |
+| ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
 | ⬜ | Zones de détection | Configurer les zones surveillées |
 | ⬜ | Notifications HA | Signaler les événements |
 | ⬜ | Statistiques | Suivre événements et disponibilité |
@@ -68,6 +69,8 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 🧪 | WebRTC | Fournisseur HA unique et permanent, conversion audio et adaptation H.264 pour les offres incompatibles sans modifier le RTSP ; essai navigateur réel à faire. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
 | 🧪 | Micro à distance sans VPN | Cloudflare TURN facultatif par installation, configuration ICE limitée aux caméras Netvue en mode WebRTC natif ; négociation via relais local testée, Cloudflare et restitution du micro hors LAN à valider |
+| 🧪 | Carte caméra Lovelace | Lecteur WebRTC, audio, push-to-talk et bouton plein écran ; affichage réel à confirmer |
+| 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras et état/diagnostic regroupés ; affichage réel à confirmer |
 | 🧪 | Miniature caméra HA | Image complète proportionnelle dans le badge 80 × 80 ; proxy et formats synthétiques testés, affichage réel à confirmer ([phase 46](../findings/phase46-miniature-ha.md)) |
 | ⬜ | Configuration HA | Simplifier les réglages |
 | 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |

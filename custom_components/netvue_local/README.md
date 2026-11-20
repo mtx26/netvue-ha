@@ -75,11 +75,14 @@ entity: camera.ma_camera
 name: Entrée   # facultatif
 ```
 
-La version 0.2.2 corrige le plantage `Illegal invocation` du lecteur et
-incrémente l'URL du module pour éviter de réutiliser la version 0.2.1 en cache.
-Après mise à jour, redémarrez Home Assistant puis rechargez complètement
-la page du tableau de bord. Aucun changement de configuration TURN n'est
-nécessaire pour cette correction.
+La version 0.2.2 corrige le plantage `Illegal invocation` du lecteur. La
+version 0.2.3 ajoute le plein écran et deux cartes Lovelace complémentaires.
+Le bouton plein écran permet de revenir au tableau de bord avec Échap ou en
+appuyant de nouveau sur le bouton. Il est désactivé si le navigateur ne prend
+pas cette fonction en charge.
+
+Après mise à jour, redémarrez Home Assistant puis rechargez complètement la
+page du tableau de bord si l'ancienne version reste en cache.
 
 La carte ouvre **une seule** `RTCPeerConnection` pour la vidéo H.264, l'audio
 caméra (Opus) et le push-to-talk, via les commandes WebSocket natives de HA
@@ -98,6 +101,42 @@ lecteur natif de HA ne sert plus que pour les aperçus ; RTSP et `stream_source`
 restent disponibles pour les intégrations externes. Les anciennes options
 `webrtc_enabled` et `experimental_talkback` sont retirées silencieusement des
 entrées existantes.
+
+### Mur multi-caméras `netvue-camera-wall-card`
+
+Le mur affiche plusieurs lecteurs `netvue-camera-card` dans une grille qui
+s'adapte à la largeur disponible :
+
+```yaml
+type: custom:netvue-camera-wall-card
+entities:
+  - camera.entree
+  - camera.garage
+```
+
+Chaque caméra ouvre son propre lecteur WebRTC et conserve les commandes audio,
+micro et plein écran. Afficher plusieurs flux simultanément augmente
+l'utilisation du réseau et des ressources ; limiter la liste aux caméras à
+surveiller en même temps.
+
+### Synthèse d'état `netvue-camera-status-card`
+
+La synthèse regroupe la disponibilité, la session et, facultativement, le
+diagnostic de chaque caméra. Les identifiants ci-dessous sont des exemples :
+remplacez-les par les entités réellement créées dans Home Assistant.
+
+```yaml
+type: custom:netvue-camera-status-card
+cameras:
+  - camera: camera.entree
+    unavailable: binary_sensor.entree_camera_indisponible
+    session: sensor.entree_etat_de_la_session
+    diagnostic: sensor.entree_diagnostic_camera
+```
+
+`camera` et `unavailable` sont requis ; `session` et `diagnostic` sont
+facultatifs. Le compteur « disponibles » repose sur le capteur
+**Caméra indisponible**.
 
 La caméra Netvue est traitée en **demi-duplex** : pendant le push-to-talk,
 le pont coupe l'audio caméra envoyé à ce navigateur. Plusieurs spectateurs

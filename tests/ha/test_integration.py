@@ -556,7 +556,12 @@ class FrontendTests(HassTestCase):
         register.assert_awaited_once()
         (config,) = register.await_args.args[0]
         self.assertEqual(config.url_path, "/netvue_local/frontend")
-        self.assertTrue((Path(config.path) / "netvue-camera-card.js").is_file())
+        for module in (
+            "netvue-camera-card.js",
+            "netvue-camera-wall-card.js",
+            "netvue-camera-status-card.js",
+        ):
+            self.assertTrue((Path(config.path) / module).is_file())
         add_js.assert_called_once()
         self.assertRegex(add_js.call_args.args[1],
                          r"^/netvue_local/frontend/netvue-camera-card\.js\?v=\d")

@@ -4,6 +4,8 @@ import { createSignalling } from "./signalling.js";
 import { NetvueSession } from "./session.js";
 import { KEYBOARD, PressOwner } from "./press-owner.js";
 import { pttErrorKey, translator } from "./i18n.js";
+import "./netvue-camera-wall-card.js";
+import "./netvue-camera-status-card.js";
 
 const HIDDEN_PAUSE_MS = 60000;
 const ERROR_TOAST_MS = 4000;
@@ -14,6 +16,12 @@ const STYLE = `
 ha-card { overflow: hidden; position: relative; }
 .wrap { position: relative; background: #000; line-height: 0; }
 video { width: 100%; max-height: 80vh; background: #000; }
+.wrap:fullscreen {
+  width: 100vw; height: 100vh; height: 100dvh; display: flex; align-items: center; justify-content: center;
+}
+.wrap:fullscreen video {
+  width: 100%; height: 100%; max-height: 100vh; max-height: 100dvh; object-fit: contain;
+}
 .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 12px; color: #fff; background: rgba(0,0,0,.55); line-height: 1.4; }
 .overlay[hidden], .toast[hidden], button[hidden] { display: none; }
@@ -60,7 +68,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._pttSnapshot = { ready: false, pressed: false, phase: "idle" };
     this._view = { state: "stopped" };
     this._muted = true;
-    this._micError = null;
+    this._toastKey = null;
     this._toastTimer = null;
     this._hiddenTimer = null;
     this._owner = new PressOwner();
@@ -70,6 +78,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._onRelease = () => this._releasePtt();
     this._onVisibility = () => this._visibilityChanged();
     this._onWindowPointer = (event) => this._pointerEnded(event);
+    this._onFullscreenChange = () => this._render();
   }
 
   setConfig(config) {
@@ -115,6 +124,7 @@ export class NetvueCameraCard extends HTMLElement {
     window.addEventListener("pointerup", this._onWindowPointer);
     window.addEventListener("pointercancel", this._onWindowPointer);
     document.addEventListener("visibilitychange", this._onVisibility);
+    document.addEventListener("fullscreenchange", this._onFullscreenChange);
     this._sync();
   }
 
@@ -126,6 +136,7 @@ export class NetvueCameraCard extends HTMLElement {
     window.removeEventListener("pointerup", this._onWindowPointer);
     window.removeEventListener("pointercancel", this._onWindowPointer);
     document.removeEventListener("visibilitychange", this._onVisibility);
+    document.removeEventListener("fullscreenchange", this._onFullscreenChange);
     this._clearTimer("_hiddenTimer");
     this._clearTimer("_toastTimer");
     this._paused = false;
@@ -239,12 +250,37 @@ export class NetvueCameraCard extends HTMLElement {
     this._render();
   }
 
+  async _toggleFullscreen() {
+    try {
+      if (document.fullscreenElement === this._wrap) {
+        await document.exitFullscreen();
+      } else {
+        await this._wrap.requestFullscreen();
+      }
+    } catch {
+      this._showFullscreenError();
+    }
+  }
+
+  _fullscreenSupported() {
+    return typeof this._wrap.requestFullscreen === "function"
+      && typeof document.exitFullscreen === "function";
+  }
+
   _showMicError(code) {
-    this._micError = code;
+    this._showToast(pttErrorKey(code));
+  }
+
+  _showFullscreenError() {
+    this._showToast("fullscreenFailed");
+  }
+
+  _showToast(key) {
+    this._toastKey = key;
     this._clearTimer("_toastTimer");
     this._toastTimer = setTimeout(() => {
       this._toastTimer = null;
-      this._micError = null;
+      this._toastKey = null;
       this._render();
     }, ERROR_TOAST_MS);
     this._render();
@@ -314,6 +350,7 @@ export class NetvueCameraCard extends HTMLElement {
     el("style", {}, root).textContent = STYLE;
     const card = el("ha-card", {}, root);
     const wrap = el("div", { class: "wrap" }, card);
+    this._wrap = wrap;
     const video = (this._video = el("video", { playsinline: "", autoplay: "" }, wrap));
     video.muted = true;
     this._overlay = el("div", { class: "overlay" }, wrap);
@@ -325,6 +362,8 @@ export class NetvueCameraCard extends HTMLElement {
     this._status = el("div", { class: "status" }, bar);
     this._muteButton = el("button", { type: "button", class: "mute" }, bar);
     this._muteButton.addEventListener("click", () => this._toggleMute());
+    this._fullscreenButton = el("button", { type: "button", class: "fullscreen" }, bar);
+    this._fullscreenButton.addEventListener("click", () => this._toggleFullscreen());
     this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
     this._bindPtt(this._pttButton);
     this._live = el("div", { class: "sr", role: "status", "aria-live": "polite" }, wrap);
@@ -409,14 +448,27 @@ export class NetvueCameraCard extends HTMLElement {
     this._overlayText.textContent = busy || failed ? label : "";
     this._retry.hidden = state !== "error";
     this._retry.textContent = t("retry");
-    this._toast.hidden = !this._micError;
-    this._toast.textContent = this._micError ? t(pttErrorKey(this._micError)) : "";
+    this._toast.hidden = !this._toastKey;
+    this._toast.textContent = this._toastKey ? t(this._toastKey) : "";
     const talking = state === "live" && ptt.pressed;
     this._status.textContent = talking && ptt.phase === "speaking" ? `${label} — ${t("halfDuplex")}` : label;
-    this._live.textContent = this._micError ? t(pttErrorKey(this._micError)) : label;
+    this._live.textContent = this._toastKey ? t(this._toastKey) : label;
     this._muteButton.textContent = this._muted ? "🔇" : "🔊";
     this._muteButton.setAttribute("aria-label", this._muted ? t("unmute") : t("mute"));
     this._muteButton.setAttribute("aria-pressed", String(!this._muted));
+    const fullscreen = document.fullscreenElement === this._wrap;
+    const fullscreenLabel = fullscreen ? t("exitFullscreen") : t("fullscreen");
+    const fullscreenSupported = this._fullscreenSupported();
+    this._fullscreenButton.textContent = "⛶";
+    this._fullscreenButton.disabled = !fullscreenSupported;
+    this._fullscreenButton.setAttribute(
+      "aria-label",
+      fullscreenSupported ? fullscreenLabel : t("fullscreenUnsupported"),
+    );
+    this._fullscreenButton.setAttribute("aria-pressed", String(fullscreen));
+    this._fullscreenButton.title = fullscreenSupported
+      ? fullscreenLabel
+      : t("fullscreenUnsupported");
     this._pttButton.textContent = "🎤";
     const available = state === "live" && ptt.ready;
     this._pttButton.disabled = !available && !ptt.pressed;
