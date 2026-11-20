@@ -17,15 +17,19 @@ const (
 )
 
 var (
-	ErrProtocol         = errors.New("invalid Netvue protocol packet")
+	// ErrProtocol marks malformed or unsupported Netvue protocol data.
+	ErrProtocol = errors.New("invalid Netvue protocol packet")
+	// ErrConnectionClosed marks a stream ending before a complete packet is read.
 	ErrConnectionClosed = errors.New("Netvue connection closed while reading")
 )
 
+// Packet is one complete Netvue frame and its payload.
 type Packet struct {
 	Kind uint16
 	Body []byte
 }
 
+// EncodeCommand encodes command units into one Netvue command packet.
 func EncodeCommand(units []map[string]any) ([]byte, error) {
 	body, err := json.Marshal(units)
 	if err != nil {
@@ -42,6 +46,8 @@ func EncodeCommand(units []map[string]any) ([]byte, error) {
 	return packet, nil
 }
 
+// ParseDatagram validates and parses one complete Netvue datagram. The returned
+// Body aliases data; its payload is not copied.
 func ParseDatagram(data []byte) (Packet, error) {
 	if len(data) < headerSize {
 		return Packet{}, withReason("truncated packet header", fmt.Errorf("%w: truncated datagram header", ErrProtocol))
@@ -56,6 +62,8 @@ func ParseDatagram(data []byte) (Packet, error) {
 	return Packet{Kind: kind, Body: data[headerSize:]}, nil
 }
 
+// ReadPacket reads one complete packet from a stream.
+// It returns ErrConnectionClosed if the stream ends before the packet is complete.
 func ReadPacket(reader io.Reader) (Packet, error) {
 	header := make([]byte, headerSize)
 	if _, err := io.ReadFull(reader, header); err != nil {
@@ -78,6 +86,7 @@ func ReadPacket(reader io.Reader) (Packet, error) {
 	return Packet{Kind: kind, Body: body}, nil
 }
 
+// ParseUnits decodes a command payload and rejects non-object entries.
 func ParseUnits(body []byte) ([]map[string]json.RawMessage, error) {
 	var units []map[string]json.RawMessage
 	if err := json.Unmarshal(body, &units); err != nil {

@@ -21,8 +21,8 @@ que les paramètres par défaut.
 ## Docker
 
 Le [guide Portainer](../deployment/go-portainer.md) explique l'image et le
-rendu local de stack, sans dÃ©ploiement. Le workflow valide les pull requests
+rendu local de stack, sans déploiement. Le workflow valide les pull requests
 et publie uniquement depuis `main`. `test_portainer_config.py` compare les
-variables MediaMTX Ã  la rÃ©fÃ©rence et protÃ¨ge les principaux rÃ©glages de
-sÃ©curitÃ© de la stack. `.dockerignore` limite le contexte aux sources Go
+variables MediaMTX à la référence et protège les principaux réglages de
+sécurité de la stack. `.dockerignore` limite le contexte aux sources Go
 requises.

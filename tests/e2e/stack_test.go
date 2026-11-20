@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,12 +102,55 @@ func (o *output) String() string {
 	return o.b.String()
 }
 
+func childEnvironment(parent, extra []string) []string {
+	env := make([]string, 0, len(parent)+len(extra))
+	for _, entry := range parent {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && (strings.EqualFold(key, "NETVUE_CLOUDFLARE_TURN_KEY_ID") ||
+			strings.EqualFold(key, "NETVUE_CLOUDFLARE_TURN_API_TOKEN")) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, extra...)
+}
+
+func TestChildEnvironmentExcludesCloudflareTURNCredentials(t *testing.T) {
+	t.Setenv("NETVUE_CLOUDFLARE_TURN_KEY_ID", "dummy-key-id")
+	t.Setenv("NETVUE_CLOUDFLARE_TURN_API_TOKEN", "dummy-api-token")
+	t.Setenv("NETVUE_E2E_ENV_PRESERVED", "parent-value")
+
+	env := childEnvironment(os.Environ(), []string{"NETVUE_E2E_ENV_EXTRA=extra-value"})
+	foundPreserved, foundExtra := false, false
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.EqualFold(key, "NETVUE_CLOUDFLARE_TURN_KEY_ID"),
+			strings.EqualFold(key, "NETVUE_CLOUDFLARE_TURN_API_TOKEN"):
+			t.Errorf("child environment unexpectedly contains %s", key)
+		case strings.EqualFold(key, "NETVUE_E2E_ENV_PRESERVED") && value == "parent-value":
+			foundPreserved = true
+		case strings.EqualFold(key, "NETVUE_E2E_ENV_EXTRA") && value == "extra-value":
+			foundExtra = true
+		}
+	}
+	if !foundPreserved {
+		t.Error("child environment did not preserve the parent environment")
+	}
+	if !foundExtra {
+		t.Error("child environment did not include additional settings")
+	}
+}
+
 func startProcess(t *testing.T, name string, env []string, exe string, args ...string) *output {
 	t.Helper()
 	logs := &output{}
 	command := exec.Command(exe, args...)
 	command.Stdout, command.Stderr = logs, logs
-	command.Env = append(os.Environ(), env...)
+	command.Env = childEnvironment(os.Environ(), env)
 	if err := command.Start(); err != nil {
 		t.Fatalf("start %s: %v", name, err)
 	}

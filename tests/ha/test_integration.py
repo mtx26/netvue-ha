@@ -5,6 +5,7 @@ Run from the repository root; see tests/ha/harness.py for the isolation model.
 
 import asyncio
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
@@ -16,6 +17,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
+import custom_components.netvue_local as netvue_local
+from custom_components.netvue_local import camera as camera_platform
 from custom_components.netvue_local.const import DOMAIN
 from custom_components.netvue_local.webrtc import NetvueWebRTCProvider
 from harness import HOST, STREAM_NAME, HassTestCase
@@ -28,6 +31,16 @@ def _jpeg(size=(160, 90)) -> bytes:
     out = BytesIO()
     Image.new("RGB", size, "white").save(out, format="JPEG")
     return out.getvalue()
+
+
+class _ControlledSleeper:
+    def __init__(self) -> None:
+        self.calls = asyncio.Queue()
+        self.releases = asyncio.Queue()
+
+    async def sleep(self, delay: float) -> None:
+        self.calls.put_nowait(delay)
+        await self.releases.get()
 
 
 class ConfigFlowTests(HassTestCase):
@@ -147,6 +160,36 @@ class OptionsFlowTests(HassTestCase):
         self.assertEqual(list(self.bridge.cameras), [OTHER_HOST])
         self.assertEqual(self.bridge.cameras[OTHER_HOST]["stream_name"], "netvue_192_168_10_3")
         self.assertEqual(self.entity_id(entry, "camera"), camera_entity)
+
+    async def test_host_change_retries_after_bridge_recovers(self):
+        entry = await self.create_entry()
+        stop_camera = netvue_local.async_stop_camera
+
+        async def stop_bridge_after_unload(hass, host):
+            await stop_camera(hass, host)
+            await self.bridge.stop()
+
+        with patch.object(netvue_local, "async_stop_camera",
+                          side_effect=stop_bridge_after_unload):
+            result = await self._init(entry, host=OTHER_HOST, webrtc_enabled=False,
+                                      experimental_talkback=False)
+            self.assertEqual(result["type"], "create_entry")
+            await self.hass.async_block_till_done()
+
+            self.assertEqual(entry.options["host"], OTHER_HOST)
+            self.assertEqual(entry.state, ConfigEntryState.SETUP_RETRY)
+            self.assertIn(("DELETE", f"/api/v1/cameras/{HOST}"), self.bridge.requests)
+            self.assertNotIn(HOST, self.bridge.cameras)
+            self.assertNotIn(OTHER_HOST, self.bridge.cameras)
+
+            await self.bridge.start()
+            await self.hass.config_entries.async_reload(entry.entry_id)
+            await self.hass.async_block_till_done()
+
+        self.assertEqual(entry.state, ConfigEntryState.LOADED)
+        self.assertNotIn(HOST, self.bridge.cameras)
+        self.assertIn(OTHER_HOST, self.bridge.cameras)
+        self.assertIn(("POST", "/api/v1/cameras"), self.bridge.requests)
 
     async def test_option_validation(self):
         entry = await self.create_entry()
@@ -380,6 +423,69 @@ class WebRTCTests(HassTestCase):
         async with asyncio.timeout(3):
             while ("DELETE", f"/api/v1/cameras/{HOST}/webrtc/relayed") not in self.bridge.requests:
                 await asyncio.sleep(0.01)
+
+    async def test_turn_refresh_expiry_and_unload_cancellation_follow_entity_lifecycle(self):
+        first_server = {
+            "urls": ["turns:first.example:443?transport=tcp"],
+            "username": "first-user",
+            "credential": "first-password",
+        }
+        refreshed_server = {
+            "urls": ["turns:refreshed.example:443?transport=tcp"],
+            "username": "refreshed-user",
+            "credential": "refreshed-password",
+        }
+        self.bridge.turn_response = {"ice_servers": [first_server], "expires_in": 60}
+        now = [100.0]
+        sleeper = _ControlledSleeper()
+        refresh_results = asyncio.Queue()
+        get_credentials = camera_platform.async_get_turn_credentials
+
+        async def observe_refresh(hass):
+            result = await get_credentials(hass)
+            refresh_results.put_nowait(result)
+            return result
+
+        with (
+            patch.object(camera_platform, "asyncio", SimpleNamespace(
+                sleep=sleeper.sleep, gather=asyncio.gather,
+            )),
+            patch.object(camera_platform, "async_get_turn_credentials", observe_refresh),
+            patch("custom_components.netvue_local.webrtc.monotonic",
+                  side_effect=lambda: now[0]),
+        ):
+            entry = await self.create_entry(webrtc_enabled=True)
+            async with asyncio.timeout(3):
+                await refresh_results.get()
+                self.assertEqual(await sleeper.calls.get(), 60)
+
+            entity = camera.get_camera_from_entity_id(
+                self.hass, self.entity_id(entry, "camera"),
+            )
+            config = entity.async_get_webrtc_client_configuration().to_frontend_dict()
+            self.assertIn(first_server, config["configuration"]["iceServers"])
+
+            now[0] = 160.0
+            expired = entity.async_get_webrtc_client_configuration().to_frontend_dict()
+            self.assertNotIn(first_server, expired["configuration"]["iceServers"])
+
+            self.bridge.turn_response = {
+                "ice_servers": [refreshed_server],
+                "expires_in": 1800,
+            }
+            sleeper.releases.put_nowait(None)
+            async with asyncio.timeout(3):
+                await refresh_results.get()
+                self.assertEqual(await sleeper.calls.get(), 60)
+
+            refreshed = entity.async_get_webrtc_client_configuration().to_frontend_dict()
+            self.assertIn(refreshed_server, refreshed["configuration"]["iceServers"])
+
+            camera_entity_id = self.entity_id(entry, "camera")
+            async with asyncio.timeout(3):
+                await self.hass.config_entries.async_remove(entry.entry_id)
+            await self.hass.async_block_till_done()
+            self.assertIsNone(self.hass.states.get(camera_entity_id))
 
     async def test_webrtc_provider_is_opt_in(self):
         entry = await self.create_entry()

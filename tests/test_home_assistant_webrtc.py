@@ -7,9 +7,12 @@ from unittest.mock import patch
 
 from aiohttp import ClientSession, web
 from homeassistant.components.camera import WebRTCAnswer, WebRTCCandidate, WebRTCError
+from homeassistant.components.web_rtc import DATA_ICE_SERVERS
 from homeassistant.exceptions import HomeAssistantError
 from webrtc_models import RTCIceCandidateInit
 
+from custom_components.netvue_local import camera as camera_platform
+from custom_components.netvue_local.const import CONF_HOST, CONF_STREAM_URL, CONF_WEBRTC_ENABLED
 from custom_components.netvue_local.webrtc import NetvueWebRTCProvider, _offer_sends_audio
 
 
@@ -27,9 +30,17 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.block_delete = False
         self.block_candidate = False
         self.status = {}
+        self.ice_status = 204
+        self.ice_payload = None
         self.client = ClientSession()
         app = web.Application()
         base = "/api/v1/cameras/{host}/webrtc/{session}"
+
+        async def ice_handler(request):
+            self.requests.append((request.method, request.path, request.query_string, None))
+            if self.ice_status in (204, 404, 503):
+                return web.Response(status=self.ice_status)
+            return web.json_response(self.ice_payload, status=self.ice_status)
 
         async def handler(request):
             body = await request.json() if request.method in ("PUT", "POST") else None
@@ -59,6 +70,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_post(base + "/candidates", handler)
         app.router.add_get(base + "/events", handler)
         app.router.add_delete(base, handler)
+        app.router.add_get("/api/v1/webrtc/ice", ice_handler)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -77,6 +89,31 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(), entry, self.camera,
             "192.168.10.2", "rtsp://127.0.0.1:8554/a",
         )
+
+    async def setup_camera_platform(self):
+        coordinator = SimpleNamespace(
+            data=None,
+            last_update_success=True,
+            async_add_listener=lambda listener: lambda: None,
+        )
+        hass = SimpleNamespace(
+            config=SimpleNamespace(webrtc=SimpleNamespace(ice_servers=[])),
+            data={DATA_ICE_SERVERS: []},
+        )
+        entry = SimpleNamespace(
+            options={CONF_WEBRTC_ENABLED: True},
+            runtime_data=coordinator,
+            data={CONF_HOST: "192.168.10.2", CONF_STREAM_URL: "rtsp://127.0.0.1:8554/a"},
+            entry_id="entry",
+            title="Netvue",
+        )
+        entities = []
+        await camera_platform.async_setup_entry(
+            hass, entry, entities.extend,
+        )
+        self.assertEqual(len(entities), 1)
+        entities[0].hass = hass
+        return entities[0]
 
     async def asyncTearDown(self):
         self.offer_continue.set()
@@ -104,6 +141,90 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(_offer_sends_audio(
             base + "m=audio 0 UDP/TLS/RTP/SAVPF 111\r\na=sendrecv\r\n"
         ))
+
+    async def test_turn_404_keeps_the_regular_camera_entity(self):
+        self.ice_status = 404
+
+        entity = await self.setup_camera_platform()
+
+        self.assertIsInstance(entity, camera_platform.NetvueCamera)
+        self.assertNotIsInstance(entity, camera_platform.NetvueTurnCamera)
+        self.assertEqual(self.requests[0][1], "/api/v1/webrtc/ice")
+
+    async def test_turn_503_keeps_native_webrtc_without_turn_servers(self):
+        self.ice_status = 503
+
+        entity = await self.setup_camera_platform()
+
+        self.assertIsInstance(entity, camera_platform.NetvueTurnCamera)
+        config = entity.async_get_webrtc_client_configuration().to_frontend_dict()
+        self.assertFalse(any(
+            url.startswith(("turn:", "turns:"))
+            for server in config["configuration"]["iceServers"]
+            for url in server["urls"]
+        ))
+
+    async def test_malformed_turn_responses_are_reported_without_credentials(self):
+        malformed_payloads = (
+            {
+                "ice_servers": "temporary-user",
+                "credential": "temporary-password",
+                "expires_in": 1800,
+            },
+            {
+                "ice_servers": [{
+                    "urls": [123],
+                    "username": "temporary-user",
+                    "credential": "temporary-password",
+                }],
+                "expires_in": 1800,
+            },
+            {
+                "ice_servers": [{
+                    "urls": ["turns:turn.example:443?transport=tcp"],
+                    "username": "temporary-user",
+                    "credential": {"value": "temporary-password"},
+                }],
+                "expires_in": 1800,
+            },
+        )
+        self.ice_status = 200
+        for payload in malformed_payloads:
+            with self.subTest(payload=payload):
+                self.ice_payload = payload
+                with self.assertLogs("custom_components.netvue_local.camera",
+                                     level="WARNING") as captured:
+                    entity = await self.setup_camera_platform()
+                self.assertIsInstance(entity, camera_platform.NetvueCamera)
+                self.assertNotIsInstance(entity, camera_platform.NetvueTurnCamera)
+                logged = "\n".join(captured.output)
+                self.assertIn("Unable to read Netvue TURN configuration", logged)
+                self.assertNotIn("temporary-user", logged)
+                self.assertNotIn("temporary-password", logged)
+
+    async def test_turn_credentials_are_removed_from_public_configuration_at_expiry(self):
+        self.ice_status = 200
+        self.ice_payload = {
+            "ice_servers": [{
+                "urls": ["turns:turn.example:443?transport=tcp"],
+                "username": "temporary-user",
+                "credential": "temporary-password",
+            }],
+            "expires_in": 60,
+        }
+        now = [100.0]
+        with patch("custom_components.netvue_local.webrtc.monotonic",
+                   side_effect=lambda: now[0]):
+            entity = await self.setup_camera_platform()
+            configuration = entity.async_get_webrtc_client_configuration()
+            initial_servers = configuration.to_frontend_dict()["configuration"]["iceServers"]
+            self.assertIn(self.ice_payload["ice_servers"][0], initial_servers)
+
+            now[0] = 160.0
+            expired = entity.async_get_webrtc_client_configuration()
+
+        expired_servers = expired.to_frontend_dict()["configuration"]["iceServers"]
+        self.assertNotIn(self.ice_payload["ice_servers"][0], expired_servers)
 
     async def test_microphone_offer_is_rejected_when_experimental_option_is_off(self):
         offer = (

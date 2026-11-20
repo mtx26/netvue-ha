@@ -94,6 +94,16 @@ type videoPublisher struct {
 	generation          uint64
 }
 
+type h264AccessUnitInfo struct {
+	hasIDR            bool
+	hasVCL            bool
+	hasPartitionA     bool
+	hasPartitionBC    bool
+	parametersChanged bool
+	sps               []byte
+	pps               []byte
+}
+
 func newVideoPublisher(ctx context.Context, outputURL string) (*videoPublisher, error) {
 	if err := validateLocalRTSPURL(outputURL); err != nil {
 		return nil, err
@@ -102,6 +112,75 @@ func newVideoPublisher(ctx context.Context, outputURL string) (*videoPublisher, 
 		return nil, err
 	}
 	return &videoPublisher{ctx: ctx, url: outputURL}, nil
+}
+
+func inspectH264AccessUnit(
+	accessUnit h264.AnnexB,
+	currentSPS, currentPPS []byte,
+) (h264AccessUnitInfo, error) {
+	info := h264AccessUnitInfo{sps: currentSPS, pps: currentPPS}
+	var accessUnitSPS, accessUnitPPS []byte
+	for _, nalu := range accessUnit {
+		if len(nalu) == 0 || nalu[0]&0x80 != 0 {
+			return h264AccessUnitInfo{}, withReason(
+				"invalid NAL unit",
+				fmt.Errorf("%w: invalid H.264 NAL unit", ErrProtocol),
+			)
+		}
+		switch h264.NALUType(nalu[0] & 0x1f) {
+		case h264.NALUTypeNonIDR:
+			info.hasVCL = true
+		case h264.NALUTypeDataPartitionA:
+			info.hasVCL = true
+			info.hasPartitionA = true
+		case h264.NALUTypeDataPartitionB, h264.NALUTypeDataPartitionC:
+			info.hasPartitionBC = true
+		case h264.NALUTypeIDR:
+			info.hasVCL = true
+			info.hasIDR = true
+		case h264.NALUTypeSPS:
+			if accessUnitSPS != nil && !bytes.Equal(accessUnitSPS, nalu) {
+				return h264AccessUnitInfo{}, withReason(
+					"conflicting SPS in one access unit",
+					fmt.Errorf("%w: multiple SPS values in one access unit", ErrProtocol),
+				)
+			}
+			accessUnitSPS = nalu
+			var parsed h264.SPS
+			if err := parsed.Unmarshal(nalu); err != nil {
+				return h264AccessUnitInfo{}, withReason(
+					"invalid SPS",
+					fmt.Errorf("%w: parse H.264 SPS: %w", ErrProtocol, err),
+				)
+			}
+			if err := validateH264SPS(parsed); err != nil {
+				return h264AccessUnitInfo{}, err
+			}
+			if !bytes.Equal(info.sps, nalu) {
+				info.parametersChanged = currentSPS != nil
+				info.sps = nalu
+			}
+		case h264.NALUTypePPS:
+			if accessUnitPPS != nil && !bytes.Equal(accessUnitPPS, nalu) {
+				return h264AccessUnitInfo{}, withReason(
+					"conflicting PPS in one access unit",
+					fmt.Errorf("%w: multiple PPS values in one access unit", ErrProtocol),
+				)
+			}
+			accessUnitPPS = nalu
+			if len(nalu) < 2 {
+				return h264AccessUnitInfo{}, withReason(
+					"truncated PPS",
+					fmt.Errorf("%w: truncated H.264 PPS", ErrProtocol),
+				)
+			}
+			if !bytes.Equal(info.pps, nalu) {
+				info.parametersChanged = info.parametersChanged || currentPPS != nil
+				info.pps = nalu
+			}
+		}
+	}
+	return info, nil
 }
 
 func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error {
@@ -120,77 +199,31 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 		return withReason(reason, fmt.Errorf("%w: parse Annex B access unit: %w", ErrProtocol, err))
 	}
 
-	hasIDR := false
-	hasVCL := false
-	hasPartitionA := false
-	hasPartitionBC := false
-	parametersChanged := false
-	sps, pps := publisher.sps, publisher.pps
-	var accessUnitSPS, accessUnitPPS []byte
-	for _, nalu := range annexB {
-		if len(nalu) == 0 || nalu[0]&0x80 != 0 {
-			return withReason("invalid NAL unit", fmt.Errorf("%w: invalid H.264 NAL unit", ErrProtocol))
-		}
-		switch h264.NALUType(nalu[0] & 0x1f) {
-		case h264.NALUTypeNonIDR:
-			hasVCL = true
-		case h264.NALUTypeDataPartitionA:
-			hasVCL = true
-			hasPartitionA = true
-		case h264.NALUTypeDataPartitionB, h264.NALUTypeDataPartitionC:
-			hasPartitionBC = true
-		case h264.NALUTypeIDR:
-			hasVCL = true
-			hasIDR = true
-		case h264.NALUTypeSPS:
-			if accessUnitSPS != nil && !bytes.Equal(accessUnitSPS, nalu) {
-				return withReason("conflicting SPS in one access unit", fmt.Errorf("%w: multiple SPS values in one access unit", ErrProtocol))
-			}
-			accessUnitSPS = nalu
-			var parsed h264.SPS
-			if err := parsed.Unmarshal(nalu); err != nil {
-				return withReason("invalid SPS", fmt.Errorf("%w: parse H.264 SPS: %w", ErrProtocol, err))
-			}
-			if err := validateH264SPS(parsed); err != nil {
-				return err
-			}
-			if !bytes.Equal(sps, nalu) {
-				parametersChanged = sps != nil
-				sps = nalu
-			}
-		case h264.NALUTypePPS:
-			if accessUnitPPS != nil && !bytes.Equal(accessUnitPPS, nalu) {
-				return withReason("conflicting PPS in one access unit", fmt.Errorf("%w: multiple PPS values in one access unit", ErrProtocol))
-			}
-			accessUnitPPS = nalu
-			if len(nalu) < 2 {
-				return withReason("truncated PPS", fmt.Errorf("%w: truncated H.264 PPS", ErrProtocol))
-			}
-			if !bytes.Equal(pps, nalu) {
-				parametersChanged = parametersChanged || pps != nil
-				pps = nalu
-			}
-		}
+	info, err := inspectH264AccessUnit(annexB, publisher.sps, publisher.pps)
+	if err != nil {
+		return err
 	}
-	if hasPartitionBC && !hasPartitionA {
+	if info.hasPartitionBC && !info.hasPartitionA {
+		// Incomplete data partitions cannot be published or update stream parameters.
 		return nil
 	}
-	if !bytes.Equal(publisher.sps, sps) {
-		publisher.sps = append(publisher.sps[:0], sps...)
+	if !bytes.Equal(publisher.sps, info.sps) {
+		publisher.sps = append(publisher.sps[:0], info.sps...)
 	}
-	if !bytes.Equal(publisher.pps, pps) {
-		publisher.pps = append(publisher.pps[:0], pps...)
+	if !bytes.Equal(publisher.pps, info.pps) {
+		publisher.pps = append(publisher.pps[:0], info.pps...)
 	}
-	if parametersChanged && publisher.started {
+	if info.parametersChanged && publisher.started {
+		// Resume at an IDR so decoders can consume the new parameter sets.
 		slog.Info("Netvue RTSP H.264 parameters changed", "action", "waiting for IDR")
 		publisher.waitingIDR = true
 	}
-	if !hasVCL {
+	if !info.hasVCL {
 		return nil
 	}
 	elapsedRTP := publisher.clock.update(timestamp)
 	if !publisher.started {
-		if !hasIDR {
+		if !info.hasIDR {
 			return nil
 		}
 		if len(publisher.sps) == 0 || len(publisher.pps) == 0 {
@@ -203,10 +236,10 @@ func (publisher *videoPublisher) Push(accessUnit []byte, timestamp uint32) error
 		publisher.videoElapsedMSStart = publisher.clock.elapsedMS
 		publisher.hasAudioTimestamp = false
 	}
-	if publisher.waitingIDR && !hasIDR {
+	if publisher.waitingIDR && !info.hasIDR {
 		return nil
 	}
-	if hasIDR {
+	if info.hasIDR {
 		annexB = prependParameters(annexB, publisher.sps, publisher.pps)
 		publisher.waitingIDR = false
 	}
@@ -584,6 +617,16 @@ func prependParameters(accessUnit h264.AnnexB, sps, pps []byte) h264.AnnexB {
 	for _, nalu := range accessUnit {
 		hasSPS = hasSPS || bytes.Equal(nalu, sps)
 		hasPPS = hasPPS || bytes.Equal(nalu, pps)
+	}
+	if hasSPS && !hasPPS {
+		for index, nalu := range accessUnit {
+			if bytes.Equal(nalu, sps) {
+				out := make(h264.AnnexB, 0, len(accessUnit)+1)
+				out = append(out, accessUnit[:index+1]...)
+				out = append(out, pps)
+				return append(out, accessUnit[index+1:]...)
+			}
+		}
 	}
 	out := make(h264.AnnexB, 0, len(accessUnit)+2)
 	if !hasSPS {

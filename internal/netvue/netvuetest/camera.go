@@ -24,6 +24,8 @@ const (
 )
 
 // Options configures one simulated camera. The zero value plus Host is valid.
+// Video and AudioFrames are retained without copying and must not be mutated
+// while in use; a supplied Video sequence must be non-empty.
 type Options struct {
 	// Host is the loopback or private IPv4 address of this camera (required).
 	Host string
@@ -34,7 +36,8 @@ type Options struct {
 	DiscoveryPort int
 	// TCPPort defaults to an ephemeral port.
 	TCPPort int
-	// Video is the looping H.264 access-unit sequence; defaults to a 64x64 red picture.
+	// Video is the looping H.264 sequence; a supplied sequence must be non-empty
+	// and is retained without copying.
 	Video []Frame
 	// FrameInterval is the video cadence; defaults to 100ms.
 	FrameInterval time.Duration
@@ -287,8 +290,8 @@ func (c *Camera) Drop() {
 	}
 }
 
-// SetVideo replaces the looping video; the next frame is index 0 of the new
-// sequence. Use it to change the resolution of a running stream.
+// SetVideo replaces the looping video; frames must be non-empty. The slice and
+// frame data are retained without copying, and PTS is not reset.
 func (c *Camera) SetVideo(frames []Frame) {
 	c.mu.Lock()
 	c.video = frames
@@ -610,6 +613,8 @@ func (c *Camera) pump(ctx context.Context, s *session) {
 		audioTick = ticker.C
 	}
 	var videoIndex, audioIndex int
+	videoPTS := baseMS
+	videoStep := uint32(c.opts.FrameInterval / time.Millisecond)
 	lastVersion := -1
 	sendVideo := func() bool {
 		c.mu.Lock()
@@ -619,7 +624,6 @@ func (c *Camera) pump(ctx context.Context, s *session) {
 			lastVersion, videoIndex = version, 0
 		}
 		frame := frames[videoIndex%len(frames)]
-		pts := baseMS + uint32(int64(videoIndex)*int64(c.opts.FrameInterval/time.Millisecond))
 		switch c.takeFault("media") {
 		case "unsupported-type":
 			_ = s.write(Packet(kindMedia, 0, []byte{0x30, 0, 0, 0, 0, 1}))
@@ -635,10 +639,11 @@ func (c *Camera) pump(ctx context.Context, s *session) {
 		if frame.Key {
 			header |= 1
 		}
-		if s.write(mediaPacket(header, pts, frame.Data)) != nil {
+		if s.write(mediaPacket(header, videoPTS, frame.Data)) != nil {
 			return false
 		}
 		videoIndex++
+		videoPTS += videoStep
 		c.update(func(sn *Snapshot) { sn.VideoFrames++ })
 		return true
 	}

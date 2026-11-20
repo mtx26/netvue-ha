@@ -14,9 +14,9 @@ import (
 )
 
 // AVOffset reads the published RTSP stream with an independent client and
-// returns NTP(video) - NTP(audio) for packets received together. NTP times
-// come from the RTCP sender reports of both tracks, so a wrong timestamp
-// mapping between the video and audio tracks shows up as a large offset.
+// returns NTP(video) - NTP(audio) from the latest observed packet on each track
+// after minimum sample counts. The RTCP-derived observations are not guaranteed
+// to have arrived together.
 func AVOffset(ctx context.Context, rawURL string) (time.Duration, error) {
 	u, err := base.ParseURL(rawURL)
 	if err != nil {

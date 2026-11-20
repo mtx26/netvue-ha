@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/url"
 	"time"
@@ -29,7 +28,8 @@ func validateSessionDuration(duration time.Duration) error {
 	return nil
 }
 
-// RunSession runs one session; a zero duration runs until ctx ends.
+// RunSession runs one session; zero disables only the duration limit.
+// Cancellation and stream failures can still end the session.
 func RunSession(ctx context.Context, source, target, rtspURL string, duration time.Duration) error {
 	return runSession(ctx, source, target, rtspURL, duration, nil)
 }
@@ -276,314 +276,57 @@ func receiveLiveWithTalkController(
 		}
 	}()
 	writer := &sessionWriter{Conn: conn}
-	var talkDone chan error
-	talkStarted := false
-	talkComplete := false
-	defer func() {
-		wasCanceled := ctx.Err() != nil
-		cancel()
-		if talkDone != nil {
-			_ = conn.Close()
-			err := <-talkDone
-			if !wasCanceled && err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				resultErr = talkFailure("audio send failed", err)
-			}
-		}
-	}()
-	pollTalk := func() error {
-		if talkDone == nil {
-			return nil
-		}
-		select {
-		case err := <-talkDone:
-			talkDone = nil
-			if err != nil {
-				return talkFailure("audio send failed", err)
-			}
-			talkComplete = true
-		default:
-		}
-		return nil
+	receiver := liveReceiver{
+		ctx:            ctx,
+		cancel:         cancel,
+		conn:           conn,
+		writer:         writer,
+		publisher:      publisher,
+		startupTimeout: startupTimeout,
+		silenceTimeout: silenceTimeout,
+		talk:           talk,
+		live:           live,
+		audioRequested: requestAudio,
 	}
-	channelReady := false
-	audioSelectionRequested := requestAudio
-	audioFallbackUsed := false
-	audioDirectionEnabled := false
-	audioDisabled := false
-	talkDisabled := false
-	liveAttached := false
-	var selectedAudio *audioParameters
-	var lastVideo time.Time
-	var lastPublished time.Time
+	defer receiver.finishTalk(&resultErr)
 	// Control packets and non-video media cannot extend the first-video deadline.
-	startupDeadline := time.Now().Add(startupTimeout)
+	receiver.startupDeadline = time.Now().Add(startupTimeout)
 	// Closing the connection cannot be undone by a later SetReadDeadline call.
 	stopCancel := context.AfterFunc(ctx, func() {
 		_ = conn.Close()
 	})
 	defer stopCancel()
-	disableAudio := func(err error) {
-		if !audioDisabled {
-			slog.Warn(
-				"Netvue audio disabled; video will continue",
-				"diagnostic", SessionDiagnostic(atStage("audio", err)),
-			)
-		}
-		audioDisabled = true
-	}
-
 	for {
 		now := time.Now()
-		if err := pollTalk(); err != nil {
+		if err := receiver.pollTalk(); err != nil {
 			return err
 		}
-		if done, err := sessionEndResult(ctx, publisher, lastPublished, silenceTimeout, now); done {
-			if talk != nil && errors.Is(context.Cause(ctx), errSessionDurationElapsed) && !talkComplete {
-				if talkDone != nil {
-					sendErr := <-talkDone
-					talkDone = nil
-					if sendErr == nil {
-						talkComplete = true
-					} else if !errors.Is(sendErr, context.Canceled) && !errors.Is(sendErr, context.DeadlineExceeded) {
-						return talkFailure("audio send failed", sendErr)
-					}
-				}
-				if !talkComplete {
-					return talkFailure("session duration elapsed before audio completed", errSessionDurationElapsed)
-				}
-			}
+		if done, err := receiver.finishSessionIfEnded(now); done {
 			return err
 		}
-		if publisher.CurrentPublicationFrames() == 0 && !now.Before(startupDeadline) {
-			return atStage("H.264", withReason("no publication before startup deadline", fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)))
+		if publisher.CurrentPublicationFrames() == 0 &&
+			!now.Before(receiver.startupDeadline) {
+			return receiver.startupError(
+				"no publication before startup deadline",
+				"no video publication before startup deadline",
+			)
 		}
-		deadline := now.Add(silenceTimeout)
-		if !lastVideo.IsZero() {
-			deadline = lastVideo.Add(silenceTimeout)
-		}
-		if publisher.CurrentPublicationFrames() == 0 && startupDeadline.Before(deadline) {
-			deadline = startupDeadline
-		}
-		if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-			deadline = ctxDeadline
-		}
-		if err := conn.SetReadDeadline(deadline); err != nil {
-			if contextError(ctx) != nil {
-				continue
-			}
-			return atStage("LIVE packet", fmt.Errorf("set Netvue read deadline: %w", err))
-		}
-		packet, err := ReadPacket(conn)
+		packet, retry, err := receiver.readPacket(now)
 		if err != nil {
-			if talkErr := pollTalk(); talkErr != nil {
-				return talkErr
-			}
-			if contextError(ctx) != nil {
-				continue
-			}
-			var networkError net.Error
-			if errors.As(err, &networkError) && networkError.Timeout() {
-				if publisher.CurrentPublicationFrames() == 0 && !time.Now().Before(startupDeadline) {
-					return atStage("H.264", withReason("no publication before startup deadline", fmt.Errorf("%w: no video publication before startup deadline", ErrVideoNotReady)))
-				}
-				return atStage("LIVE packet", withReason("no video received before timeout", fmt.Errorf("%w: no video received before timeout", ErrStreamInterrupted)))
-			}
-			return atStage("LIVE packet", fmt.Errorf("read Netvue LIVE packet: %w", err))
+			return err
+		}
+		if retry {
+			continue
 		}
 		switch packet.Kind {
 		case packetCommand:
-			units, err := ParseUnits(packet.Body)
-			if err != nil {
-				return atStage("LIVE response", err)
-			}
-			retryVideoOnly := false
-			for _, unit := range units {
-				action, actionOK := unitInt(unit, "A")
-				version, versionOK := unitInt(unit, "V")
-				if talk != nil && actionOK && action == 5 {
-					if result, ok := unitInt(unit, "C"); !ok || result != 0 {
-						return talkFailure("audio direction rejected or invalid", ErrTalkback)
-					}
-				}
-				if live != nil && actionOK && action == 5 {
-					if result, ok := unitInt(unit, "C"); !ok || result != 0 {
-						talkDisabled = true
-						live.detachWithError(talkFailure("audio direction rejected or invalid", ErrTalkback))
-						liveAttached = false
-					}
-				}
-				if !actionOK || action != 3 {
-					continue
-				}
-				if !versionOK || (version != 1 && version != 2) {
-					reason := "unsupported version"
-					if !versionOK {
-						reason = "missing or invalid version"
-					}
-					return atStage("LIVE response", withReason(reason, fmt.Errorf("%w: %w (present=%t, value=%d)", ErrProtocol, ErrLiveResponseVersion, versionOK, version)))
-				}
-				result, resultOK := unitInt(unit, "C")
-				if !resultOK {
-					return atStage("LIVE response", withReason("missing or invalid result", fmt.Errorf("%w: LIVE response has no explicit result", ErrProtocol)))
-				}
-				if result != 0 {
-					if talk != nil {
-						return talkFailure("LIVE audio selection rejected", fmt.Errorf("selection rejected, result_code=%d", result))
-					}
-					if audioSelectionRequested && !audioFallbackUsed {
-						if err := sendLiveRequestChannels(ctx, writer, false); err != nil {
-							return atStage("LIVE request", err)
-						}
-						audioSelectionRequested = false
-						audioFallbackUsed = true
-						retryVideoOnly = true
-						break
-					}
-					return atStage("LIVE response", withReason("selection rejected", fmt.Errorf("%w: LIVE selection rejected, result_code=%d", ErrProtocol, result)))
-				}
-				oldAudio := selectedAudio
-				selectedAudio, err = parseAudioParameters(unit)
-				if err != nil {
-					if talk != nil {
-						return talkFailure("invalid selected audio", err)
-					}
-					if !errors.Is(err, ErrUnsupportedAudioParameters) {
-						return atStage("LIVE response", err)
-					}
-					disableAudio(atStage("audio parameters", err))
-					selectedAudio = nil
-				}
-				if live != nil && liveAttached && (oldAudio == nil || selectedAudio == nil || *oldAudio != *selectedAudio) {
-					if err := live.invalidateSelection(ctx); err != nil {
-						return err
-					}
-					liveAttached = false
-				}
-				if talk != nil {
-					if selectedAudio == nil || selectedAudio.sampleRate != talk.rate || selectedAudio.channels != talk.channels {
-						return talkFailure("ADTS format does not match selected audio channel", ErrTalkback)
-					}
-				}
-				if selectedAudio != nil && !audioDirectionEnabled {
-					if talk != nil {
-						if err := sendTalkDirection(ctx, writer); err != nil {
-							return atStage("audio direction", err)
-						}
-					} else if err := sendAudioDirection(ctx, writer); err != nil {
-						return atStage("audio direction", err)
-					}
-					audioDirectionEnabled = true
-				}
-				channelReady = true
-			}
-			if retryVideoOnly {
-				continue
+			if err := receiver.handleCommand(packet.Body); err != nil {
+				return err
 			}
 		case packetMedia:
-			if !channelReady {
-				return atStage("LIVE response", withReason("media before confirmation", fmt.Errorf("%w: media arrived before LIVE confirmation", ErrProtocol)))
-			}
-			if audioDisabled && len(packet.Body) > 0 && packet.Body[0]>>4 == audioFrameType {
-				continue
-			}
-			audio, isAudio, err := parseAudioFrame(packet.Body)
-			if err != nil {
-				if len(packet.Body) > 0 && packet.Body[0]>>4 == audioFrameType {
-					disableAudio(err)
-					continue
-				}
-				return atStage("media frame", err)
-			}
-			if isAudio {
-				if selectedAudio == nil {
-					continue
-				}
-				audioPublisher, ok := publisher.(liveAudioPublisher)
-				if !ok {
-					return atStage("audio", fmt.Errorf("%w: publisher does not support audio", ErrAudioFrame))
-				}
-				before := publisher.CurrentPublicationFrames()
-				if err := audioPublisher.PushAudio(audio, selectedAudio); err != nil {
-					if errors.Is(err, ErrAudioFrame) {
-						disableAudio(err)
-						continue
-					}
-					return err
-				}
-				if before > 0 && publisher.CurrentPublicationFrames() == 0 {
-					startupDeadline = time.Now().Add(startupTimeout)
-					lastPublished = time.Time{}
-					publisher.SetStartupDeadline(startupDeadline)
-				}
-				continue
-			}
-			frame, isVideo, err := parseMediaFrame(packet.Body)
-			if err != nil {
-				return atStage("media frame", err)
-			}
-			if !isVideo {
-				continue
-			}
-			beforeGeneration := publisher.Generation()
-			before := publisher.CurrentPublicationFrames()
-			startDeadline := startupDeadline
-			if before > 0 {
-				startDeadline = time.Now().Add(startupTimeout)
-			}
-			publisher.SetStartupDeadline(startDeadline)
-			if err := publisher.Push(frame.accessUnit, frame.timestamp); err != nil {
-				if contextError(ctx) != nil {
-					continue
-				}
-				if done, endErr := sessionEndResult(
-					ctx, publisher, lastPublished, silenceTimeout, time.Now(),
-				); done {
-					return endErr
-				}
-				return atStage("H.264", err)
-			}
-			now = time.Now()
-			lastVideo = now
-			current := publisher.CurrentPublicationFrames()
-			generationChanged := publisher.Generation() != beforeGeneration
-			if generationChanged {
-				startupDeadline = time.Time{}
-				lastPublished = time.Time{}
-			}
-			if current > 0 {
-				startupDeadline = time.Time{}
-				if generationChanged || current > before {
-					lastPublished = now
-				}
-				if !lastPublished.IsZero() && now.Sub(lastPublished) > silenceTimeout {
-					return atStage("H.264", withReason("no published image before timeout", fmt.Errorf("%w: no published H.264 image before timeout", ErrStreamInterrupted)))
-				}
-				if live != nil && !liveAttached && selectedAudio != nil && audioDirectionEnabled && !talkDisabled {
-					live.attachIfAbsent(ctx, writer, selectedAudio)
-					liveAttached = true
-				}
-				if talk != nil && !talkStarted && audioDirectionEnabled {
-					talkStarted = true
-					talkDone = make(chan error, 1)
-					go func(done chan<- error) {
-						err := talk.send(ctx, writer)
-						if err == nil {
-							slog.Info("Netvue talkback audio sent")
-						}
-						done <- err
-						if err != nil {
-							_ = conn.Close()
-						}
-					}(talkDone)
-				}
-			} else {
-				lastPublished = time.Time{}
-				if startupDeadline.IsZero() || before > 0 {
-					startupDeadline = now.Add(startupTimeout)
-				}
-				if !now.Before(startupDeadline) {
-					return atStage("H.264", withReason("no IDR after startup or parameter change", fmt.Errorf("%w: no IDR after startup or parameter change", ErrVideoNotReady)))
-				}
+			done, err := receiver.handleMedia(packet.Body)
+			if done || err != nil {
+				return err
 			}
 
 		default:

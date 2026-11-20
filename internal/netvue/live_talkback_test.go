@@ -184,6 +184,97 @@ func TestLiveTalkDirectionRejectionDoesNotStopVideo(t *testing.T) {
 	}
 }
 
+func TestLiveTalkDirectionRejectionClosesOpenStreamAndPreservesReceive(t *testing.T) {
+	client, server := testPipe(t)
+	controller := NewLiveTalkback()
+	publisher := &notifyingAudioTestPublisher{audioReceived: make(chan audioFrame, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- receiveLiveWithTalkController(
+			ctx, client, publisher, time.Second, time.Second, true, nil, controller,
+		)
+	}()
+
+	ack := mustEncodeCommand(t, []map[string]any{{
+		"A": 3, "V": 1, "C": 0,
+		"P": [][]any{{1, 1, 2, []any{8000, 1, 1}}},
+	}})
+	if err := writeFull(server, ack); err != nil {
+		t.Fatal(err)
+	}
+	assertDirection(t, readTalkPacket(t, server), 1)
+	if err := writeFull(server, mediaPacket(0, []byte{1})); err != nil {
+		t.Fatal(err)
+	}
+	barrier := mustEncodeCommand(t, []map[string]any{{"A": 99}})
+	if err := writeFull(server, barrier); err != nil {
+		t.Fatal(err)
+	}
+
+	type openResult struct {
+		stream *TalkStream
+		err    error
+	}
+	opened := make(chan openResult, 1)
+	go func() {
+		stream, err := controller.Open(ctx)
+		opened <- openResult{stream: stream, err: err}
+	}()
+	assertDirection(t, readTalkPacket(t, server), 3)
+	result := <-opened
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+
+	reject := mustEncodeCommand(t, []map[string]any{{"A": 5, "V": 1, "C": 1}})
+	if err := writeFull(server, reject); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-result.stream.Done():
+		if !errors.Is(result.stream.Err(), ErrTalkback) {
+			t.Fatalf("rejection reason: %v", result.stream.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("direction rejection did not close the active talkback stream")
+	}
+
+	audio := testADTS(11, 1, 7)
+	if err := writeFull(server, audioTestPacket(false, 40, audio)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-publisher.audioReceived:
+		if frame.timestamp != 40 || !bytes.Equal(frame.payload, audio) {
+			t.Fatalf("camera audio after direction rejection = %+v", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("camera audio reception stopped after direction rejection")
+	}
+	publishedBeforeVideo := publisher.PublishedFrames()
+	if err := writeFull(server, mediaPacket(33, []byte{2})); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFull(server, barrier); err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("session ended unexpectedly: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session did not stop after cancellation")
+	}
+	if publisher.PublishedFrames() <= publishedBeforeVideo {
+		t.Fatal("video reception stopped after direction rejection")
+	}
+}
+
 func TestLiveTalkExplicitRejectionSignalsStreamAndPreservesCameraAudioAndVideo(t *testing.T) {
 	client, server := testPipe(t)
 	controller := NewLiveTalkback()

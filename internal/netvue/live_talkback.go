@@ -42,7 +42,7 @@ type TalkStream struct {
 // Done closes when the stream is closed or its camera session becomes invalid.
 func (stream *TalkStream) Done() <-chan struct{} { return stream.done }
 
-// Err reports the reason after Done closes.
+// Err blocks until Done closes, then reports the stream's ending reason.
 func (stream *TalkStream) Err() error {
 	<-stream.done
 	<-stream.owner.mu

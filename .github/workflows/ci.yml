@@ -254,7 +254,7 @@ jobs:
           docker run --detach --name "$container" --network host \
             "$image" serve --source 127.0.0.1 --listen 127.0.0.1:18765
 
-          for attempt in $(seq 1 50); do
+          for ((attempt = 1; attempt <= 50; attempt++)); do
             if response="$(curl --fail --silent http://127.0.0.1:18765/api/v1/status)"; then
               printf '%s' "$response" | jq -e '.cameras == []' >/dev/null
               exit 0

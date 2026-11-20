@@ -9,13 +9,14 @@ import (
 	"time"
 )
 
-// Frame is one media access unit emitted by the simulated camera.
+// Frame is one media access unit emitted by the simulated camera. Data is
+// shared with the camera and must not be mutated while installed.
 type Frame struct {
 	Data []byte
 	Key  bool
 }
 
-// SolidH264 returns count identical IDR access units of one solid colour.
+// SolidH264 returns count IDR access units that decode to one solid colour.
 // Every unit carries SPS, PPS and an I_PCM IDR slice, so it decodes on its own
 // and needs no encoder. Width and height must be multiples of 16. The stream is
 // baseline profile 4:2:0, profile-level-id 42e01f.

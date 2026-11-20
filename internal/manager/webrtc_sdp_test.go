@@ -116,13 +116,112 @@ func TestWebRTCAnswerAudioDirection(t *testing.T) {
 	}
 }
 
+func TestWebRTCSessionLevelAudioDirections(t *testing.T) {
+	tests := []struct {
+		direction     string
+		microphone    bool
+		cameraAudio   bool
+		answerCanSend bool
+	}{
+		{direction: "sendrecv", microphone: true, cameraAudio: true, answerCanSend: true},
+		{direction: "sendonly", microphone: true, answerCanSend: true},
+		{direction: "recvonly", cameraAudio: true},
+		{direction: "inactive"},
+	}
+	for _, test := range tests {
+		t.Run(test.direction, func(t *testing.T) {
+			sdp := testSessionDirection(testAudioSDP(""), test.direction)
+			microphone, err := offeredMicrophone(sdp)
+			if err != nil || microphone != test.microphone {
+				t.Fatalf("offeredMicrophone() = %t, %v; want %t", microphone, err, test.microphone)
+			}
+			cameraAudio, err := offeredCameraAudio(sdp)
+			if err != nil || cameraAudio != test.cameraAudio {
+				t.Fatalf("offeredCameraAudio() = %t, %v; want %t", cameraAudio, err, test.cameraAudio)
+			}
+			canSend, err := answerCanSendAudio(sdp)
+			if err != nil || canSend != test.answerCanSend {
+				t.Fatalf("answerCanSendAudio() = %t, %v; want %t", canSend, err, test.answerCanSend)
+			}
+		})
+	}
+}
+
+func TestWebRTCMediaDirectionOverridesSessionDirection(t *testing.T) {
+	tests := []struct {
+		name          string
+		session       string
+		media         string
+		microphone    bool
+		cameraAudio   bool
+		answerCanSend bool
+	}{
+		{name: "sendonly overrides recvonly", session: "recvonly", media: "sendonly", microphone: true, answerCanSend: true},
+		{name: "recvonly overrides sendonly", session: "sendonly", media: "recvonly", cameraAudio: true},
+		{name: "inactive overrides sendrecv", session: "sendrecv", media: "inactive"},
+		{name: "sendrecv overrides inactive", session: "inactive", media: "sendrecv", microphone: true, cameraAudio: true, answerCanSend: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sdp := testSessionDirection(testAudioSDP(test.media), test.session)
+			microphone, err := offeredMicrophone(sdp)
+			if err != nil || microphone != test.microphone {
+				t.Fatalf("offeredMicrophone() = %t, %v; want %t", microphone, err, test.microphone)
+			}
+			cameraAudio, err := offeredCameraAudio(sdp)
+			if err != nil || cameraAudio != test.cameraAudio {
+				t.Fatalf("offeredCameraAudio() = %t, %v; want %t", cameraAudio, err, test.cameraAudio)
+			}
+			canSend, err := answerCanSendAudio(sdp)
+			if err != nil || canSend != test.answerCanSend {
+				t.Fatalf("answerCanSendAudio() = %t, %v; want %t", canSend, err, test.answerCanSend)
+			}
+		})
+	}
+}
+
+func TestWebRTCSessionLevelVideoDirections(t *testing.T) {
+	sps := []byte{0x67, 0x42, 0xe0, 0x1f}
+	videoSDP := testAudioSDP("sendrecv") +
+		"m=video 9 UDP/TLS/RTP/SAVPF 109\r\n" +
+		"a=rtpmap:109 H264/90000\r\n" +
+		"a=fmtp:109 packetization-mode=1;profile-level-id=42e01f\r\n"
+	for _, test := range []struct {
+		direction string
+		offerOK   bool
+		answerOK  bool
+	}{
+		{direction: "sendrecv", offerOK: true, answerOK: true},
+		{direction: "sendonly", answerOK: true},
+		{direction: "recvonly", offerOK: true},
+		{direction: "inactive"},
+	} {
+		t.Run(test.direction, func(t *testing.T) {
+			sdp := testSessionDirection(videoSDP, test.direction)
+			if got := validateWebRTCSDP(sdp, sps, true, false) == nil; got != test.offerOK {
+				t.Fatalf("offer accepted = %t; want %t", got, test.offerOK)
+			}
+			if got := validateWebRTCSDP(sdp, sps, false, false) == nil; got != test.answerOK {
+				t.Fatalf("answer accepted = %t; want %t", got, test.answerOK)
+			}
+		})
+	}
+}
+
+func testSessionDirection(sdp, direction string) string {
+	return strings.Replace(sdp, "t=0 0\r\n", "t=0 0\r\na="+direction+"\r\n", 1)
+}
+
 func testAudioSDP(direction string) string {
-	return "v=0\r\n" +
+	sdp := "v=0\r\n" +
 		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
 		"s=-\r\n" +
 		"t=0 0\r\n" +
 		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n" +
 		"c=IN IP4 0.0.0.0\r\n" +
-		"a=rtpmap:111 opus/48000/2\r\n" +
-		"a=" + direction + "\r\n"
+		"a=rtpmap:111 opus/48000/2\r\n"
+	if direction != "" {
+		sdp += "a=" + direction + "\r\n"
+	}
+	return sdp
 }

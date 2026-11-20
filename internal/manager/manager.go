@@ -107,6 +107,7 @@ func newManager(
 	}, nil
 }
 
+// AddCamera registers a camera. added is false for an existing identical camera.
 func (manager *Manager) AddCamera(host, streamName string) (Camera, bool, error) {
 	targetIP := net.ParseIP(host)
 	if targetIP == nil || targetIP.To4() == nil {
@@ -193,6 +194,7 @@ func (manager *Manager) OpenTalkback(ctx context.Context, host string) (*netvue.
 	return controller.Open(ctx)
 }
 
+// StartCamera starts a stopped camera; started is false if already supervising.
 func (manager *Manager) StartCamera(host string) (Camera, bool, error) {
 	host, err := normalizeCameraHost(host)
 	if err != nil {
@@ -240,6 +242,8 @@ func (manager *Manager) StopCamera(ctx context.Context, host string) (Camera, er
 	return camera, nil
 }
 
+// DeleteCamera stops and removes a camera. Deleting an absent camera succeeds
+// with deleted false.
 func (manager *Manager) DeleteCamera(ctx context.Context, host string) (bool, error) {
 	_, deleted, err := manager.stopSession(ctx, host, true)
 	if errors.Is(err, ErrCameraNotFound) {
@@ -278,6 +282,7 @@ func (manager *Manager) Cameras() []Camera {
 	return cameras
 }
 
+// Close begins shutdown once. If ctx expires, shutdown continues until workers exit.
 func (manager *Manager) Close(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("shutdown context is required")
@@ -319,7 +324,9 @@ func (manager *Manager) stopSession(ctx context.Context, host string, remove boo
 	if session == nil {
 		return Camera{}, false, ErrCameraNotFound
 	}
-	session.operationMu.Lock()
+	if err := lockCameraOperation(ctx, &session.operationMu); err != nil {
+		return Camera{}, false, err
+	}
 	defer session.operationMu.Unlock()
 
 	manager.mu.Lock()

@@ -16,6 +16,8 @@ import (
 
 var aacSampleRates = [...]int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
 
+// aacRTPFrame carries an AAC payload and its source timestamp in 48 kHz units.
+// The timestamp wraps at uint32; only the first frame's timestamp is used.
 type aacRTPFrame struct {
 	data      []byte
 	timestamp uint32

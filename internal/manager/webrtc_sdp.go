@@ -32,13 +32,10 @@ func validateWebRTCSDP(text string, sps []byte, offer, requireMic bool) error {
 		if m.MediaName.Port.Value == 0 {
 			continue
 		}
-		_, inactive := m.Attribute("inactive")
-		_, sendOnly := m.Attribute("sendonly")
-		_, recvOnly := m.Attribute("recvonly")
-		if inactive {
-			continue
-		}
-		if m.MediaName.Media == "video" && ((offer && !sendOnly) || (!offer && !recvOnly)) {
+		direction := effectiveWebRTCDirection(&session, m)
+		if m.MediaName.Media == "video" &&
+			((offer && (direction == "sendrecv" || direction == "recvonly")) ||
+				(!offer && (direction == "sendrecv" || direction == "sendonly"))) {
 			for _, payload := range m.MediaName.Formats {
 				if !mediaHasRTPMap(m, payload, "h264/90000") {
 					continue
@@ -52,7 +49,9 @@ func validateWebRTCSDP(text string, sps []byte, offer, requireMic bool) error {
 				}
 			}
 		}
-		if m.MediaName.Media == "audio" && ((offer && !recvOnly) || (!offer && !sendOnly)) {
+		if m.MediaName.Media == "audio" &&
+			((offer && (direction == "sendrecv" || direction == "sendonly")) ||
+				(!offer && (direction == "sendrecv" || direction == "recvonly"))) {
 			for _, payload := range m.MediaName.Formats {
 				if mediaHasRTPMap(m, payload, "opus/48000/2") {
 					audioOK = true
@@ -77,9 +76,8 @@ func offeredMicrophone(text string) (bool, error) {
 		if m.MediaName.Media != "audio" || m.MediaName.Port.Value == 0 {
 			continue
 		}
-		_, inactive := m.Attribute("inactive")
-		_, recvOnly := m.Attribute("recvonly")
-		if inactive || recvOnly {
+		direction := effectiveWebRTCDirection(&session, m)
+		if direction != "sendrecv" && direction != "sendonly" {
 			continue
 		}
 		requested = true
@@ -104,9 +102,8 @@ func offeredCameraAudio(text string) (bool, error) {
 		if m.MediaName.Media != "audio" || m.MediaName.Port.Value == 0 {
 			continue
 		}
-		_, inactive := m.Attribute("inactive")
-		_, sendOnly := m.Attribute("sendonly")
-		if inactive || sendOnly {
+		direction := effectiveWebRTCDirection(&session, m)
+		if direction != "sendrecv" && direction != "recvonly" {
 			continue
 		}
 		for _, payload := range m.MediaName.Formats {
@@ -128,9 +125,8 @@ func answerCanSendAudio(text string) (bool, error) {
 		if m.MediaName.Media != "audio" || m.MediaName.Port.Value == 0 {
 			continue
 		}
-		_, inactive := m.Attribute("inactive")
-		_, recvOnly := m.Attribute("recvonly")
-		if inactive || recvOnly {
+		direction := effectiveWebRTCDirection(&session, m)
+		if direction != "sendrecv" && direction != "sendonly" {
 			continue
 		}
 		for _, payload := range m.MediaName.Formats {
@@ -140,6 +136,26 @@ func answerCanSendAudio(text string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func effectiveWebRTCDirection(session *sdp.SessionDescription, media *sdp.MediaDescription) string {
+	if direction := webRTCDirection(media.Attributes); direction != "" {
+		return direction
+	}
+	if direction := webRTCDirection(session.Attributes); direction != "" {
+		return direction
+	}
+	return "sendrecv"
+}
+
+func webRTCDirection(attributes []sdp.Attribute) string {
+	for _, attribute := range attributes {
+		switch attribute.Key {
+		case "sendrecv", "sendonly", "recvonly", "inactive":
+			return attribute.Key
+		}
+	}
+	return ""
 }
 
 func mediaHasRTPMap(m *sdp.MediaDescription, payload, codec string) bool {

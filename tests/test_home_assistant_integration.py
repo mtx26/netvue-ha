@@ -81,24 +81,25 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class RTSPTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def fake_connection(response):
+        reader = asyncio.StreamReader()
+        reader.feed_data(response)
+        reader.feed_eof()
+        writer = SimpleNamespace(write=unittest.mock.Mock(),
+                                 drain=unittest.mock.AsyncMock(),
+                                 close=unittest.mock.Mock(),
+                                 wait_closed=unittest.mock.AsyncMock())
+        return reader, writer
+
     async def test_h264_and_absent_stream(self):
         body = b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
-
-        def fake_connection(response):
-            reader = asyncio.StreamReader()
-            reader.feed_data(response)
-            reader.feed_eof()
-            writer = SimpleNamespace(write=unittest.mock.Mock(),
-                                     drain=unittest.mock.AsyncMock(),
-                                     close=unittest.mock.Mock(),
-                                     wait_closed=unittest.mock.AsyncMock())
-            return reader, writer
 
         available = (b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\nContent-Length: "
                      + str(len(body)).encode() + b"\r\n\r\n" + body)
         absent = b"RTSP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
-        successful_connection = fake_connection(available)
-        missing_connection = fake_connection(absent)
+        successful_connection = self.fake_connection(available)
+        missing_connection = self.fake_connection(absent)
         with patch("custom_components.netvue_local.rtsp.asyncio.open_connection",
                    new=unittest.mock.AsyncMock(side_effect=[
                        successful_connection, missing_connection,
@@ -108,6 +109,88 @@ class RTSPTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await async_probe_stream(url))
         self.assertEqual(connect.await_args_list[0].args, ("127.0.0.1", 8554))
         self.assertNotIn(b"Authorization:", successful_connection[1].write.call_args.args[0])
+        missing_connection[1].close.assert_called_once()
+        missing_connection[1].wait_closed.assert_awaited_once()
+
+    async def test_malformed_missing_or_oversized_headers_are_rejected(self):
+        valid_body = b"v=0\r\na=rtpmap:96 H264/90000\r\n"
+        responses = {
+            "malformed content length": (
+                b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\n"
+                b"Content-Length: invalid\r\n\r\n"
+            ),
+            "missing content length": (
+                b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\n\r\n"
+                + valid_body
+            ),
+            "oversized content length": (
+                b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\n"
+                b"Content-Length: 16385\r\n\r\n"
+            ),
+            "malformed content type header": (
+                b"RTSP/1.0 200 OK\r\nContent-Type application/sdp\r\n"
+                + f"Content-Length: {len(valid_body)}\r\n\r\n".encode()
+                + valid_body
+            ),
+            "oversized header block": (
+                b"RTSP/1.0 200 OK\r\nX-Fill: " + b"x" * 16384
+                + b"\r\n\r\n"
+            ),
+        }
+
+        for case, response in responses.items():
+            with self.subTest(case=case):
+                connection = self.fake_connection(response)
+                with patch("custom_components.netvue_local.rtsp.asyncio.open_connection",
+                           new=unittest.mock.AsyncMock(return_value=connection)):
+                    self.assertFalse(await async_probe_stream(
+                        "rtsp://127.0.0.1:8554/netvue2"
+                    ))
+
+    async def test_truncated_sdp_is_rejected(self):
+        response = (
+            b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\n"
+            b"Content-Length: 100\r\n\r\nv=0\r\na=rtpmap:96 H264/90000\r\n"
+        )
+        connection = self.fake_connection(response)
+        with patch("custom_components.netvue_local.rtsp.asyncio.open_connection",
+                   new=unittest.mock.AsyncMock(return_value=connection)):
+            self.assertFalse(await async_probe_stream("rtsp://127.0.0.1:8554/netvue2"))
+
+    async def test_valid_non_h264_sdp_is_rejected(self):
+        body = b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\n"
+        response = (
+            b"RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
+        connection = self.fake_connection(response)
+        with patch("custom_components.netvue_local.rtsp.asyncio.open_connection",
+                   new=unittest.mock.AsyncMock(return_value=connection)):
+            self.assertFalse(await async_probe_stream("rtsp://127.0.0.1:8554/netvue2"))
+
+    async def test_connection_timeout_returns_false(self):
+        original_timeout = asyncio.timeout
+
+        async def never_connect(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        with (
+            patch("custom_components.netvue_local.rtsp.asyncio.open_connection",
+                  new=unittest.mock.AsyncMock(side_effect=never_connect)),
+            patch("custom_components.netvue_local.rtsp.asyncio.timeout",
+                  return_value=original_timeout(0)),
+        ):
+            self.assertFalse(await async_probe_stream("rtsp://127.0.0.1:8554/netvue2"))
+
+    async def test_connection_is_closed_when_probe_returns_early(self):
+        response = b"RTSP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+        connection = self.fake_connection(response)
+        with patch("custom_components.netvue_local.rtsp.asyncio.open_connection",
+                   new=unittest.mock.AsyncMock(return_value=connection)):
+            self.assertFalse(await async_probe_stream("rtsp://127.0.0.1:8554/netvue2"))
+        connection[1].close.assert_called_once()
+        connection[1].wait_closed.assert_awaited_once()
 
 
 class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):

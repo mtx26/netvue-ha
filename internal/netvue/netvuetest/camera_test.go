@@ -21,7 +21,7 @@ func within(t *testing.T) context.Context {
 	return ctx
 }
 
-// dial performs discovery and returns an open TCP connection.
+// dial connects directly to the simulator's TCP endpoint.
 func dial(t *testing.T, c *Camera) net.Conn {
 	t.Helper()
 	conn, err := net.Dial("tcp4", net.JoinHostPort(c.Host(), strconv.Itoa(c.Port())))
@@ -144,6 +144,78 @@ func TestDiscoveryLoginLiveAndMedia(t *testing.T) {
 	}
 }
 
+func TestSetVideoPreservesMediaPTS(t *testing.T) {
+	const interval = 20*time.Millisecond + 500*time.Microsecond
+	const videoStep = uint32(interval / time.Millisecond)
+	const audioStep = 128 // milliseconds per 1024 samples at 8 kHz
+	initial := SolidH264(64, 64, 255, 0, 0, 2)
+	replacement := SolidH264(96, 64, 0, 0, 255, 2)
+	c := Start(t, Options{Host: AllocHost(testGroup), Video: initial, FrameInterval: interval, Audio: true})
+	conn := dial(t, c)
+	if ack := login(t, conn, DefaultKey); ack.A != 1 || code(ack) != 0 {
+		t.Fatalf("login ack %+v", ack)
+	}
+	send(t, conn, liveRequest(true))
+	if ack := readUnit(t, conn); ack.A != 3 || code(ack) != 0 || len(ack.P) != 2 {
+		t.Fatalf("LIVE ack %+v", ack)
+	}
+	send(t, conn, map[string]any{"Q": 5, "V": 1, "P": []int{1}})
+
+	var nextVideoPTS, nextAudioPTS uint32
+	var videos, audios, newVideos int
+	var switched, audioAfterChange bool
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for newVideos < 3 || !audioAfterChange {
+		flag, kind, body, err := ReadPacket(conn)
+		if err != nil || flag != 0 {
+			t.Fatalf("read packet: flag=%d kind=%d err=%v", flag, kind, err)
+		}
+		if kind == kindCommand {
+			if ack, ok := firstUnit(body); !ok || ack.A != 5 || code(ack) != 0 {
+				t.Fatalf("audio direction ack %q", body)
+			}
+			continue
+		}
+		if kind != kindMedia || len(body) < 6 {
+			t.Fatalf("unexpected packet: kind=%d length=%d", kind, len(body))
+		}
+		pts := binary.LittleEndian.Uint32(body[1:5])
+		switch body[0] >> 4 {
+		case 1:
+			if videos == 0 {
+				nextVideoPTS, nextAudioPTS = pts, pts
+			}
+			if pts != nextVideoPTS {
+				t.Fatalf("video packet %d PTS = %d, want %d", videos, pts, nextVideoPTS)
+			}
+			nextVideoPTS += videoStep
+			// Old frames can already be queued when SetVideo is called.
+			if newVideos > 0 || (switched && !bytes.Equal(body[5:], initial[videos%len(initial)].Data)) {
+				if !bytes.Equal(body[5:], replacement[newVideos%len(replacement)].Data) {
+					t.Fatalf("replacement frame %d differs from fixture", newVideos)
+				}
+				newVideos++
+			} else if !bytes.Equal(body[5:], initial[videos%len(initial)].Data) {
+				t.Fatalf("initial frame %d differs from fixture", videos)
+			}
+			videos++
+		case 2:
+			if videos == 0 || pts != nextAudioPTS {
+				t.Fatalf("audio packet %d PTS = %d, want %d after the video starts", audios, pts, nextAudioPTS)
+			}
+			nextAudioPTS += audioStep
+			audios++
+			audioAfterChange = newVideos > 0
+		default:
+			t.Fatalf("unexpected media header %#x", body[0])
+		}
+		if !switched && videos >= 2 && audios > 0 {
+			c.SetVideo(replacement)
+			switched = true
+		}
+	}
+}
+
 func TestRejectedLoginsAndWrongKey(t *testing.T) {
 	c := Start(t, Options{Host: AllocHost(testGroup), RejectLogins: 1})
 	first := dial(t, c)
@@ -177,7 +249,7 @@ func TestFaultsDropAndVideoChange(t *testing.T) {
 	for _, stage := range []string{"login", "live", "media"} {
 		for _, fault := range faultModes[stage] {
 			if fault == "login-timeout" || fault == "stall" {
-				continue // the peer's own timeout ends these; covered by integration tests
+				continue // Timeout and cancellation behavior is not asserted in this test.
 			}
 			if err := c.FailNext(stage, fault); err != nil {
 				t.Fatal(err)

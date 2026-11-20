@@ -84,8 +84,7 @@ func waitForVideo(t *testing.T, ffmpeg, url string, width, height int, red bool)
 	t.Fatalf("video %dx%d was not published before the deadline: %v", width, height, lastErr)
 }
 
-// Every protocol failure returned by the simulator must stop RunSession
-// with a protocol error instead of hanging or succeeding.
+// Each fault must produce a diagnostic error before RunSession's deadline.
 func TestSimulatorFaultsStopRunSession(t *testing.T) {
 	faults := []struct{ stage, fault string }{
 		{"login", "close-connection"},
@@ -128,9 +127,8 @@ func TestSimulatorFaultsStopRunSession(t *testing.T) {
 	}
 }
 
-// Discovery, authentication, LIVE selection, H.264 and AAC through the real
-// supervisor into MediaMTX, then a dropped connection and a resolution change
-// while an external reader keeps decoding.
+// The supervisor sends discovery, authentication, LIVE, H.264 and AAC to MediaMTX.
+// Separate FFmpeg readers check reconnect and resolution changes.
 func TestSimulatorPublishesDecodableAudioVideoAcrossReconnects(t *testing.T) {
 	mediamtx := netvuetest.Executable(t, "NETVUE_TEST_MEDIAMTX", "mediamtx")
 	ffmpeg := netvuetest.Executable(t, "NETVUE_TEST_FFMPEG", "ffmpeg")

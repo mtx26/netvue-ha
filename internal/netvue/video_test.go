@@ -157,6 +157,40 @@ func TestPrependParametersUsesCurrentSetsAndPreservesAccessUnit(t *testing.T) {
 	}
 }
 
+func TestPrependParametersOrdersIDRWithOnlyOneParameterSet(t *testing.T) {
+	currentSPS := []byte{byte(h264.NALUTypeSPS), 2}
+	currentPPS := []byte{byte(h264.NALUTypePPS), 2}
+	idr := []byte{byte(h264.NALUTypeIDR), 3}
+
+	for _, test := range []struct {
+		name       string
+		accessUnit h264.AnnexB
+	}{
+		{
+			name:       "SPS only",
+			accessUnit: h264.AnnexB{currentSPS, idr},
+		},
+		{
+			name:       "PPS only",
+			accessUnit: h264.AnnexB{currentPPS, idr},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := prependParameters(test.accessUnit, currentSPS, currentPPS)
+			want := h264.AnnexB{currentSPS, currentPPS, idr}
+			if len(got) != len(want) {
+				t.Fatalf("emitted %d NAL units, want %d: %x", len(got), len(want), got)
+			}
+			for index := range want {
+				if !bytes.Equal(got[index], want[index]) {
+					t.Fatalf("emitted NAL %d = %x, want %x; full order: %x",
+						index, got[index], want[index], got)
+				}
+			}
+		})
+	}
+}
+
 func TestPublisherRejectsMalformedAnnexB(t *testing.T) {
 	publisher, err := newVideoPublisher(context.Background(), "rtsp://127.0.0.1:8554/netvue")
 	if err != nil {

@@ -138,6 +138,86 @@ func TestManagerStopDeleteAndRestart(t *testing.T) {
 	}
 }
 
+func TestStopAndDeleteRespectContextWhileWaitingForCameraOperation(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Manager, context.Context) (bool, error)
+	}{
+		{
+			name: "stop",
+			run: func(manager *Manager, ctx context.Context) (bool, error) {
+				_, err := manager.StopCamera(ctx, "192.168.10.20")
+				return false, err
+			},
+		},
+		{
+			name: "delete",
+			run: func(manager *Manager, ctx context.Context) (bool, error) {
+				return manager.DeleteCamera(ctx, "192.168.10.20")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				return nil
+			})
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := manager.Close(ctx); err != nil {
+					t.Errorf("Close() error = %v", err)
+				}
+			})
+			if _, _, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil {
+				t.Fatal(err)
+			}
+			waitForSignal(t, started, "camera session")
+
+			manager.mu.RLock()
+			session := manager.cameras["192.168.10.20"]
+			manager.mu.RUnlock()
+			session.operationMu.Lock()
+			defer session.operationMu.Unlock()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan struct {
+				deleted bool
+				err     error
+			}, 1)
+			go func() {
+				deleted, err := test.run(manager, ctx)
+				result <- struct {
+					deleted bool
+					err     error
+				}{deleted: deleted, err: err}
+			}()
+			cancel()
+
+			select {
+			case got := <-result:
+				if !errors.Is(got.err, context.Canceled) {
+					t.Fatalf("operation error = %v, want context.Canceled", got.err)
+				}
+				if got.deleted {
+					t.Fatal("camera was deleted after operation cancellation")
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("operation did not promptly return after context cancellation")
+			}
+
+			camera, found := manager.Camera("192.168.10.20")
+			if !found || camera.State != stateSupervising {
+				t.Fatalf("camera after canceled operation = %+v, found %v", camera, found)
+			}
+		})
+	}
+}
+
 func TestManagerStoppingOneCameraLeavesOtherRunning(t *testing.T) {
 	active := make(map[string]bool)
 	var mu sync.Mutex
