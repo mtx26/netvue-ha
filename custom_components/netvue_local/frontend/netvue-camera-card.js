@@ -31,6 +31,10 @@ video { width: 100%; max-height: 80vh; background: #000; }
 .status { flex: 1; color: #fff; font-size: 14px; }
 button { font: inherit; color: #fff; background: rgba(255,255,255,.2); border: 1px solid rgba(255,255,255,.5);
   border-radius: 20px; padding: 8px 14px; cursor: pointer; min-height: 40px; }
+.bar button { width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 44px; }
+.bar button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round; }
 button:focus-visible { outline: 3px solid var(--primary-color, #03a9f4); outline-offset: 2px; }
 button[disabled] { opacity: .5; cursor: default; }
 .ptt { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
@@ -50,6 +54,17 @@ function el(tag, attrs = {}, parent) {
   }
   return node;
 }
+
+function setIcon(button, icon) {
+  button.innerHTML = icon;
+}
+
+const ICONS = {
+  mic: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6.5 10.5v1a5.5 5.5 0 0 0 11 0v-1M12 17v4M8.5 21h7"/></svg>',
+  muted: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 7 9H3v6h4l4 4z"/><path d="m16 9 5 6M21 9l-5 6"/></svg>',
+  speaker: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 7 9H3v6h4l4 4z"/><path d="M15 9a5 5 0 0 1 0 6M18 6a9 9 0 0 1 0 12"/></svg>',
+  fullscreen: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>',
+};
 
 export class NetvueCameraCard extends HTMLElement {
   static getConfigElement() {
@@ -365,12 +380,12 @@ export class NetvueCameraCard extends HTMLElement {
     this._toast = el("div", { class: "toast", role: "alert" }, wrap);
     const bar = el("div", { class: "bar" }, wrap);
     this._status = el("div", { class: "status" }, bar);
+    this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
+    this._bindPtt(this._pttButton);
     this._muteButton = el("button", { type: "button", class: "mute" }, bar);
     this._muteButton.addEventListener("click", () => this._toggleMute());
     this._fullscreenButton = el("button", { type: "button", class: "fullscreen" }, bar);
     this._fullscreenButton.addEventListener("click", () => this._toggleFullscreen());
-    this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
-    this._bindPtt(this._pttButton);
     this._live = el("div", { class: "sr", role: "status", "aria-live": "polite" }, wrap);
     this._render();
   }
@@ -458,13 +473,13 @@ export class NetvueCameraCard extends HTMLElement {
     const talking = state === "live" && ptt.pressed;
     this._status.textContent = talking && ptt.phase === "speaking" ? `${label} — ${t("halfDuplex")}` : label;
     this._live.textContent = this._toastKey ? t(this._toastKey) : label;
-    this._muteButton.textContent = this._muted ? "🔇" : "🔊";
+    setIcon(this._muteButton, this._muted ? ICONS.muted : ICONS.speaker);
     this._muteButton.setAttribute("aria-label", this._muted ? t("unmute") : t("mute"));
     this._muteButton.setAttribute("aria-pressed", String(!this._muted));
     const fullscreen = document.fullscreenElement === this._wrap;
     const fullscreenLabel = fullscreen ? t("exitFullscreen") : t("fullscreen");
     const fullscreenSupported = this._fullscreenSupported();
-    this._fullscreenButton.textContent = "⛶";
+    setIcon(this._fullscreenButton, ICONS.fullscreen);
     this._fullscreenButton.disabled = !fullscreenSupported;
     this._fullscreenButton.setAttribute(
       "aria-label",
@@ -474,7 +489,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._fullscreenButton.title = fullscreenSupported
       ? fullscreenLabel
       : t("fullscreenUnsupported");
-    this._pttButton.textContent = "🎤";
+    setIcon(this._pttButton, ICONS.mic);
     const available = state === "live" && ptt.ready;
     this._pttButton.disabled = !available && !ptt.pressed;
     this._pttButton.setAttribute("aria-pressed", String(ptt.pressed));
