@@ -12,34 +12,29 @@ fiable, performante, modulaire et simple à installer.
 - 🔄 En développement
 - ⬜ À faire
 - 💡 À étudier
+- Les travaux terminés sont retirés des tableaux ; les lignes restantes sont
+  les développements ou validations encore nécessaires.
 
 ## 1. Fiabilité et intégration
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | Protocole Netvue | Connexion et vidéo fiables ; [guide de reconstruction LAN](../findings/phase44-specification-reconstruction-lan.md) |
-| 🧪 | Supervision | Reconnexion et fonctionnement continu |
-| 🧪 | Multi-caméra | Sessions indépendantes |
-| 🧪 | Home Assistant | Intégration complète |
-| 🧪 | Découverte LAN | Série, firmware et capacités V2 exposés et testés hors ligne ; découverte réelle confirmée en [phase 35](../findings/phase35-decouverte-lan-ha.md), autres modèles et présence des metadata à valider |
-| ✅ | CI multi-composants | Go/race/vet, tests HA, MediaMTX/FFmpeg, E2E HA ↔ Go ↔ MediaMTX et rendu Swarm réussis dans le [run CI](https://github.com/mtx26/netvue-ha/actions/runs/44139631957) ; la publication A/V synthétique est désormais incluse |
-| 🧪 | Refonte tests et CI (phases 47–48) | PR : tests Go/HA rapides systématiques, jobs d'intégration ignorés uniquement pour les changements documentaires ; validation complète conservée sur `main`. Aucun SKIP toléré, fuzzing et tests E2E synthétiques ; **run GitHub complet vert après la phase 48 à confirmer** ([rapport phase 47](../findings/phase47-refonte-tests-ci.md), [phase 48](../findings/phase48-fiabilite-ci-tests.md)) |
-| ✅ | Validation réelle courte (phase 36) | 30 s de H.264 décodées depuis la session active de la caméra ; le digest déployé n'est pas relié au commit local ([rapport](../findings/phase36-validation-reelle.md)) |
-| ✅ | Endurance synthétique | Multi-caméra, caméra défaillante, churn, annulation et libération de goroutines testés dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) |
-| 🧪 | CI d'endurance | `endurance.yml` : race répété, fuzz long, endurance multi-caméra, manuel ou nocturne ; premier run GitHub à confirmer |
-| 🧪 | Stabilité réelle 24 h/24 | Protocole préparé dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) ; aucune validation réelle effectuée |
-| 🧪 | Performances de référence | Benchmarks et profils CPU/heap du gestionnaire ; aucune optimisation justifiée |
+| 🧪 | Reconnexion réelle | Vérifier la reprise après une panne sur caméra réelle ; la stabilité réelle 24 h est suivie séparément |
+| 🧪 | Multi-caméra réelle | Sessions indépendantes testées en synthétique ; valider plusieurs caméras simultanément en conditions réelles |
+| 🧪 | Parcours Home Assistant réel | Valider le parcours complet avec le code actuel, de l'entrée HA jusqu'à l'aperçu caméra ; l'interface et l'aperçu ne sont pas vérifiés avec la version actuelle |
+| 🧪 | Métadonnées LAN | Série, firmware, capacités, SSID et niveau de signal exposés et testés hors ligne ; présence réelle des champs et compatibilité d'autres modèles à vérifier |
+| 💡 | Informations appareil supplémentaires | Étudier modèle, version matérielle, MAC, IP Wi-Fi/Ethernet, propriétaire et état cloud ; sources et faisabilité locale à vérifier, sans dépendance cloud obligatoire |
+| 🧪 | Stabilité réelle 24 h/24 | Sessions réelles bornées d'environ 10 à 13 min observées sur l'ancien pont ([phases 11](../findings/phase11-recovery.md), [15](../findings/phase15-real-stability.md)) ; aucune endurance de 24 h ni validation équivalente du code Go actuel |
 | 🔄 | Refonte architecturale | Migration et limites suivies dans [refactor-progress.md](./refactor-progress.md) ; E2E média et parcours HA conteneurisé synthétiques réussis, refonte incomplète |
 
 ## 2. Audio
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | Analyse APK audio | Analyse statique des trames et directions ; réception AAC confirmée sur la caméra 2, unité de `samplesize` inconnue |
-| 🧪 | Réception audio | AAC/ADTS 8 kHz mono décodé sur la caméra 2 ; PCM 16 bits non validé sur caméra |
-| 🧪 | RTSP audio/vidéo | AAC-LC mono 8 kHz capturé sur la caméra ; pendant le talk, la publication a redémarré au changement de format audio et a attendu un IDR après changement H.264. Continuité A/V et avertissements DTS restent à confirmer ([phase 45](../findings/phase45-validation-reelle-talkback.md), [phase 39](../findings/phase39-talkback.md)) |
-| 🧪 | Audio bidirectionnel Go | Envoi Go direct d'une sinusoïde AAC-LC/ADTS 700 Hz, 0,5 s, -33,5 dBFS RMS ; pic spectral de retour à -53,7 dBFS, contre -62,3/-64,4 dBFS avant/après. Signal compatible avec un retour acoustique, mais haut-parleur et son audible non confirmés ([phase 45](../findings/phase45-validation-reelle-talkback.md)) |
-| 🧪 | Microphone Home Assistant | Lecteur unique `netvue-camera-card` (push-to-talk momentané, half-duplex, sans renégociation) validé en synthétique (Go, Python, Node), E2E Linux répété dix fois ; rejet erroné du bourrage RTP corrigé hors ligne après erreur Opus réelle. Nouveau run CI et restitution réelle à valider ([phase 54](../findings/phase54-lecteur-unifie-push-to-talk.md), [phase 45](../findings/phase45-validation-reelle-talkback.md)) |
+| 💡 | Signification de `samplesize` | L'analyse statique est faite ; l'unité de ce champ reste inconnue ([spécification LAN](./netvue-lan-client-spec.md)) |
+| 🧪 | Continuité RTSP audio/vidéo | Les essais réels ont montré des interruptions au changement de format ; confirmer la continuité A/V et résoudre les avertissements DTS ([phases 39](../findings/phase39-talkback.md), [45](../findings/phase45-validation-reelle-talkback.md)) |
+| 🧪 | Restitution acoustique du talkback Go | Un retour audio a été mesuré, sans preuve de son audible ; confirmer la restitution du haut-parleur par une écoute ou mesure indépendante ([phase 45](../findings/phase45-validation-reelle-talkback.md)) |
+| 🧪 | Microphone Home Assistant | Lecteur unique `netvue-camera-card` (push-to-talk momentané, half-duplex, sans renégociation) et correction du bourrage RTP validés hors ligne ; CI complète après la phase 54 réussie ([run](https://github.com/mtx26/netvue-ha/actions/runs/44823857272)). Restitution réelle à valider ([phase 54](../findings/phase54-lecteur-unifie-push-to-talk.md), [phase 45](../findings/phase45-validation-reelle-talkback.md)) |
 
 ## 3. Enregistrement
 
@@ -67,15 +62,14 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | WebRTC | Fournisseur HA unique et permanent, conversion audio et adaptation H.264 pour les offres incompatibles sans modifier le RTSP ; essai navigateur réel à faire. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
+| 🧪 | WebRTC | Un essai réel a rencontré une offre navigateur incompatible avec le profil H.264 du flux ; adaptation testée hors ligne, lecture WebRTC réelle non confirmée. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
 | 🧪 | Micro à distance sans VPN | Cloudflare TURN facultatif par installation, configuration ICE limitée aux caméras Netvue en mode WebRTC natif ; négociation via relais local testée, Cloudflare et restitution du micro hors LAN à valider |
-| 🧪 | Carte caméra Lovelace | Lecteur WebRTC, audio, push-to-talk et bouton plein écran ; affichage réel à confirmer |
-| 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras et état/diagnostic regroupés ; affichage réel à confirmer |
+| 🧪 | Carte caméra Lovelace | Lecteur WebRTC, audio, push-to-talk, plein écran et éditeur visuel ; affichage réel à confirmer |
+| 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras, regroupement état/diagnostic, découverte automatique des entités et éditeurs visuels ; affichage réel à confirmer |
 | 🧪 | Miniature caméra HA | Image complète proportionnelle dans le badge 80 × 80 ; proxy et formats synthétiques testés, affichage réel à confirmer ([phase 46](../findings/phase46-miniature-ha.md)) |
-| ⬜ | Configuration HA | Simplifier les réglages |
+| 🧪 | Configuration HA réelle | Vérifier dans l'interface installée le parcours découverte/saisie IPv4, la création de l'entrée et l'affichage des entités |
 | 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |
 | ⬜ | Dashboard | Centraliser les informations |
-| 🧪 | Installation Portainer | Guide et stack disponibles ; déploiement réel non validé |
 
 ## Règles de suivi
 
