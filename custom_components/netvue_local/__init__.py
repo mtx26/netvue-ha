@@ -3,19 +3,45 @@
 import asyncio
 import logging
 
+from pathlib import Path
+
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .bridge_api import BridgeError, async_stop_camera
-from .const import CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL
+from .const import CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL, DOMAIN
 from .coordinator import NetvueCoordinator
 from .rtsp import stream_url_from_name
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON]
+
+FRONTEND_URL = "/netvue_local/frontend"
+CARD_MODULE = "netvue-camera-card.js"
+_FRONTEND_DIR = Path(__file__).parent / "frontend"
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Serve the Netvue Lovelace card once per Home Assistant instance."""
+    if hass.data.setdefault(f"{DOMAIN}_frontend_registered", False):
+        return True
+    hass.data[f"{DOMAIN}_frontend_registered"] = True
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(FRONTEND_URL, str(_FRONTEND_DIR), cache_headers=False)]
+    )
+    if "frontend" in hass.config.components:
+        # Imported late: the frontend component is optional (headless installs).
+        from homeassistant.components import frontend
+
+        version = (await async_get_integration(hass, DOMAIN)).version
+        frontend.add_extra_js_url(hass, f"{FRONTEND_URL}/{CARD_MODULE}?v={version}")
+    return True
 
 
 def _managed_camera(entry: ConfigEntry) -> tuple[str, str]:
@@ -29,7 +55,15 @@ def _managed_camera(entry: ConfigEntry) -> tuple[str, str]:
     return host, name
 
 
+_LEGACY_OPTIONS = ("webrtc_enabled", "experimental_talkback")
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # The unified card is the only interactive player: drop the retired player options.
+    if any(key in entry.options for key in _LEGACY_OPTIONS):
+        hass.config_entries.async_update_entry(entry, options={
+            key: value for key, value in entry.options.items() if key not in _LEGACY_OPTIONS
+        })
     try:
         camera = _managed_camera(entry)
     except (KeyError, ValueError) as exc:

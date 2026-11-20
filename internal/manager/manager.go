@@ -336,11 +336,13 @@ func (manager *Manager) stopSession(ctx context.Context, host string, remove boo
 		session.cancel()
 	}
 	done := session.done
-	peer := manager.peers[host]
 	manager.mu.Unlock()
 
-	if peer != nil {
+	peers := manager.hostPeers(host)
+	for _, peer := range peers {
 		peer.fail("camera_stopped")
+	}
+	for _, peer := range peers {
 		if err := waitPeerWorkers(ctx, peer); err != nil {
 			return Camera{}, false, err
 		}

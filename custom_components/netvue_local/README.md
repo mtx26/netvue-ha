@@ -62,48 +62,58 @@ toute demande explicite de 80 × 80, pas uniquement à ce badge. Les autres
 captures ne sont pas rendues carrées et HA peut les réduire proportionnellement.
 Le flux vidéo principal n'est pas modifié.
 
-### Audio et microphone
+### Carte Lovelace `netvue-camera-card` (seul lecteur interactif)
 
-L'audio caméra AAC est transmis en Opus par le lecteur WebRTC. Le fournisseur
-HA est opt-in via les options de l'intégration. Le pont reçoit le microphone
-WebRTC en Opus, le convertit en AAC-LC/ADTS et l'envoie sur la session Netvue
-supervisée de la caméra ; après dix secondes sans paquets RTP, il ferme le
-talkback et le rouvre à la reprise du microphone. Ce délai limite les ouvertures
-répétées pendant les silences avec suppression de paquets. La vidéo et l'audio
-caméra restent sur cette même session.
+L'intégration sert la carte `netvue-camera-card` (dossier `frontend/`, sans
+étape de build) et l'ajoute automatiquement aux modules JS de Home Assistant
+dès que `frontend` est chargé. Ajoutez-la à un tableau de bord :
 
-La capacité HA `two_way_audio` reste désactivée par défaut : les essais
-synthétiques ne prouvent pas la restitution par le haut-parleur Netvue. Une
-option distincte « Contrôle microphone expérimental » peut l'exposer pour des
-essais explicitement demandés ; elle nécessite WebRTC et reste désactivée par
-défaut. Ce contrôle n'est pas une validation du talkback. FFmpeg est nécessaire
-au transcodage audio.
+```yaml
+type: custom:netvue-camera-card
+entity: camera.ma_camera
+name: Entrée   # facultatif
+```
 
-Pour parler depuis l'interface native de Home Assistant, utilisez HA
-2026.11.2 ou ultérieur et activez sa fonction Labs d'audio bidirectionnel des
-caméras. Dans les options de Netvue Local, cochez « Signalisation WebRTC
-expérimentale » et « Contrôle microphone expérimental », puis ouvrez la fiche
-de la caméra et son flux en direct WebRTC. Autorisez le microphone du navigateur
-et utilisez le bouton Micro du lecteur. Le navigateur doit pouvoir joindre le
-pont sur le réseau local ; HTTPS est requis hors de `localhost`. Testez avec
-une courte phrase et une personne près de la caméra pour confirmer le son du
-haut-parleur. Home Assistant 2026.7.1 peut charger l'intégration, mais ne
-possède pas encore l'API native qui expose ce bouton.
+La carte ouvre **une seule** `RTCPeerConnection` pour la vidéo H.264, l'audio
+caméra (Opus) et le push-to-talk, via les commandes WebSocket natives de HA
+(`camera/webrtc/offer`, `camera/webrtc/candidate`, `camera/webrtc/get_client_config`)
+et le fournisseur `webrtc.py`. La vidéo démarre seule, en sourdine si le
+navigateur l'exige ; le bouton haut-parleur active le son de la même balise
+`<video>`. Le bouton « Maintenir pour parler » (souris, tactile, Espace ou
+Entrée) remplace la piste micro par `replaceTrack` : aucune renégociation, aucun
+nouveau lecteur, la vidéo n'est jamais interrompue. Le micro est relâché dès
+que le bouton, la page, la fenêtre ou la connexion se ferme. Le navigateur
+demande l'autorisation du micro ; HTTPS est requis hors de `localhost`.
+
+La carte est le seul lecteur interactif : il n'y a plus d'option WebRTC ni
+micro, et la capacité native HA `two_way_audio` n'est plus exposée. Le
+lecteur natif de HA ne sert plus que pour les aperçus ; RTSP et `stream_source`
+restent disponibles pour les intégrations externes. Les anciennes options
+`webrtc_enabled` et `experimental_talkback` sont retirées silencieusement des
+entrées existantes.
+
+La caméra Netvue est traitée en **demi-duplex** : pendant le push-to-talk,
+le pont coupe l'audio caméra envoyé à ce navigateur. Plusieurs spectateurs
+(4 sessions WebRTC par caméra au maximum) peuvent regarder en même temps ;
+le serveur gère `busy`/`unavailable` si le micro est déjà pris. En cas de
+coupure, la carte se reconnecte (1 s, 2 s, 4 s, 3 tentatives) puis affiche un
+bouton « Réessayer ».
+
+Le pont reçoit le microphone WebRTC en Opus, le convertit en AAC-LC/ADTS et
+l'envoie sur la session Netvue supervisée ; FFmpeg est nécessaire. Le
+canal de données `netvue-ptt` (`start`/`stop`/`keepalive`) pilote la prise de
+parole. **Non validé sur matériel** : la restitution par le haut-parleur de la
+caméra n'a jamais été confirmée ; seuls des essais synthétiques et des tests
+de la carte avec faux navigateur existent.
 
 La commande Go expérimentale `talk` lit un fichier AAC préencodé dans une
 session distincte et bornée ; elle ne fait pas partie du parcours HA et ne doit
 pas être lancée en parallèle de la session supervisée.
 
-### Signalisation WebRTC expérimentale
+### Signalisation WebRTC
 
 Le serveur Go et le fournisseur HA implémentent la signalisation et le trajet
-média. Le fournisseur reste **désactivé par défaut** : cochez
-« Signalisation WebRTC expérimentale » uniquement sur un pont compatible.
-Le contrôle microphone est séparément opt-in, réservé aux essais et désactivé
-par défaut ; sans cette option, les offres contenant une piste audio émise
-sont refusées avant d'ouvrir une session. Les options rechargent l'entrée et
-arrêtent/redémarrent la session caméra.
-Les essais d'intégration média nécessitent FFmpeg et une validation acoustique
+média ; le fournisseur est toujours actif. Les essais d'intégration média nécessitent FFmpeg et une validation acoustique
 est encore requise. L'API est :
 
 | Méthode et chemin, sous `/api/v1` | Corps ou réponse JSON |
@@ -123,8 +133,8 @@ fermeture. Une expiration ou session inconnue renvoie `404`/`410`, un corps
 invalide `400`, une caméra non gérée `404`, et une indisponibilité `503`. Une
 erreur de négociation est un événement `error` terminal. Les SDP, adresses ICE
 et identifiants ne sont pas journalisés. L'API reste sur loopback, non
-authentifiée comme le reste du gestionnaire. Le contrat limite à un pair
-WebRTC par caméra à la fois (`409` si occupée) : vidéo et audio proviennent
+authentifiée comme le reste du gestionnaire. Le contrat limite à 4 pairs
+WebRTC par caméra (`409` au-delà, remonté comme `netvue_webrtc_busy`) : vidéo et audio proviennent
 du RTSP/TCP ; le microphone Opus est converti en AAC-LC/ADTS et joint à la
 même session Netvue supervisée, jamais une seconde session caméra. Le retour
 AAC caméra → Opus WebRTC est également implémenté.
@@ -140,10 +150,8 @@ reçoit offre et candidates, envoie `WebRTCAnswer`, `WebRTCCandidate` ou
 `WebRTCError`, puis ferme la session par callback synchrone. HA conserve HLS
 avec un fournisseur ; une méthode WebRTC native remplaçant celle de `Camera`
 supprime ce repli. La sélection du premier fournisseur compatible n'assure
-pas une priorité stable entre fournisseurs. `two_way_audio` dépend également
-de WebRTC et de la fonctionnalité Labs ; il reste `False` par défaut. L'option
-expérimentale distincte peut l'exposer uniquement pour les essais, sans
-confirmer la restitution physique. L'intégration
+pas une priorité stable entre fournisseurs. `two_way_audio` n'est pas exposé : le micro passe par la carte.
+L'intégration
 officielle [go2rtc](https://github.com/home-assistant/core/blob/2026.11.2/homeassistant/components/go2rtc/__init__.py)
 utilise un WebSocket de signalisation ; le seul RTSP ne fournit pas le retour
 audio Netvue. Le choix du fournisseur HA se fait uniquement par URL : une
@@ -160,9 +168,7 @@ Netvue utilise le mode WebRTC natif de HA pour fournir au navigateur des
 identifiants ICE temporaires pour ses caméras. Dans ce mode, HA ne propose
 plus HLS comme repli et ne sélectionne pas go2rtc pour ces entités.
 Le pont garde des candidats directs et ajoute les candidats du relais.
-`two_way_audio=False` reste
-le comportement par défaut : le microphone HA est masqué tant que l'option
-expérimentale d'essai n'est pas explicitement activée. Les conversions et la
+Les conversions et la
 signalisation sont testées synthétiquement, mais ne prouvent ni l'acceptation
 du talkback par la caméra ni la restitution audio réelle. Si le `DELETE` côté
 HA est interrompu, le pont a déjà installé un tombstone et poursuit la fermeture

@@ -83,6 +83,11 @@ jobs:
           ruff check --select E4,E7,E9,F --target-version py313 \
             custom_components/netvue_local tests scripts
       - run: python -m pytest tests/ha tests/test_home_assistant_integration.py tests/test_home_assistant_webrtc.py tests/test_ha_go_e2e_synthetic.py -q
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - name: Card tests
+        run: node --test tests/frontend/
 
   build:
     name: Build integration binaries

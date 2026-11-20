@@ -5,6 +5,7 @@ Run from the repository root; see tests/ha/harness.py for the isolation model.
 
 import asyncio
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -152,8 +153,7 @@ class OptionsFlowTests(HassTestCase):
     async def test_host_change_moves_session_and_reloads_entry(self):
         entry = await self.create_entry()
         camera_entity = self.entity_id(entry, "camera")
-        result = await self._init(entry, host=OTHER_HOST, webrtc_enabled=False,
-                                  experimental_talkback=False)
+        result = await self._init(entry, host=OTHER_HOST)
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
         self.assertEqual(entry.state, ConfigEntryState.LOADED)
@@ -171,8 +171,7 @@ class OptionsFlowTests(HassTestCase):
 
         with patch.object(netvue_local, "async_stop_camera",
                           side_effect=stop_bridge_after_unload):
-            result = await self._init(entry, host=OTHER_HOST, webrtc_enabled=False,
-                                      experimental_talkback=False)
+            result = await self._init(entry, host=OTHER_HOST)
             self.assertEqual(result["type"], "create_entry")
             await self.hass.async_block_till_done()
 
@@ -198,11 +197,9 @@ class OptionsFlowTests(HassTestCase):
         cases = {
             "invalid_input": {"host": "8.8.8.8"},
             "already_configured": {"host": OTHER_HOST},
-            "talkback_requires_webrtc": {"host": HOST, "experimental_talkback": True},
         }
         for error, values in cases.items():
             with self.subTest(error):
-                values = {"webrtc_enabled": False, "experimental_talkback": False, **values}
                 result = await self._init(entry, **values)
                 self.assertEqual(result["errors"], {"base": error})
         self.assertEqual(set(self.bridge.cameras), {HOST, OTHER_HOST})
@@ -210,8 +207,7 @@ class OptionsFlowTests(HassTestCase):
     async def test_host_change_is_refused_while_bridge_unavailable(self):
         entry = await self.create_entry()
         self.bridge.status_override = 503
-        result = await self._init(entry, host=OTHER_HOST, webrtc_enabled=False,
-                                  experimental_talkback=False)
+        result = await self._init(entry, host=OTHER_HOST)
         self.assertEqual(result["errors"], {"base": "bridge_unavailable"})
         self.assertEqual(entry.options, {})
         self.assertIn(HOST, self.bridge.cameras)
@@ -410,7 +406,7 @@ class WebRTCTests(HassTestCase):
             "username": "temporary-user", "credential": "temporary-password",
         }
         self.bridge.turn_response = {"ice_servers": [server], "expires_in": 1800}
-        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=True)
+        entry = await self.create_entry()
         entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
         self.assertEqual(self.providers(), set())
         self.assertEqual(entity.camera_capabilities.frontend_stream_types, {camera.StreamType.WEB_RTC})
@@ -454,7 +450,7 @@ class WebRTCTests(HassTestCase):
             patch("custom_components.netvue_local.webrtc.monotonic",
                   side_effect=lambda: now[0]),
         ):
-            entry = await self.create_entry(webrtc_enabled=True)
+            entry = await self.create_entry()
             async with asyncio.timeout(3):
                 await refresh_results.get()
                 self.assertEqual(await sleeper.calls.get(), 60)
@@ -487,123 +483,83 @@ class WebRTCTests(HassTestCase):
             await self.hass.async_block_till_done()
             self.assertIsNone(self.hass.states.get(camera_entity_id))
 
-    async def test_webrtc_provider_is_opt_in(self):
+    async def test_provider_is_always_registered_and_native_two_way_audio_is_never_exposed(self):
         entry = await self.create_entry()
-        self.assertEqual(self.providers(), set())
-        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
-        self.assertIsNone(entity.webrtc_provider)
-        self.assertFalse(entity.camera_entity_capabilities.two_way_audio)
-        with self.assertRaisesRegex(HomeAssistantError, "does not support WebRTC"):
-            await entity.async_handle_async_webrtc_offer("offer", "s", lambda _: None)
-
-    async def test_microphone_offer_waits_for_previous_session_to_close(self):
-        self.bridge.turn_response = {
-            "ice_servers": [{
-                "urls": ["turns:turn.cloudflare.com:443?transport=tcp"],
-                "username": "temporary-user", "credential": "temporary-password",
-            }],
-            "expires_in": 1800,
-        }
-        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=True)
-        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
-        provider = entity._netvue_provider
-        prefix = f"/api/v1/cameras/{HOST}/webrtc"
-        delete_started, release_delete = asyncio.Event(), asyncio.Event()
-        original_request = provider._request
-
-        async def hold_delete(method, url, **kwargs):
-            if method == "DELETE" and url.endswith("/view"):
-                delete_started.set()
-                await release_delete.wait()
-            return await original_request(method, url, **kwargs)
-
-        async def wait_for_put(session):
-            async with asyncio.timeout(3):
-                while ("PUT", f"{prefix}/{session}") not in self.bridge.requests:
-                    await asyncio.sleep(0.01)
-
-        messages = []
-        with patch.object(provider, "_request", side_effect=hold_delete):
-            await entity.async_handle_async_webrtc_offer(
-                MIC_OFFER.replace("sendonly", "recvonly"), "view", messages.append,
-            )
-            try:
-                await wait_for_put("view")
-                await entity.async_handle_async_webrtc_offer(MIC_OFFER, "mic", messages.append)
-                await asyncio.sleep(0)
-                entity.close_webrtc_session("view")
-                async with asyncio.timeout(3):
-                    await delete_started.wait()
-                self.assertNotIn(("PUT", f"{prefix}/mic"), self.bridge.requests)
-            finally:
-                release_delete.set()
-            await wait_for_put("mic")
-            self.assertLess(self.bridge.requests.index(("DELETE", f"{prefix}/view")),
-                            self.bridge.requests.index(("PUT", f"{prefix}/mic")))
-            self.assertEqual(messages, [])
-
-    async def test_offer_does_not_replace_an_active_viewer(self):
-        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=True)
-        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
-        prefix = f"/api/v1/cameras/{HOST}/webrtc"
-        messages = []
-        await entity.async_handle_async_webrtc_offer(MIC_OFFER, "first", messages.append)
-        with patch("custom_components.netvue_local.webrtc._SESSION_HANDOFF_TIMEOUT", 0):
-            await entity.async_handle_async_webrtc_offer(MIC_OFFER, "second", messages.append)
-            async with asyncio.timeout(3):
-                while not messages:
-                    await asyncio.sleep(0.01)
-        self.assertIn("already has a session", messages[0].message)
-        self.assertIn(("PUT", f"{prefix}/first"), self.bridge.requests)
-        self.assertNotIn(("PUT", f"{prefix}/second"), self.bridge.requests)
-        self.assertNotIn(("DELETE", f"{prefix}/second"), self.bridge.requests)
-        self.assertNotIn(("DELETE", f"{prefix}/first"), self.bridge.requests)
-
-    async def test_webrtc_registers_provider_without_two_way_audio(self):
-        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=False)
         entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
         (provider,) = self.providers()
         self.assertIsInstance(provider, NetvueWebRTCProvider)
         self.assertIs(entity.webrtc_provider, provider)
         self.assertFalse(entity.camera_entity_capabilities.two_way_audio)
-        self.assertFalse(provider._allow_microphone)
-        # A microphone offer is refused before reaching the bridge.
-        with self.assertRaisesRegex(HomeAssistantError, "microphone control is disabled"):
-            await entity.async_handle_async_webrtc_offer(MIC_OFFER, "mic", lambda _: None)
-        self.assertFalse([r for r in self.bridge.requests if "/webrtc/" in r[1]])
-
-    async def test_two_way_audio_requires_the_experimental_option(self):
-        entry = await self.create_entry(webrtc_enabled=True, experimental_talkback=True)
-        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
-        (provider,) = self.providers()
-        self.assertTrue(entity.camera_entity_capabilities.two_way_audio)
-        self.assertTrue(provider._allow_microphone)
-        messages = []
-        await entity.async_handle_async_webrtc_offer(MIC_OFFER, "mic", messages.append)
-        async with asyncio.timeout(3):
-            while ("PUT", f"/api/v1/cameras/{HOST}/webrtc/mic") not in self.bridge.requests:
-                await asyncio.sleep(0.01)
+        self.assertNotIn("netvue_push_to_talk", self.state(entry, "camera").attributes)
+        # Push-to-talk offers (audio sendrecv) always reach the bridge.
+        await entity.async_handle_async_webrtc_offer(MIC_OFFER, "mic", lambda _: None)
+        await self._wait_for_request("PUT", "mic")
         entity.close_webrtc_session("mic")
+        await self._wait_for_request("DELETE", "mic")
+
+    async def _wait_for_request(self, method, session):
+        request = (method, f"/api/v1/cameras/{HOST}/webrtc/{session}")
         async with asyncio.timeout(3):
-            while ("DELETE", f"/api/v1/cameras/{HOST}/webrtc/mic") not in self.bridge.requests:
+            while request not in self.bridge.requests:
                 await asyncio.sleep(0.01)
 
-    async def test_disabling_webrtc_or_removing_entry_unregisters_provider(self):
-        entry = await self.create_entry(webrtc_enabled=True)
-        self.assertEqual(len(self.providers()), 1)
-        manager = self.hass.config_entries.options
-        result = await manager.async_init(entry.entry_id)
-        await manager.async_configure(
-            result["flow_id"],
-            {"host": HOST, "webrtc_enabled": False, "experimental_talkback": False})
+    async def test_four_viewers_share_the_camera_and_the_fifth_is_refused(self):
+        entry = await self.create_entry()
+        entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
+        for index in range(4):
+            await entity.async_handle_async_webrtc_offer(MIC_OFFER, f"v{index}", lambda _: None)
+        for index in range(4):
+            await self._wait_for_request("PUT", f"v{index}")
+        with self.assertRaisesRegex(HomeAssistantError, "too many viewers"):
+            await entity.async_handle_async_webrtc_offer(MIC_OFFER, "v4", lambda _: None)
+        self.assertNotIn(("PUT", f"/api/v1/cameras/{HOST}/webrtc/v4"), self.bridge.requests)
+        self.assertFalse([r for r in self.bridge.requests if r[0] == "DELETE" and "/webrtc/" in r[1]])
+        entity.close_webrtc_session("v0")
+        await self._wait_for_request("DELETE", "v0")
         await self.hass.async_block_till_done()
-        self.assertEqual(self.providers(), set())
-        result = await manager.async_init(entry.entry_id)
-        await manager.async_configure(
-            result["flow_id"],
-            {"host": HOST, "webrtc_enabled": True, "experimental_talkback": False})
-        await self.hass.async_block_till_done()
+        await entity.async_handle_async_webrtc_offer(MIC_OFFER, "v5", lambda _: None)
+        await self._wait_for_request("PUT", "v5")
+        for index in (1, 2, 3, 5):
+            entity.close_webrtc_session(f"v{index}")
+
+    async def test_removing_entry_unregisters_provider(self):
+        entry = await self.create_entry()
         self.assertEqual(len(self.providers()), 1)
         await self.hass.config_entries.async_remove(entry.entry_id)
         await self.hass.async_block_till_done()
         self.assertEqual(self.providers(), set())
+
+    async def test_retired_player_options_are_dropped_silently(self):
+        entry = await self.add_raw_entry(
+            {"host": HOST, "stream_name": "netvue_192_168_10_2",
+             "stream_url": "rtsp://127.0.0.1:8554/netvue_192_168_10_2"},
+            options={"webrtc_enabled": False, "experimental_talkback": True,
+                     "host": HOST, "stream_name": "netvue_192_168_10_2",
+                     "stream_url": "rtsp://127.0.0.1:8554/netvue_192_168_10_2"},
+        )
+        self.assertEqual(entry.state, ConfigEntryState.LOADED)
+        self.assertEqual(set(entry.options), {"host", "stream_name", "stream_url"})
+        self.assertEqual(len(self.providers()), 1)
+
+
+class FrontendTests(HassTestCase):
+    async def test_card_is_served_once_for_all_entries(self):
+        self.hass.config.components.add("frontend")
+        with patch("homeassistant.components.frontend.add_extra_js_url") as add_js, patch(
+            "homeassistant.components.http.HomeAssistantHTTP.async_register_static_paths",
+            new_callable=AsyncMock,
+        ) as register:
+            await self.create_entry()
+            await self.create_entry(host=OTHER_HOST, name="Other")
+        register.assert_awaited_once()
+        (config,) = register.await_args.args[0]
+        self.assertEqual(config.url_path, "/netvue_local/frontend")
+        self.assertTrue((Path(config.path) / "netvue-camera-card.js").is_file())
+        add_js.assert_called_once()
+        self.assertRegex(add_js.call_args.args[1],
+                         r"^/netvue_local/frontend/netvue-camera-card\.js\?v=\d")
+
+    async def test_headless_install_skips_the_extra_module(self):
+        with patch("homeassistant.components.frontend.add_extra_js_url") as add_js:
+            await self.create_entry()
+        add_js.assert_not_called()

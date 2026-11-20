@@ -335,11 +335,16 @@ Le relais Cloudflare TURN facultatif ne modifie pas ces formats ni la session
 LAN Netvue. Il transporte le média WebRTC chiffré entre le navigateur et le
 pont lorsque le chemin direct ne peut pas être utilisé.
 
-Le fournisseur WebRTC est opt-in et `two_way_audio` reste désactivé tant que
-la restitution physique n'est pas confirmée. L'absence de RTP microphone
-pendant 3 s ferme le talkback ; une reprise peut le rouvrir. Une seule
-émission microphone est admise par session ; une reconnexion invalide
-l'ancienne session. Sérialiser toutes les écritures sur la socket.
+Le push-to-talk est piloté explicitement (canal de données `netvue-ptt`,
+voir [architecture](./architecture.md)), non par la présence de RTP : le
+talkback s'ouvre sur `start` et se ferme sur `stop`, timeout de keepalive,
+60 s d'appui ou fermeture du pair. Le Netvue est traité en half-duplex
+applicatif (audio caméra du locuteur coupé pendant l'émission) ; le
+full-duplex Netvue n'est ni démontré ni supporté. La commande `P=3` est la
+seule attestée par l'APK ; sa restitution au haut-parleur n'est pas confirmée
+sur matériel réel. Une seule émission microphone est admise par caméra ;
+une reconnexion invalide l'ancienne session. Sérialiser toutes les écritures
+sur la socket.
 
 **Preuve réelle historique :** sept trames ADTS synthétiques ont été écrites
 sur TCP après sélection audio ; aucun son au haut-parleur n'a été confirmé.

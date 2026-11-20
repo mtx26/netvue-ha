@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -59,19 +60,23 @@ func (p *webRTCPeer) setupRTSPAudio(
 	if _, err := client.Setup(desc.BaseURL, media, 0, 0); err != nil {
 		return fmt.Errorf("setup RTSP audio: %w", err)
 	}
-	var invalidAudio sync.Once
+	// Damaged or surplus camera audio is dropped: it must not end the video.
+	drop := func(reason string) {
+		if n := p.droppedAudio.Add(1); n == 1 || n%500 == 0 {
+			slog.Warn("Netvue WebRTC dropped camera audio", "reason", reason, "count", n)
+		}
+	}
 	client.OnPacketRTP(media, audioFormat, func(packet *rtp.Packet) {
 		units, err := decoder.Decode(packet)
 		if err != nil {
-			if errors.Is(err, rtpmpeg4audio.ErrMorePacketsNeeded) {
-				return
+			if !errors.Is(err, rtpmpeg4audio.ErrMorePacketsNeeded) {
+				drop("invalid_packet")
 			}
-			invalidAudio.Do(func() { go p.fail("audio_invalid") })
 			return
 		}
 		pts, ok := client.PacketPTS(media, packet)
 		if !ok {
-			invalidAudio.Do(func() { go p.fail("audio_timestamp_unavailable") })
+			drop("timestamp_unavailable")
 			return
 		}
 		sampleRate := audioFormat.ClockRate()
@@ -83,8 +88,8 @@ func (p *webRTCPeer) setupRTSPAudio(
 		for i, unit := range units {
 			frame, err := aacAccessUnitToADTS(audioFormat, unit)
 			if err != nil {
-				invalidAudio.Do(func() { go p.fail("audio_invalid") })
-				return
+				drop("invalid_access_unit")
+				continue
 			}
 			timestamp := sourceTimestamp + uint32(int64(i*samplesPerUnit)*48000/int64(sampleRate))
 			select {
@@ -92,8 +97,7 @@ func (p *webRTCPeer) setupRTSPAudio(
 			case <-p.ctx.Done():
 				return
 			default:
-				invalidAudio.Do(func() { go p.fail("audio_overrun") })
-				return
+				drop("encoder_overrun")
 			}
 		}
 	})

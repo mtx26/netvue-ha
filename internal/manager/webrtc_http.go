@@ -87,13 +87,14 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 	}
 	key := webRTCKey(host, id)
 	manager.purgeTombstonesLocked()
-	if camera.State != stateSupervising || manager.peers[host] != nil || !manager.tombstones[key].IsZero() {
+	if camera.State != stateSupervising || manager.peers[key] != nil ||
+		manager.hostPeerCountLocked(host) >= webRTCMaxPeersPerHost || !manager.tombstones[key].IsZero() {
 		manager.mu.Unlock()
 		writeAPIError(w, http.StatusConflict, "WebRTC session unavailable")
 		return
 	}
 	p := newWebRTCPeer(manager.ctx, host, id)
-	manager.peers[host] = p
+	manager.peers[key] = p
 	sessionDone := camera.done
 	url := camera.RTSPURL
 	manager.wg.Add(1)
@@ -104,11 +105,7 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 	stop()
 	if err != nil {
 		p.close()
-		manager.mu.Lock()
-		if manager.peers[host] == p {
-			delete(manager.peers, host)
-		}
-		manager.mu.Unlock()
+		manager.removePeer(p)
 		switch {
 		case errors.Is(err, errWebRTCCodecMismatch):
 			slog.Warn("Netvue WebRTC negotiation failed", "reason", "codec_mismatch")
@@ -144,21 +141,43 @@ func (manager *Manager) watchPeer(p *webRTCPeer, sessionDone <-chan struct{}, es
 		}
 	}
 	<-p.workersStopped
+	manager.removePeer(p)
+}
+
+func (manager *Manager) removePeer(p *webRTCPeer) {
 	manager.mu.Lock()
-	if manager.peers[p.host] == p {
-		delete(manager.peers, p.host)
+	if manager.peers[p.key()] == p {
+		delete(manager.peers, p.key())
 	}
 	manager.mu.Unlock()
+}
+
+func (manager *Manager) hostPeerCountLocked(host string) int {
+	count := 0
+	for _, p := range manager.peers {
+		if p.host == host {
+			count++
+		}
+	}
+	return count
+}
+
+func (manager *Manager) hostPeers(host string) []*webRTCPeer {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	var peers []*webRTCPeer
+	for _, p := range manager.peers {
+		if p.host == host {
+			peers = append(peers, p)
+		}
+	}
+	return peers
 }
 
 func (manager *Manager) webRTCPeer(host, id string) *webRTCPeer {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	p := manager.peers[host]
-	if p == nil || p.id != id {
-		return nil
-	}
-	return p
+	return manager.peers[webRTCKey(host, id)]
 }
 
 func (manager *Manager) handleWebRTCCandidate(w http.ResponseWriter, r *http.Request) {
@@ -259,8 +278,8 @@ func (manager *Manager) handleWebRTCClose(w http.ResponseWriter, r *http.Request
 	manager.mu.Lock()
 	manager.purgeTombstonesLocked()
 	key := webRTCKey(host, id)
-	p := manager.peers[host]
-	active := p != nil && p.id == id
+	p := manager.peers[key]
+	active := p != nil
 	if _, exists := manager.tombstones[key]; !exists && len(manager.tombstones) >= maxTombstones && !active {
 		manager.mu.Unlock()
 		writeAPIError(w, http.StatusServiceUnavailable, "WebRTC capacity reached")
@@ -276,11 +295,7 @@ func (manager *Manager) handleWebRTCClose(w http.ResponseWriter, r *http.Request
 		if err := waitPeerWorkers(r.Context(), p); err != nil {
 			return
 		}
-		manager.mu.Lock()
-		if manager.peers[host] == p {
-			delete(manager.peers, host)
-		}
-		manager.mu.Unlock()
+		manager.removePeer(p)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

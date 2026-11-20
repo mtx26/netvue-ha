@@ -1,0 +1,69 @@
+const STRINGS = {
+  en: {
+    connecting: "Connecting…",
+    reconnecting: "Reconnecting…",
+    live: "Live",
+    listening: "Listening",
+    opening: "Opening the microphone…",
+    speaking: "You are speaking",
+    halfDuplex: "Camera sound is muted while you speak",
+    unavailable: "Camera unavailable",
+    paused: "Paused",
+    error: "Video unavailable",
+    busy: "Too many viewers on this camera",
+    retry: "Retry",
+    mute: "Mute camera sound",
+    unmute: "Listen to the camera",
+    talk: "Hold to talk",
+    talkNotReady: "Talk unavailable",
+    mic_denied: "Microphone access denied",
+    mic_insecure: "Microphone requires HTTPS",
+    mic_missing: "No microphone found",
+    mic_busy: "Microphone is in use",
+    mic_unsupported: "Microphone not supported",
+    mic_failed: "Microphone error",
+    srv_busy: "The camera is already being used to talk",
+    srv_unavailable: "The camera cannot receive audio right now",
+    srv_failed: "Talking failed",
+    srv_timeout: "Maximum talking time reached",
+    srv_unsupported: "This camera does not support talking",
+  },
+  fr: {
+    connecting: "Connexion…",
+    reconnecting: "Reconnexion…",
+    live: "En direct",
+    listening: "À l'écoute",
+    opening: "Ouverture du micro…",
+    speaking: "Vous parlez",
+    halfDuplex: "Le son de la caméra est coupé pendant que vous parlez",
+    unavailable: "Caméra indisponible",
+    paused: "En pause",
+    error: "Vidéo indisponible",
+    busy: "Trop de visionneuses sur cette caméra",
+    retry: "Réessayer",
+    mute: "Couper le son de la caméra",
+    unmute: "Écouter la caméra",
+    talk: "Maintenir pour parler",
+    talkNotReady: "Parole indisponible",
+    mic_denied: "Accès au micro refusé",
+    mic_insecure: "Le micro nécessite HTTPS",
+    mic_missing: "Aucun micro détecté",
+    mic_busy: "Le micro est utilisé ailleurs",
+    mic_unsupported: "Micro non pris en charge",
+    mic_failed: "Erreur du micro",
+    srv_busy: "La caméra est déjà utilisée pour parler",
+    srv_unavailable: "La caméra ne peut pas recevoir l'audio pour l'instant",
+    srv_failed: "Échec de la prise de parole",
+    srv_timeout: "Durée maximale de parole atteinte",
+    srv_unsupported: "Cette caméra ne gère pas la parole",
+  },
+};
+
+export function translator(language) {
+  const table = STRINGS[String(language || "en").toLowerCase().split(/[-_]/)[0]] || STRINGS.en;
+  return (key) => table[key] ?? STRINGS.en[key] ?? key;
+}
+
+export function pttErrorKey(code) {
+  return code.startsWith("mic_") ? code : `srv_${code}`;
+}

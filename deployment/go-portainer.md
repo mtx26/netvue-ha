@@ -81,13 +81,12 @@ l'API du pont restent sur `127.0.0.1`.
    à Home Assistant et au navigateur.
 3. Mets aussi à jour **Netvue Local** dans HACS. Redémarre Home Assistant
    après la mise à jour ; si l'intégration était déjà à jour, recharge son
-   entrée. Dans les **Options de la caméra**, coche **Signalisation WebRTC
-   expérimentale** et **Contrôle microphone expérimental**. Si ta version
-   de Home Assistant le demande, active aussi l'audio bidirectionnel dans
-   **Paramètres → Système → Labs**.
+   entrée. Le lecteur WebRTC est toujours actif, sans option : ajoute la carte
+   Lovelace `netvue-camera-card` (`type: custom:netvue-camera-card`,
+   `entity: camera.…`) au tableau de bord.
 4. Sur ton téléphone, coupe le Wi-Fi et ouvre **la même URL HTTPS Home
-   Assistant** en 4G/5G. Ouvre la caméra, clique sur **Parler** et autorise
-   le micro. Vérifie que le son est audible sur le haut-parleur de la
+   Assistant** en 4G/5G. Ouvre la caméra, maintiens le bouton micro
+   de la carte enfoncé et autorise le micro. Vérifie que le son est audible sur le haut-parleur de la
    caméra. L'activité TURN du tableau de bord Cloudflare ou le type
    `relay` du couple ICE sélectionné dans les diagnostics WebRTC du
    navigateur confirme l'usage du relais.
@@ -104,16 +103,13 @@ redéploie. Pour `401` ou `403`, vérifie aussi le couple ID/jeton. Un
 échec TURN n'arrête pas la publication RTSP : WebRTC direct reste
 possible sur le LAN.
 
-Si HA affiche `WebRTC camera already has a session`, ferme les autres
-vues en direct de cette caméra (onglets, tableau de bord, autre appareil)
-et réessaie depuis une seule vue. Le pont accepte une session WebRTC par
-caméra. Quand HA ouvre une nouvelle session pour activer le micro,
-l'intégration attend brièvement la fermeture de l'ancienne sans couper
-un autre spectateur.
+Le pont accepte jusqu'à 4 spectateurs WebRTC par caméra ; au-delà, la carte
+affiche « trop de visionneuses ». Un seul spectateur à la fois peut parler
+(les autres reçoivent « occupé »). Appuyer sur le micro ne recrée jamais la
+session.
 
-**Repli et coût.** Avec TURN configuré, les caméras Netvue ayant activé
-WebRTC utilisent le lecteur WebRTC natif de HA, **sans repli HLS** dans
-ce lecteur. Les autres caméras et les flux RTSP ne changent pas. Pour
+**Repli et coût.** Avec TURN configuré, les caméras Netvue utilisent
+la carte `netvue-camera-card`, **sans repli HLS**. Les autres caméras et les flux RTSP ne changent pas. Pour
 revenir au comportement local, enlève **les deux variables**, redéploie
 la stack et recharge les entrées Netvue. Les laisser toutes deux vides
 désactive TURN ; en renseigner une seule empêche le démarrage du pont.

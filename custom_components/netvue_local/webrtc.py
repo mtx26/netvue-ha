@@ -25,10 +25,9 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 _EVENT_TIMEOUT = 35
-_SESSION_HANDOFF_TIMEOUT = bridge_api.REQUEST_TIMEOUT + 1
+_MAX_SESSIONS = 4
 _MAX_EVENTS_SIZE = 256 * 1024
 _MAX_EVENTS = 128
-_AUDIO_DIRECTIONS = {"sendrecv", "sendonly", "recvonly", "inactive"}
 
 
 @dataclass(frozen=True)
@@ -74,37 +73,8 @@ async def async_get_turn_credentials(hass: HomeAssistant) -> TurnCredentials | N
         raise HomeAssistantError("Unable to read Netvue TURN configuration") from exc
 
 
-def _offer_sends_audio(sdp: str) -> bool:
-    session_direction = "sendrecv"
-    media_type = ""
-    media_active = False
-    media_direction = "sendrecv"
-
-    def sends_audio() -> bool:
-        return (
-            media_type == "audio"
-            and media_active
-            and media_direction in {"sendrecv", "sendonly"}
-        )
-
-    in_media_section = False
-    for raw_line in sdp.splitlines():
-        line = raw_line.strip()
-        if line.startswith("m="):
-            if sends_audio():
-                return True
-            fields = line[2:].split()
-            in_media_section = True
-            media_type = fields[0].lower() if fields else ""
-            media_active = len(fields) > 1 and fields[1].split("/", 1)[0] != "0"
-            media_direction = session_direction
-        elif line.startswith("a=") and line[2:] in _AUDIO_DIRECTIONS:
-            if in_media_section:
-                media_direction = line[2:]
-            else:
-                session_direction = line[2:]
-
-    return sends_audio()
+class _TooManySessions(HomeAssistantError):
+    """The manager already serves the maximum number of viewers (HTTP 409)."""
 
 
 @dataclass
@@ -122,14 +92,12 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
 
     def __init__(
         self, hass: HomeAssistant, entry: ConfigEntry, camera: Camera, host: str, url: str,
-        *, allow_microphone: bool = False,
     ) -> None:
         self._hass = hass
         self._entry = entry
         self._camera = camera
         self._host = host
         self._url = url
-        self._allow_microphone = allow_microphone
         self._sessions: dict[str, _Session] = {}
         self._stopping = False
 
@@ -156,6 +124,8 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
                         expected = (204,)
                     else:
                         expected = (200,)
+                    if method == "PUT" and response.status == 409:
+                        raise _TooManySessions("WebRTC camera has too many viewers")
                     if response.status not in expected:
                         raise HomeAssistantError(f"WebRTC bridge returned HTTP {response.status}")
                     if method != "GET":
@@ -181,13 +151,10 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
         if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id)
                 or not offer_sdp or len(offer_sdp.encode("utf-8")) > 128 * 1024):
             raise HomeAssistantError("Invalid WebRTC offer or session identifier")
-        if not self._allow_microphone and _offer_sends_audio(offer_sdp):
-            raise HomeAssistantError("Experimental microphone control is disabled")
-        if session_id in self._sessions or len(self._sessions) >= 2:
-            raise HomeAssistantError("WebRTC camera already has a session")
-        previous = next(iter(self._sessions.values()), None)
+        if session_id in self._sessions or len(self._sessions) >= _MAX_SESSIONS:
+            raise HomeAssistantError("WebRTC camera has too many viewers")
         state = self._sessions[session_id] = _Session(asyncio.Event(), asyncio.Lock())
-        worker = self._run(session_id, state, offer_sdp, send_message, previous)
+        worker = self._run(session_id, state, offer_sdp, send_message)
         try:
             state.task = self._entry.async_create_background_task(
                 self._hass, worker, "netvue WebRTC signalling", eager_start=False,
@@ -199,22 +166,13 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
 
     async def _run(
         self, session_id: str, state: _Session, offer: str,
-        send_message: WebRTCSendMessage, previous: _Session | None,
+        send_message: WebRTCSendMessage,
     ) -> None:
         url = self._session_url(session_id)
         state.started = True
-        needs_close = previous is None
         try:
-            # HA can send the next offer before the previous unsubscribe or DELETE completes.
-            if not state.closing and previous is not None and previous.task is not None:
-                _, pending = await asyncio.wait(
-                    (previous.task,), timeout=_SESSION_HANDOFF_TIMEOUT,
-                )
-                if pending:
-                    raise HomeAssistantError("WebRTC camera already has a session")
             if state.closing:
                 return
-            needs_close = True
             await self._request("PUT", url, payload={"offer": offer})
             state.opened = True
             state.ready.set()
@@ -249,6 +207,9 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
                     await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
+        except _TooManySessions as exc:
+            if not state.closing:
+                send_message(WebRTCError("netvue_webrtc_busy", str(exc)))
         except HomeAssistantError as exc:
             if not state.closing:
                 send_message(WebRTCError("netvue_webrtc_failed", str(exc)))
@@ -261,9 +222,8 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
             state.ready.set()
             try:
                 # The manager must tombstone the id even if the PUT timed out.
-                if needs_close:
-                    async with state.lock:
-                        await self._request("DELETE", url)
+                async with state.lock:
+                    await self._request("DELETE", url)
             except HomeAssistantError as exc:
                 _LOGGER.warning("Unable to close WebRTC session: %s", exc)
             finally:

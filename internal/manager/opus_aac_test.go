@@ -3,7 +3,6 @@ package manager
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -18,16 +17,12 @@ import (
 type testAudioSource struct {
 	ctx     context.Context
 	packets chan *rtp.Packet
-	idle    bool
 }
 
 func (s *testAudioSource) ReadRTP(ctx context.Context) (*rtp.Packet, error) {
 	select {
 	case p, ok := <-s.packets:
 		if !ok {
-			if s.idle {
-				return nil, errAudioIdle
-			}
 			return nil, io.EOF
 		}
 		return p, nil
@@ -311,30 +306,5 @@ func TestOpusDTXDoesNotReplaySilence(t *testing.T) {
 	}
 	if pcm.Len() != 2*160*2 {
 		t.Fatalf("DTX added stale silence: %d bytes", pcm.Len())
-	}
-}
-
-func TestOpusIdleFlushesPendingPackets(t *testing.T) {
-	source := &testAudioSource{ctx: context.Background(), packets: make(chan *rtp.Packet, 2), idle: true}
-	for _, entry := range []struct {
-		seq uint16
-		ts  uint32
-	}{{1, 0}, {3, 1920}} {
-		source.packets <- &rtp.Packet{
-			Header:  rtp.Header{SequenceNumber: entry.seq, Timestamp: entry.ts},
-			Payload: []byte{0xf8, 0xff, 0xfe},
-		}
-	}
-	close(source.packets)
-	decoder, err := opus.NewDecoderWithOutput(8000, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pcm bytes.Buffer
-	if err := readOpusPCM(context.Background(), source, &decoder, &pcm, 8000, 1); !errors.Is(err, errAudioIdle) {
-		t.Fatalf("readOpusPCM error = %v, want microphone idle", err)
-	}
-	if pcm.Len() != 3*160*2 {
-		t.Fatalf("PCM bytes = %d, want final packets and one lost frame flushed", pcm.Len())
 	}
 }

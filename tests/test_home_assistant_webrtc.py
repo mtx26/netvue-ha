@@ -12,8 +12,8 @@ from homeassistant.exceptions import HomeAssistantError
 from webrtc_models import RTCIceCandidateInit
 
 from custom_components.netvue_local import camera as camera_platform
-from custom_components.netvue_local.const import CONF_HOST, CONF_STREAM_URL, CONF_WEBRTC_ENABLED
-from custom_components.netvue_local.webrtc import NetvueWebRTCProvider, _offer_sends_audio
+from custom_components.netvue_local.const import CONF_HOST, CONF_STREAM_URL
+from custom_components.netvue_local.webrtc import NetvueWebRTCProvider
 
 
 class ProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -101,7 +101,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             data={DATA_ICE_SERVERS: []},
         )
         entry = SimpleNamespace(
-            options={CONF_WEBRTC_ENABLED: True},
+            options={},
             runtime_data=coordinator,
             data={CONF_HOST: "192.168.10.2", CONF_STREAM_URL: "rtsp://127.0.0.1:8554/a"},
             entry_id="entry",
@@ -129,18 +129,6 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(3):
             while not condition():
                 await asyncio.sleep(0.01)
-
-    def test_offer_audio_direction_identifies_microphone_track(self):
-        base = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
-        self.assertTrue(_offer_sends_audio(base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendrecv\r\n"))
-        self.assertTrue(_offer_sends_audio(base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendonly\r\n"))
-        self.assertFalse(_offer_sends_audio(base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=recvonly\r\n"))
-        self.assertFalse(_offer_sends_audio(
-            "v=0\r\na=recvonly\r\n" + base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
-        ))
-        self.assertFalse(_offer_sends_audio(
-            base + "m=audio 0 UDP/TLS/RTP/SAVPF 111\r\na=sendrecv\r\n"
-        ))
 
     async def test_turn_404_keeps_the_regular_camera_entity(self):
         self.ice_status = 404
@@ -226,33 +214,16 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         expired_servers = expired.to_frontend_dict()["configuration"]["iceServers"]
         self.assertNotIn(self.ice_payload["ice_servers"][0], expired_servers)
 
-    async def test_microphone_offer_is_rejected_when_experimental_option_is_off(self):
+    async def test_push_to_talk_offer_is_forwarded(self):
         offer = (
-            "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+            "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=recvonly\r\n"
             "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendrecv\r\n"
+            "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
         )
-        with self.assertRaisesRegex(HomeAssistantError, "microphone control is disabled"):
-            await self.provider.async_handle_async_webrtc_offer(
-                self.camera, offer, "microphone-disabled", lambda _: None,
-            )
-        self.assertEqual(self.requests, [])
-
-    async def test_microphone_offer_is_forwarded_when_experimental_option_is_on(self):
-        provider = NetvueWebRTCProvider(
-            SimpleNamespace(), SimpleNamespace(async_create_background_task=lambda hass, coro,
-                                               name, eager_start: asyncio.create_task(coro)),
-            self.camera, "192.168.10.2", "rtsp://127.0.0.1:8554/a",
-            allow_microphone=True,
-        )
-        try:
-            await provider.async_handle_async_webrtc_offer(
-                self.camera,
-                "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=sendonly\r\n",
-                "microphone-enabled", lambda _: None,
-            )
-            await self.wait_for(lambda: any(r[0] == "PUT" for r in self.requests))
-        finally:
-            await provider.async_shutdown()
+        await self.provider.async_handle_async_webrtc_offer(
+            self.camera, offer, "talk", lambda _: None)
+        await self.wait_for(lambda: any(r[0] == "PUT" for r in self.requests))
+        self.assertEqual(next(r for r in self.requests if r[0] == "PUT")[3], {"offer": offer})
 
     async def test_offer_candidates_events_and_close(self):
         received = []
@@ -306,8 +277,8 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         await self.provider.async_handle_async_webrtc_offer(
             self.camera, "offer", "busy", messages.append)
         await self.wait_for(lambda: not self.provider._sessions)
-        self.assertIsInstance(messages[0], WebRTCError)
-        self.assertIn("409", messages[0].message)
+        self.assertEqual(messages, [WebRTCError(
+            "netvue_webrtc_busy", "WebRTC camera has too many viewers")])
         self.status.clear()
         messages.clear()
         await self.provider.async_handle_async_webrtc_offer(
@@ -338,21 +309,47 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(lambda: not self.provider._sessions)
         self.assertEqual(sum(r[0] == "DELETE" for r in self.requests), 1)
 
-    async def test_handoff_and_cancelled_shutdown_waits_for_delete(self):
+    async def test_four_concurrent_sessions_then_rejection_without_handoff(self):
+        self.block_delete = True
+        for index in range(4):
+            await self.provider.async_handle_async_webrtc_offer(
+                self.camera, "offer", f"s{index}", lambda _: None)
+        await self.wait_for(lambda: sum(r[0] == "PUT" for r in self.requests) == 4)
+        with self.assertRaisesRegex(HomeAssistantError, "too many viewers"):
+            await self.provider.async_handle_async_webrtc_offer(
+                self.camera, "offer", "s4", lambda _: None)
+        self.assertEqual(len(self.provider._sessions), 4)
+        self.assertEqual(sum(r[0] == "PUT" for r in self.requests), 4)
+        self.provider.async_close_session("s0")
+        await asyncio.wait_for(self.delete_started.wait(), 2)
+        # The slot frees only when the DELETE completed; no previous-session wait exists.
+        with self.assertRaisesRegex(HomeAssistantError, "too many viewers"):
+            await self.provider.async_handle_async_webrtc_offer(
+                self.camera, "offer", "s5", lambda _: None)
+        self.delete_continue.set()
+        await self.wait_for(lambda: "s0" not in self.provider._sessions)
+        await self.provider.async_handle_async_webrtc_offer(
+            self.camera, "offer", "s6", lambda _: None)
+        await self.wait_for(lambda: sum(r[0] == "PUT" for r in self.requests) == 5)
+
+    async def test_sessions_are_isolated(self):
+        await self.provider.async_handle_async_webrtc_offer(
+            self.camera, "offer", "one", lambda _: None)
+        await self.provider.async_handle_async_webrtc_offer(
+            self.camera, "offer", "two", lambda _: None)
+        await self.wait_for(lambda: sum(r[0] == "PUT" for r in self.requests) == 2)
+        self.provider.async_close_session("one")
+        await self.wait_for(lambda: "one" not in self.provider._sessions)
+        self.assertIn("two", self.provider._sessions)
+        await self.provider.async_on_webrtc_candidate("two", RTCIceCandidateInit("candidate:2"))
+        self.assertEqual(sum(r[0] == "DELETE" for r in self.requests), 1)
+        self.assertTrue(any(r[0] == "POST" and "/two/" in r[1] for r in self.requests))
+
+    async def test_cancelled_shutdown_waits_for_delete(self):
         self.block_delete = True
         await self.provider.async_handle_async_webrtc_offer(
             self.camera, "offer", "one", lambda _: None)
         await asyncio.wait_for(self.offer_started.wait(), 2)
-        await self.provider.async_handle_async_webrtc_offer(
-            self.camera, "offer", "two", lambda _: None)
-        await self.wait_for(lambda: any(
-            request[0] == "GET" and request[1].endswith("/one/events")
-            for request in self.requests
-        ))
-        self.assertEqual(
-            [request[1] for request in self.requests if request[0] == "PUT"],
-            ["/api/v1/cameras/192.168.10.2/webrtc/one"],
-        )
         task = asyncio.create_task(self.provider.async_shutdown())
         await asyncio.wait_for(self.delete_started.wait(), 2)
         task.cancel()

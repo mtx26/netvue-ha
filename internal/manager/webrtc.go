@@ -4,33 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/pion/ice/v4"
-	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
 
 const (
 	webRTCMaxEvents        = 128
-	webRTCLifetime         = 10 * time.Minute
 	webRTCEstablishTimeout = 15 * time.Second
-	webRTCAudioIdleTimeout = 10 * time.Second
+	// A connected peer is kept alive by ICE consent checks; this only bounds
+	// sessions that were never closed by their owner.
+	webRTCLifetime = 12 * time.Hour
+	// Camera audio is optional: its encoder is restarted a few times, then
+	// disabled without touching the video.
+	webRTCAudioRestarts    = 3
+	webRTCAudioStableAfter = 30 * time.Second
+	webRTCMaxPeersPerHost  = 4
 )
 
-var (
-	errAudioIdle                 = errors.New("microphone audio idle")
-	errWebRTCVideoEncoderMissing = errors.New("WebRTC video encoder unavailable")
-)
+var errWebRTCVideoEncoderMissing = errors.New("WebRTC video encoder unavailable")
 
 type webRTCEvent struct {
 	Seq       uint64                   `json:"seq"`
@@ -59,6 +61,8 @@ type webRTCPeer struct {
 	workersStopped   chan struct{}
 	connected        chan struct{}
 	connectOnce      sync.Once
+	talk             *talkController
+	droppedAudio     atomic.Uint64
 }
 
 func newWebRTCPeer(parent context.Context, host, id string) *webRTCPeer {
@@ -68,6 +72,24 @@ func newWebRTCPeer(parent context.Context, host, id string) *webRTCPeer {
 		notify: make(chan struct{}), connected: make(chan struct{}),
 		workersStopped: make(chan struct{}),
 	}
+}
+
+func (p *webRTCPeer) key() string { return webRTCKey(p.host, p.id) }
+
+// spawn starts a worker waited for by close; it fails once the peer is closed.
+func (p *webRTCPeer) spawn(work func()) bool {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return false
+	}
+	p.workers.Add(1)
+	p.mu.Unlock()
+	go func() {
+		defer p.workers.Done()
+		work()
+	}()
+	return true
 }
 
 func (p *webRTCPeer) eventLocked(e webRTCEvent) bool {
@@ -260,19 +282,38 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 			go p.fail("connection_failed")
 		}
 	})
-	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		p.mu.Lock()
-		if p.closed {
-			p.mu.Unlock()
-			return
+	var gate *audioGate
+	if audioTrack != nil {
+		gate = newAudioGate(audioTrack)
+	}
+	if microphone {
+		host := p.host
+		p.talk = newTalkController(p.ctx,
+			func(ctx context.Context) (talkSink, error) {
+				if manager.openAudio != nil {
+					return manager.openAudio(ctx, host)
+				}
+				return manager.OpenTalkback(ctx, host)
+			},
+			func(ctx context.Context, source rtpAudioReader, sink talkSink) error {
+				return transcodeOpusToAAC(ctx, ffmpeg, source, sink)
+			},
+			func(muted bool) {
+				if gate != nil {
+					gate.setMuted(muted)
+				}
+			},
+			p.spawn)
+		pc.OnDataChannel(p.attachTalkChannel)
+		pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+			if track.Kind() == webrtc.RTPCodecTypeAudio {
+				p.spawn(func() { p.receiveMicrophone(track) })
+			}
+		})
+		if !p.spawn(p.talk.run) {
+			return context.Canceled
 		}
-		p.workers.Add(1)
-		p.mu.Unlock()
-		go func() {
-			defer p.workers.Done()
-			p.receiveAudio(manager, track, ffmpeg)
-		}()
-	})
+	}
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
 		return fmt.Errorf("invalid SDP offer: %w", err)
 	}
@@ -339,35 +380,19 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 		}()
 	}
 	if transcodeVideo {
-		p.mu.Lock()
-		if p.closed {
-			p.mu.Unlock()
-			return context.Canceled
-		}
-		p.workers.Add(1)
-		p.mu.Unlock()
 		slog.Info("Netvue WebRTC adapting H.264", "input_profile_level", fmt.Sprintf("%x", sps[1:4]))
-		go func() {
-			defer p.workers.Done()
+		if !p.spawn(func() {
 			if err := transcodeH264ToWebRTC(p.ctx, ffmpeg, url, track); err != nil && p.ctx.Err() == nil {
 				p.fail("video_transcode_failed")
 			}
-		}()
-	}
-	if cameraAudio {
-		p.mu.Lock()
-		if p.closed {
-			p.mu.Unlock()
+		}) {
 			return context.Canceled
 		}
-		p.workers.Add(1)
-		p.mu.Unlock()
-		go func() {
-			defer p.workers.Done()
-			if err := transcodeAACToOpusRTP(p.ctx, ffmpeg, audioFrames, audioTrack); err != nil && p.ctx.Err() == nil {
-				p.fail("audio_conversion_failed")
-			}
-		}()
+	}
+	if cameraAudio {
+		if !p.spawn(func() { p.runCameraAudio(ffmpeg, audioFrames, gate) }) {
+			return context.Canceled
+		}
 	}
 	return nil
 }
@@ -381,118 +406,73 @@ func drainRTPSender(sender *webrtc.RTPSender) {
 	}
 }
 
-func (p *webRTCPeer) receiveAudio(manager *Manager, track *webrtc.TrackRemote, ffmpeg string) {
-	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeOpus) {
-		p.fail("audio_codec_unsupported")
-		return
-	}
-	source := &remoteAudio{track: track}
-	for {
-		first, err := source.ReadRTP(p.ctx)
-		if errors.Is(err, errAudioIdle) {
-			continue
-		}
-		if err != nil {
-			if p.ctx.Err() == nil && !source.ended {
-				p.fail("audio_failed")
-			}
-			return
-		}
-		var sink talkSink
-		if manager.openAudio != nil {
-			sink, err = manager.openAudio(p.ctx, p.host)
-		} else {
-			sink, err = manager.OpenTalkback(p.ctx, p.host)
-		}
-		if err != nil {
-			p.fail("audio_unavailable")
-			return
-		}
-		watchDone := make(chan struct{})
-		watchExited := make(chan struct{})
-		go func() {
-			defer close(watchExited)
-			select {
-			case <-sink.Done():
-				if p.ctx.Err() == nil && sink.Err() != nil {
-					p.fail("audio_unavailable")
-				}
-			case <-watchDone:
-			case <-p.ctx.Done():
-			}
-		}()
-		err = transcodeOpusToAAC(p.ctx, ffmpeg, &prefetchedAudio{first: first, source: source}, sink)
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		closeErr := sink.Close(closeCtx)
-		cancel()
-		close(watchDone)
-		<-watchExited
+// runCameraAudio keeps the camera-to-browser audio encoder alive. Its failures
+// never end the peer: the video does not depend on it.
+func (p *webRTCPeer) runCameraAudio(ffmpeg string, frames <-chan aacRTPFrame, gate *audioGate) {
+	for attempt := 0; ; attempt++ {
+		gate.restart()
+		started := time.Now()
+		err := transcodeAACToOpusRTP(p.ctx, ffmpeg, frames, gate)
 		if p.ctx.Err() != nil {
 			return
 		}
-		if closeErr != nil {
-			p.fail("audio_unavailable")
+		if time.Since(started) >= webRTCAudioStableAfter {
+			attempt = 0
+		}
+		if attempt >= webRTCAudioRestarts {
+			slog.Error("Netvue WebRTC camera audio disabled; video continues", "error", err)
 			return
 		}
-		if source.ended {
+		slog.Warn("Netvue WebRTC camera audio restarting", "attempt", attempt+1, "error", err)
+		select {
+		case <-time.After(time.Second << attempt):
+		case <-p.ctx.Done():
 			return
 		}
-		if errors.Is(err, errAudioIdle) {
+	}
+}
+
+func (p *webRTCPeer) attachTalkChannel(dc *webrtc.DataChannel) {
+	c := p.talk
+	if dc.Label() != talkChannelLabel || !c.claimChannel() {
+		_ = dc.Close()
+		return
+	}
+	c.setChannel(dc)
+	ready := func() { c.send(talkMessage{Type: "state", State: talkStateListening}) }
+	dc.OnOpen(ready)
+	dc.OnMessage(func(message webrtc.DataChannelMessage) {
+		if message.IsString {
+			c.handleMessage(message.Data)
+		}
+	})
+	dc.OnClose(func() { c.command(talkCommand{kind: "release"}) })
+	if dc.ReadyState() == webrtc.DataChannelStateOpen {
+		ready()
+	}
+}
+
+// receiveMicrophone drains the browser microphone track. Packets are only used
+// while a press is active; the control channel decides that, not their presence.
+func (p *webRTCPeer) receiveMicrophone(track *webrtc.TrackRemote) {
+	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeOpus) {
+		p.talk.setUnsupportedCodec()
+		return
+	}
+	for p.ctx.Err() == nil {
+		if err := track.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			return
+		}
+		packet, _, err := track.ReadRTP()
+		var networkErr net.Error
+		if errors.As(err, &networkErr) && networkErr.Timeout() {
 			continue
 		}
 		if err != nil {
-			p.fail("audio_failed")
 			return
 		}
-		p.fail("audio_failed")
-		return
+		p.talk.deliver(packet)
 	}
-}
-
-type remoteAudio struct {
-	track      *webrtc.TrackRemote
-	lastPacket time.Time
-	ended      bool
-}
-
-func (r *remoteAudio) ReadRTP(ctx context.Context) (*rtp.Packet, error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if err := r.track.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			return nil, err
-		}
-		packet, _, err := r.track.ReadRTP()
-		var networkErr net.Error
-		if errors.As(err, &networkErr) && networkErr.Timeout() {
-			if !r.lastPacket.IsZero() && time.Since(r.lastPacket) >= webRTCAudioIdleTimeout {
-				return nil, errAudioIdle
-			}
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			r.ended = true
-		}
-		if err == nil {
-			r.lastPacket = time.Now()
-		}
-		return packet, err
-	}
-}
-
-type prefetchedAudio struct {
-	first  *rtp.Packet
-	source *remoteAudio
-}
-
-func (r *prefetchedAudio) ReadRTP(ctx context.Context) (*rtp.Packet, error) {
-	if r.first != nil {
-		packet := r.first
-		r.first = nil
-		return packet, nil
-	}
-	return r.source.ReadRTP(ctx)
 }
 
 func findFFmpeg() (string, error) {

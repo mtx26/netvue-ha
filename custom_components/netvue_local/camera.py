@@ -20,9 +20,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from webrtc_models import RTCIceCandidateInit
 
-from .const import (
-    CONF_HOST, CONF_STREAM_URL, CONF_TALKBACK_EXPERIMENTAL, CONF_WEBRTC_ENABLED, DOMAIN,
-)
+from .const import CONF_HOST, CONF_STREAM_URL, DOMAIN
 from .coordinator import NetvueCoordinator
 from .webrtc import NetvueWebRTCProvider, TurnCredentials, async_get_turn_credentials
 
@@ -53,15 +51,14 @@ def _badge_image(image: bytes) -> bytes:
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    if entry.options.get(CONF_WEBRTC_ENABLED, False):
-        try:
-            turn = await async_get_turn_credentials(hass)
-        except HomeAssistantError as exc:
-            _LOGGER.warning("%s; keeping the local stream configuration", exc)
-        else:
-            if turn is not None:
-                async_add_entities([NetvueTurnCamera(entry, entry.runtime_data, turn)])
-                return
+    try:
+        turn = await async_get_turn_credentials(hass)
+    except HomeAssistantError as exc:
+        _LOGGER.warning("%s; keeping the local stream configuration", exc)
+    else:
+        if turn is not None:
+            async_add_entities([NetvueTurnCamera(entry, entry.runtime_data, turn)])
+            return
     async_add_entities([NetvueCamera(entry, entry.runtime_data)])
 
 
@@ -81,30 +78,17 @@ class NetvueCamera(CoordinatorEntity[NetvueCoordinator], Camera):
         self._url = url
         self._entry = entry
         self._host = entry.options.get(CONF_HOST, entry.data.get(CONF_HOST))
-        self._webrtc_enabled = entry.options.get(CONF_WEBRTC_ENABLED, False)
-        self._talkback_enabled = (
-            self._webrtc_enabled and entry.options.get(CONF_TALKBACK_EXPERIMENTAL, False)
-        )
-        capabilities_type = getattr(camera_component, "CameraEntityCapabilities", None)
-        if capabilities_type is not None:
-            self._attr_camera_entity_capabilities = capabilities_type(
-                two_way_audio=self._talkback_enabled
-            )
         self._netvue_provider = None
         self._remove_provider = None
         self.stream_options[CONF_RTSP_TRANSPORT] = "tcp"
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        if self._webrtc_enabled:
-            self._netvue_provider = self._make_webrtc_provider()
-            self._remove_provider = self._register_webrtc_provider(self._netvue_provider)
+        self._netvue_provider = self._make_webrtc_provider()
+        self._remove_provider = self._register_webrtc_provider(self._netvue_provider)
 
     def _make_webrtc_provider(self) -> NetvueWebRTCProvider:
-        return NetvueWebRTCProvider(
-            self.hass, self._entry, self, self._host, self._url,
-            allow_microphone=self._talkback_enabled,
-        )
+        return NetvueWebRTCProvider(self.hass, self._entry, self, self._host, self._url)
 
     def _register_webrtc_provider(self, provider: NetvueWebRTCProvider):
         return async_register_webrtc_provider(self.hass, provider)

@@ -36,12 +36,34 @@ vidéo attend notamment les paramètres SPS/PPS et une image IDR ; les détails
 et limites des horloges sont documentés dans la
 [spécification LAN](./netvue-lan-client-spec.md).
 
-En mode WebRTC optionnel, HA transmet la signalisation au gestionnaire. Un pair
-par caméra lit le RTSP, négocie SDP/ICE et envoie la vidéo ; le H.264 peut être
-adapté par FFmpeg si nécessaire. Pour l'audio caméra AAC, FFmpeg produit de
-l'Opus pour le navigateur. Le microphone expérimental suit le chemin inverse :
-Opus vers AAC, puis talkback sur la session caméra active. Le talkback reste
-désactivé par défaut et sa restitution réelle n'est pas établie.
+Le lecteur interactif est unique : la carte Lovelace `netvue-camera-card`
+(`custom_components/netvue_local/frontend/`) possède un seul `RTCPeerConnection`
+et passe par la signalisation WebRTC de HA, relayée au gestionnaire. Il n'y a
+ni option d'activation ni lecteur alternatif ; RTSP/MediaMTX reste disponible
+pour les intégrations externes. Jusqu'à 4 pairs par caméra (un par spectateur)
+lisent chacun le RTSP, négocient SDP/ICE et envoient la vidéo ; le H.264 peut
+être adapté par FFmpeg. L'audio caméra AAC devient de l'Opus via FFmpeg.
+
+Push-to-talk (modèle half-duplex applicatif) : l'offre contient un transceiver
+audio `sendrecv` sans piste et un canal de données `netvue-ptt`. Au `start`, la carte fait `replaceTrack(micro)` ; au `stop`,
+`replaceTrack(null)` : aucune renégociation, la vidéo n'est jamais touchée.
+Côté Go, un `talkController` (acteur, un par pair) possède l'état
+`listening → opening → speaking → listening`. Messages client→serveur :
+`start|stop|keepalive` avec un `id` strictement croissant (les ids obsolètes
+sont ignorés) ; serveur→client : `state` et `error` (`busy`, `unavailable`,
+`failed`, `timeout`, `unsupported`). Le serveur relâche seul après 2 s sans
+message, après 60 s d'appui, ou à la fermeture du canal/pair. L'ouverture du
+talkback n'est jamais annulée en cours d'écriture (cela couperait la connexion
+caméra) : elle est fermée juste après si le bouton a été relâché. Pendant
+`opening/speaking`, l'audio caméra du locuteur est coupé par `audioGate`
+(numéros de séquence RTP contigus, horodatages inchangés) ; les autres
+spectateurs ne sont pas coupés. Un seul locuteur par caméra (`ErrTalkBusy`).
+Opus vers AAC puis talkback sur la session caméra active ; la restitution sur
+le haut-parleur n'est pas établie sur matériel réel.
+
+Une erreur audio (décodeur, encodeur FFmpeg, trame endommagée) ne ferme jamais
+le pair : l'audio caméra redémarre au plus 3 fois (stabilité 30 s) puis reste
+désactivé, la vidéo continue.
 
 Le pair WebRTC détient sa connexion RTSP, son pair Pion et son multiplexeur
 ICE. La fermeture les libère et les workers média sont attendus par le

@@ -98,20 +98,13 @@ func transcodeOpusToAAC(ctx context.Context, ffmpeg string, source rtpAudioReade
 	decodeErr := readOpusPCM(ctx, source, &decoder, stdin, rate, channels)
 	close(inputDone)
 	_ = stdin.Close()
-	idle := errors.Is(decodeErr, errAudioIdle)
-	if decodeErr != nil && !idle {
+	if decodeErr != nil {
 		_ = cmd.Process.Kill()
 	}
 	outputErr := <-result
 	waitErr := cmd.Wait()
 	if outputErr != nil {
 		return outputErr
-	}
-	if idle {
-		if waitErr != nil {
-			return fmt.Errorf("AAC encoder failed after microphone idle: %w", waitErr)
-		}
-		return decodeErr
 	}
 	if decodeErr != nil {
 		return decodeErr
@@ -205,11 +198,6 @@ func readOpusPCM(ctx context.Context, source rtpAudioReader, decoder *opus.Decod
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return drain(true)
-			}
-			if errors.Is(err, errAudioIdle) {
-				if err := drain(true); err != nil {
-					return err
-				}
 			}
 			return err
 		}

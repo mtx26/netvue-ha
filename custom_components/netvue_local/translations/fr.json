@@ -36,15 +36,14 @@
     "step": {
       "init": {
         "title": "Options de la caméra",
-        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse. La signalisation WebRTC et le contrôle microphone restent expérimentaux. Le microphone est réservé aux essais et ne prouve pas la restitution du haut-parleur.",
-        "data": {"host": "Adresse IPv4 de la caméra", "webrtc_enabled": "Signalisation WebRTC expérimentale", "experimental_talkback": "Contrôle microphone expérimental (essais uniquement)"}
+        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse.",
+        "data": {"host": "Adresse IPv4 de la caméra"}
       }
     },
     "error": {
       "invalid_input": "Adresse IPv4 invalide.",
       "already_configured": "Cette caméra est déjà configurée.",
-      "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée.",
-      "talkback_requires_webrtc": "Le contrôle microphone expérimental nécessite la signalisation WebRTC."
+      "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée."
     },
     "abort": {
       "already_configured": "Cette caméra est déjà configurée."

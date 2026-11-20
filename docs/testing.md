@@ -51,7 +51,7 @@ réévaluer à chaque montée de version HA.
 
 Couverture : config flow manuelle, découverte LAN, validation, options,
 entités, image caméra, disponibilité, panne du gestionnaire, rechargement,
-suppression, WebRTC et `two_way_audio`, diagnostics (capteurs).
+suppression, fournisseur WebRTC (sans `two_way_audio` : le micro passe par la carte), 4 sessions maximum, migration des anciennes options, diagnostics (capteurs). Les modules de la carte sont testés par `node --test tests/frontend/`.
 
 ## Simulateur Netvue
 

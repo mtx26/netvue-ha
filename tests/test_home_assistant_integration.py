@@ -323,24 +323,7 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(OSError):
                 await camera.async_camera_image(width=80, height=80)
 
-    async def test_camera_loads_without_optional_two_way_audio_capability(self):
-        entry = SimpleNamespace(
-            entry_id="1", title="Fake",
-            data={"stream_url": "rtsp://127.0.0.1:8554/a"},
-            options={"webrtc_enabled": True, "experimental_talkback": True},
-        )
-        coordinator = SimpleNamespace(
-            data=CameraData(SessionStatus("supervising", None), True),
-            last_update_success=True,
-        )
-        with patch(
-            "custom_components.netvue_local.camera.camera_component",
-            SimpleNamespace(),
-        ):
-            camera = NetvueCamera(entry, coordinator)
-        self.assertTrue(camera._talkback_enabled)
-
-    async def test_camera_does_not_expose_talkback_even_with_webrtc_provider(self):
+    async def test_camera_never_exposes_native_two_way_audio(self):
         entry = SimpleNamespace(
             entry_id="1", title="Fake",
             data={"stream_url": "rtsp://127.0.0.1:8554/a"}, options={},
@@ -383,19 +366,6 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             provider.async_on_webrtc_candidate.assert_awaited_once_with("session", "candidate")
             camera.close_webrtc_session("session")
             provider.async_close_session.assert_called_once_with("session")
-
-        entry.options = {"webrtc_enabled": True, "experimental_talkback": True}
-        experimental_camera = NetvueCamera(entry, coordinator)
-        self.assertTrue(experimental_camera.camera_entity_capabilities.two_way_audio)
-        experimental_camera.hass = SimpleNamespace()
-        with patch("homeassistant.components.camera.entity.async_is_preview_feature_enabled",
-                   return_value=True):
-            with patch.object(
-                experimental_camera, "_async_get_supported_webrtc_provider",
-                new=unittest.mock.AsyncMock(return_value=provider),
-            ):
-                await experimental_camera.async_refresh_providers(write_state=False)
-            self.assertTrue(experimental_camera.camera_capabilities.two_way_audio)
 
     async def test_webrtc_provider_selection_and_signalling_preserve_ha_messages(self):
         entry = SimpleNamespace(

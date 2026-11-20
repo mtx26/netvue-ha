@@ -36,15 +36,14 @@
     "step": {
       "init": {
         "title": "Camera options",
-        "description": "The bridge will stop the old stream and start one for this address. WebRTC signalling and microphone control are experimental. Microphone control is for tests only and does not prove speaker playback.",
-        "data": {"host": "Camera IPv4 address", "webrtc_enabled": "Experimental WebRTC signalling", "experimental_talkback": "Experimental microphone control (test only)"}
+        "description": "The bridge will stop the old stream and start one for this address.",
+        "data": {"host": "Camera IPv4 address"}
       }
     },
     "error": {
       "invalid_input": "Invalid IPv4 address.",
       "already_configured": "This camera is already configured.",
-      "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed.",
-      "talkback_requires_webrtc": "Experimental microphone control requires WebRTC signalling."
+      "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed."
     },
     "abort": {
       "already_configured": "This camera is already configured."

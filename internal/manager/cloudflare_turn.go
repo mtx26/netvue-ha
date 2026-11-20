@@ -65,12 +65,15 @@ func (turn *cloudflareTURN) credentials(ctx context.Context) ([]webrtc.ICEServer
 		}
 	}
 	remaining := time.Until(turn.expires)
-	// A new session must have enough time to run even if a refresh failed.
-	if remaining <= webRTCLifetime {
+	// Relay credentials expire with the TTL: a session started on a nearly
+	// expired credential would lose its relay path, and the player reconnects.
+	if remaining <= turnMinRemaining {
 		return nil, 0
 	}
 	return turn.servers, remaining
 }
+
+const turnMinRemaining = 10 * time.Minute
 
 func (turn *cloudflareTURN) generate(ctx context.Context) ([]webrtc.ICEServer, error) {
 	url := "https://rtc.live.cloudflare.com/v1/turn/keys/" + turn.keyID + "/credentials/generate-ice-servers"

@@ -134,11 +134,25 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := browser.AddTransceiverFromTrack(audio, webrtc.RTPTransceiverInit{
+	audioTransceiver, err := browser.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
 		Direction: webrtc.RTPTransceiverDirectionSendrecv,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	talkChannel, err := browser.CreateDataChannel(talkChannelLabel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	talkStates := make(chan talkMessage, 64)
+	talkChannel.OnMessage(func(message webrtc.DataChannelMessage) {
+		var parsed talkMessage
+		if json.Unmarshal(message.Data, &parsed) == nil {
+			talkStates <- parsed
+		}
+	})
+	var negotiations atomic.Int32
+	browser.OnNegotiationNeeded(func() { negotiations.Add(1) })
 	connected := make(chan struct{}, 1)
 	browser.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		if state == webrtc.PeerConnectionStateConnected {
@@ -152,6 +166,7 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 	cameraAudioReceived := make(chan bool, 1)
 	videoFirstTimestamp := make(chan uint32, 1)
 	cameraAudioFirstTimestamp := make(chan uint32, 1)
+	var cameraAudioPackets, cameraAudioSeqGaps atomic.Int64
 	browser.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			_ = track.SetReadDeadline(time.Now().Add(45 * time.Second))
@@ -175,12 +190,22 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 				return
 			}
 			samples := make([]int16, 5760*2)
-			_ = track.SetReadDeadline(time.Now().Add(4 * time.Second))
-			for range 100 {
+			reported := false
+			var lastSequence uint16
+			for {
 				packet, _, err := track.ReadRTP()
 				if err != nil {
-					cameraAudioReceived <- false
+					if !reported {
+						cameraAudioReceived <- false
+					}
 					return
+				}
+				if cameraAudioPackets.Add(1) > 1 && packet.SequenceNumber != lastSequence+1 {
+					cameraAudioSeqGaps.Add(1)
+				}
+				lastSequence = packet.SequenceNumber
+				if reported {
+					continue
 				}
 				select {
 				case cameraAudioFirstTimestamp <- packet.Timestamp:
@@ -194,11 +219,11 @@ func TestWebRTCEndToEndSynthetic(t *testing.T) {
 				for _, sample := range samples[:count*2] {
 					if sample != 0 {
 						cameraAudioReceived <- true
-						return
+						reported = true
+						break
 					}
 				}
 			}
-			cameraAudioReceived <- false
 		}
 	})
 	offer, err := browser.CreateOffer(nil)
@@ -364,8 +389,14 @@ ready:
 	audioPublished := make(chan error, 1)
 	go func() {
 		<-videoStart
-		for _, frame := range aacFrames {
-			packets, err := audioEncoder.Encode([][]byte{frame})
+		for i := 0; ; i++ {
+			select {
+			case <-videoStop:
+				audioPublished <- nil
+				return
+			default:
+			}
+			packets, err := audioEncoder.Encode([][]byte{aacFrames[i%len(aacFrames)]})
 			if err != nil {
 				audioPublished <- err
 				return
@@ -378,7 +409,6 @@ ready:
 			}
 			time.Sleep(128 * time.Millisecond)
 		}
-		audioPublished <- nil
 	}()
 	close(videoStart)
 	audioPackets := make([][]byte, 150)
@@ -389,20 +419,30 @@ ready:
 	if fullFFmpeg != "" {
 		audioPackets = syntheticToneOpus(t, fullFFmpeg)
 	}
-	for _, packet := range audioPackets {
-		if err := audio.WriteSample(media.Sample{Data: packet, Duration: 20 * time.Millisecond}); err != nil {
+	waitTalk := func(state string, id uint64) {
+		t.Helper()
+		timeout := time.After(5 * time.Second)
+		for {
+			select {
+			case message := <-talkStates:
+				if message.Type == "error" {
+					t.Fatalf("push-to-talk error %q for press %d", message.Code, message.ID)
+				}
+				if message.State == state && message.ID == id {
+					return
+				}
+			case <-timeout:
+				t.Fatalf("no %q state for press %d", state, id)
+			}
+		}
+	}
+	sendTalk := func(kind string, id uint64) {
+		t.Helper()
+		if err := talkChannel.SendText(fmt.Sprintf(`{"t":%q,"id":%d}`, kind, id)); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(time.Millisecond)
 	}
-	select {
-	case <-sink.first:
-	case <-time.After(5 * time.Second):
-		p.mu.Lock()
-		events := append([]webRTCEvent(nil), p.events...)
-		p.mu.Unlock()
-		t.Fatalf("no ADTS from WebRTC audio, events: %+v", events)
-	}
+	waitTalk(talkStateListening, 0)
 	select {
 	case audible := <-cameraAudioReceived:
 		if !audible {
@@ -410,9 +450,6 @@ ready:
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no WebRTC audio from RTSP")
-	}
-	if err := <-audioPublished; err != nil {
-		t.Fatalf("publish synthetic RTSP AAC: %v", err)
 	}
 	select {
 	case videoTimestamp := <-videoFirstTimestamp:
@@ -429,74 +466,66 @@ ready:
 	case <-time.After(2 * time.Second):
 		t.Fatal("no first WebRTC video timestamp")
 	}
-	select {
-	case <-sink.closeEvents:
-		t.Fatal("talkback closed during a 5-second packet-suppressed silence")
-	case <-time.After(5 * time.Second):
+	if audioOpenCount.Load() != 0 {
+		t.Fatal("talkback opened without a push-to-talk press")
 	}
-	sink.mu.Lock()
-	framesBeforeSpeech := len(sink.frames)
-	sink.mu.Unlock()
-	for i := 0; i < 40; i++ {
-		if err := audio.WriteSample(media.Sample{
-			Data: audioPackets[i%len(audioPackets)], Duration: 20 * time.Millisecond,
-		}); err != nil {
+
+	// The same connection serves every press: no renegotiation, no new tracks.
+	negotiationsBeforeTalk := negotiations.Load()
+	const presses = 3
+	sender := audioTransceiver.Sender()
+	for id := uint64(1); id <= presses; id++ {
+		sink.mu.Lock()
+		framesBefore := len(sink.frames)
+		sink.mu.Unlock()
+		sendTalk("start", id)
+		waitTalk(talkStateSpeaking, id)
+		if err := sender.ReplaceTrack(audio); err != nil {
 			t.Fatal(err)
 		}
-	}
-	speechDeadline := time.Now().Add(5 * time.Second)
-	for {
-		sink.mu.Lock()
-		received := len(sink.frames) > framesBeforeSpeech
-		sink.mu.Unlock()
-		if received {
-			break
-		}
-		if time.Now().After(speechDeadline) {
-			t.Fatal("talkback did not accept audio after packet-suppressed silence")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if count := audioOpenCount.Load(); count != 1 {
-		t.Fatalf("talkback reopened during a short silence: open count %d", count)
-	}
-	select {
-	case <-sink.closeEvents:
-	case <-time.After(webRTCAudioIdleTimeout + 5*time.Second):
-		t.Fatal("microphone idle did not release the talkback sink")
-	}
-	sink.mu.Lock()
-	framesBeforeResume := len(sink.frames)
-	sink.mu.Unlock()
-	for i := 0; i < 40; i++ {
-		if err := audio.WriteSample(media.Sample{
-			Data: audioPackets[i%len(audioPackets)], Duration: 20 * time.Millisecond,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	resumeDeadline := time.Now().Add(5 * time.Second)
-	for {
-		sink.mu.Lock()
-		resumed := len(sink.frames) > framesBeforeResume
-		sink.mu.Unlock()
-		if resumed && audioOpenCount.Load() == 2 {
-			break
-		}
-		if time.Now().After(resumeDeadline) {
-			sink.mu.Lock()
-			frameCount := len(sink.frames)
-			sink.mu.Unlock()
-			p.mu.Lock()
-			eventSummary := make([]string, 0, len(p.events))
-			for _, event := range p.events {
-				eventSummary = append(eventSummary, fmt.Sprintf("%d:%s:%s", event.Seq, event.Type, event.Code))
+		for range 40 {
+			if err := audio.WriteSample(media.Sample{Data: audioPackets[0], Duration: 20 * time.Millisecond}); err != nil {
+				t.Fatal(err)
 			}
-			p.mu.Unlock()
-			t.Fatalf("talkback did not resume: opens=%d frames=%d peer_closed=%t events=%v",
-				audioOpenCount.Load(), frameCount, p.ctx.Err() != nil, eventSummary)
+			time.Sleep(5 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
+		speechDeadline := time.Now().Add(5 * time.Second)
+		for {
+			sink.mu.Lock()
+			received := len(sink.frames) > framesBefore
+			sink.mu.Unlock()
+			if received {
+				break
+			}
+			if time.Now().After(speechDeadline) {
+				t.Fatalf("press %d: talkback did not receive audio", id)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		sendTalk("stop", id)
+		if err := sender.ReplaceTrack(nil); err != nil {
+			t.Fatal(err)
+		}
+		waitTalk(talkStateListening, id)
+		select {
+		case <-sink.closeEvents:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("press %d: talkback was not released on stop", id)
+		}
+		// A late microphone packet after release must never reopen the channel.
+		time.Sleep(100 * time.Millisecond)
+		if count := audioOpenCount.Load(); count != int32(id) {
+			t.Fatalf("after press %d the talkback was opened %d times", id, count)
+		}
+	}
+	if got := negotiations.Load(); got != negotiationsBeforeTalk {
+		t.Fatalf("push-to-talk renegotiated the connection (%d -> %d)", negotiationsBeforeTalk, got)
+	}
+	if gaps := cameraAudioSeqGaps.Load(); gaps != 0 {
+		t.Fatalf("camera audio had %d RTP sequence gaps across mute/unmute", gaps)
+	}
+	if browser.ConnectionState() != webrtc.PeerConnectionStateConnected {
+		t.Fatalf("connection state after push-to-talk: %s", browser.ConnectionState())
 	}
 	stopVideo()
 	select {
@@ -529,7 +558,7 @@ ready:
 	}
 	select {
 	case count := <-videoPacketsReceived:
-		if count < 400 {
+		if count < 40 {
 			t.Fatalf("video did not continue through talkback and silence; received %d RTP packets", count)
 		}
 	case <-time.After(5 * time.Second):
@@ -803,7 +832,7 @@ func TestWebRTCCloseReservesCameraUntilWorkerFinishes(t *testing.T) {
 	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "closing")
 	p.workers.Add(1)
 	manager.mu.Lock()
-	manager.peers[p.host] = p
+	manager.peers[p.key()] = p
 	manager.mu.Unlock()
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -844,7 +873,7 @@ func TestCanceledWebRTCCloseReleasesCameraAfterWorkersStop(t *testing.T) {
 	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "closing")
 	p.workers.Add(1)
 	manager.mu.Lock()
-	manager.peers[p.host] = p
+	manager.peers[p.key()] = p
 	manager.wg.Add(1)
 	manager.mu.Unlock()
 	watchDone := make(chan struct{})
@@ -960,7 +989,7 @@ func TestWebRTCCloseActiveAtTombstoneLimit(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error { <-ctx.Done(); return nil })
 	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "active")
 	manager.mu.Lock()
-	manager.peers[p.host] = p
+	manager.peers[p.key()] = p
 	for i := 0; i < maxTombstones; i++ {
 		manager.tombstones[fmt.Sprintf("old/%d", i)] = time.Now().Add(time.Minute)
 	}
@@ -981,7 +1010,7 @@ func TestWebRTCCandidateLimit(t *testing.T) {
 	p.pc = pc
 	p.remoteCandidates = webRTCMaxEvents
 	manager.mu.Lock()
-	manager.peers[p.host] = p
+	manager.peers[p.key()] = p
 	manager.mu.Unlock()
 	defer p.close()
 	response := requestWebRTC(t, manager.Handler(), http.MethodPost,
@@ -996,7 +1025,7 @@ func TestWebRTCEstablishmentTimeout(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error { <-ctx.Done(); return nil })
 	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "session")
 	manager.mu.Lock()
-	manager.peers[p.host] = p
+	manager.peers[p.key()] = p
 	manager.wg.Add(1)
 	manager.mu.Unlock()
 	go manager.watchPeer(p, make(chan struct{}), 30*time.Millisecond)
@@ -1017,7 +1046,7 @@ func TestWebRTCCameraIsAvailableAfterPeerWorkersStop(t *testing.T) {
 	host := "192.168.10.20"
 	oldPeer := newWebRTCPeer(manager.ctx, host, "old-session")
 	manager.mu.Lock()
-	manager.peers[host] = oldPeer
+	manager.peers[oldPeer.key()] = oldPeer
 	manager.wg.Add(1)
 	manager.mu.Unlock()
 	watchDone := make(chan struct{})
@@ -1036,7 +1065,7 @@ func TestWebRTCCameraIsAvailableAfterPeerWorkersStop(t *testing.T) {
 	}
 	newPeer := newWebRTCPeer(manager.ctx, host, "new-session")
 	manager.mu.Lock()
-	manager.peers[host] = newPeer
+	manager.peers[newPeer.key()] = newPeer
 	manager.mu.Unlock()
 	defer newPeer.close()
 	if manager.webRTCPeer(host, newPeer.id) != newPeer {
@@ -1055,7 +1084,7 @@ func TestStopCameraWaitsForItsPeerOnly(t *testing.T) {
 	other := newWebRTCPeer(manager.ctx, "192.168.10.21", "other")
 	p.workers.Add(1)
 	manager.mu.Lock()
-	manager.peers[p.host], manager.peers[other.host] = p, other
+	manager.peers[p.key()], manager.peers[other.host] = p, other
 	manager.mu.Unlock()
 	defer other.close()
 	done := make(chan error, 1)
@@ -1120,7 +1149,7 @@ func TestWebRTCEventsLongPollAndTombstone(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error { <-ctx.Done(); return nil })
 	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "abc")
 	manager.mu.Lock()
-	manager.peers[p.host] = p
+	manager.peers[p.key()] = p
 	manager.mu.Unlock()
 	api := manager.Handler()
 	path := "/api/v1/cameras/192.168.10.20/webrtc/abc"

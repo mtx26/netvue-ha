@@ -187,11 +187,11 @@ class HassTestCase(unittest.IsolatedAsyncioTestCase):
             await self.hass.async_block_till_done()
         return entry
 
-    async def add_raw_entry(self, data: dict):
+    async def add_raw_entry(self, data: dict, options: dict | None = None):
         """Add a pre-existing config entry (e.g. legacy data) without going through the flow."""
         entry = config_entries.ConfigEntry(
             data=data, domain=DOMAIN, title="Raw", version=1, minor_version=1,
-            source="user", options={}, unique_id=None, discovery_keys={},
+            source="user", options=options or {}, unique_id=None, discovery_keys={},
             subentries_data=(),
         )
         await self.hass.config_entries.async_add(entry)

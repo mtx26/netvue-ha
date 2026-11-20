@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
@@ -218,4 +219,55 @@ func transcodeAACToOpusRTP(ctx context.Context, ffmpeg string, frames <-chan aac
 		}
 		receivedRTP = true
 	}
+}
+
+// audioGate owns the outgoing camera-audio RTP stream of one peer. It can mute
+// the stream (half-duplex push-to-talk) and survive encoder restarts while the
+// browser sees contiguous sequence numbers (a muted or restarted stretch is
+// never reported as packet loss). Timestamps are left untouched: they
+// follow the camera clock, so a mute or restart appears as a normal silence gap.
+type audioGate struct {
+	track rtpTrackWriter
+
+	mu      sync.Mutex
+	muted   bool
+	rebase  bool
+	offset  uint16
+	lastOut uint16
+	sent    bool
+}
+
+func newAudioGate(track rtpTrackWriter) *audioGate { return &audioGate{track: track} }
+
+func (g *audioGate) setMuted(muted bool) {
+	g.mu.Lock()
+	g.muted = muted
+	g.mu.Unlock()
+}
+
+// restart must be called before a new encoder instance writes, because its
+// sequence numbers are unrelated to the previous instance.
+func (g *audioGate) restart() {
+	g.mu.Lock()
+	g.rebase = true
+	g.mu.Unlock()
+}
+
+func (g *audioGate) WriteRTP(packet *rtp.Packet) error {
+	g.mu.Lock()
+	if g.muted {
+		g.rebase = true
+		g.mu.Unlock()
+		return nil
+	}
+	if g.rebase {
+		if g.sent {
+			g.offset = g.lastOut + 1 - packet.SequenceNumber
+		}
+		g.rebase = false
+	}
+	packet.SequenceNumber += g.offset
+	g.lastOut, g.sent = packet.SequenceNumber, true
+	g.mu.Unlock()
+	return g.track.WriteRTP(packet)
 }
