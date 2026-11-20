@@ -60,6 +60,10 @@ programme. Une session est active par commande `run` ; `serve` permet une
 session/superviseur par caméra, en parallèle. L'annulation ferme les connexions
 Netvue et RTSP.
 
+Les valeurs exactes de découverte, LOGIN, LIVE, watchdog, backoff, WebRTC,
+talkback, audio et TURN sont centralisées dans
+[Connexions Netvue, délais et reconnexions](./netvue-connections-and-reconnection.md).
+
 En cas d'arrêt, l'API et les journaux distinguent protocole, trame média,
 traitement H.264, connexion et publication, avec une étape et une raison
 prédéfinies lorsque disponibles. Les erreurs récupérables produisent un

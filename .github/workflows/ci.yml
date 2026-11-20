@@ -87,7 +87,7 @@ jobs:
         with:
           node-version: "24"
       - name: Card tests
-        run: node --test tests/frontend/
+        run: node --test tests/frontend/*.test.mjs
 
   build:
     name: Build integration binaries

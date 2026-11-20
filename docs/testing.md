@@ -51,7 +51,7 @@ réévaluer à chaque montée de version HA.
 
 Couverture : config flow manuelle, découverte LAN, validation, options,
 entités, image caméra, disponibilité, panne du gestionnaire, rechargement,
-suppression, fournisseur WebRTC (sans `two_way_audio` : le micro passe par la carte), 4 sessions maximum, migration des anciennes options, diagnostics (capteurs). Les modules de la carte sont testés par `node --test tests/frontend/`.
+suppression, fournisseur WebRTC (sans `two_way_audio` : le micro passe par la carte), 4 sessions maximum, migration des anciennes options, diagnostics (capteurs). Les modules de la carte sont testés par `node --test tests/frontend/*.test.mjs`.
 
 ## Simulateur Netvue
 
@@ -75,7 +75,11 @@ go test -race -count=1 ./tests/e2e/ ./internal/netvue/
 `tests/e2e` vérifie bridge → MediaMTX → lecteur (vidéo et audio décodables,
 synchronisation, reconnexion, changement de résolution, nettoyage), l'isolation
 d'une panne entre deux caméras et le chemin WebRTC → Go → AAC → caméra
-(contenu et cadence). Le test de résolution réessaie le décodage avec des
+(contenu et cadence). Le scénario microphone utilise le canal `netvue-ptt` :
+attente de `listening`, `start`, attente de `speaking`, keepalives pendant
+l'envoi Opus, puis `stop`. Il vérifie le retour caméra en réception
+(directions `1 → 3 → 1`) sans nouvelle authentification ni sélection LIVE.
+Le test de résolution réessaie le décodage avec des
 délais bornés pendant que MediaMTX remplace la publication RTSP. Il exige le
 port local 8554 libre.
 

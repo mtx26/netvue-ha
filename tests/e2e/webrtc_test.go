@@ -179,6 +179,50 @@ func TestE2EWebRTCTalkback(t *testing.T) {
 	if _, err := browser.AddTransceiverFromTrack(microphone, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv}); err != nil {
 		t.Fatal(err)
 	}
+	talkChannel, err := browser.CreateDataChannel("netvue-ptt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	talkMessages := make(chan webrtc.DataChannelMessage, 16)
+	talkChannel.OnMessage(func(message webrtc.DataChannelMessage) {
+		select {
+		case talkMessages <- message:
+		case <-ctx.Done():
+		}
+	})
+	sendTalk := func(kind string) {
+		t.Helper()
+		if err := talkChannel.SendText(fmt.Sprintf(`{"t":%q,"id":1}`, kind)); err != nil {
+			t.Fatalf("push-to-talk %s: %v", kind, err)
+		}
+	}
+	waitTalk := func(state string, id uint64) {
+		t.Helper()
+		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		for {
+			select {
+			case message := <-talkMessages:
+				var reply struct {
+					Type  string `json:"t"`
+					State string `json:"state"`
+					Code  string `json:"code"`
+					ID    uint64 `json:"id"`
+				}
+				if err := json.Unmarshal(message.Data, &reply); err != nil {
+					t.Fatalf("decode push-to-talk message: %v", err)
+				}
+				if reply.Type == "error" {
+					t.Fatalf("push-to-talk error %q for press %d", reply.Code, reply.ID)
+				}
+				if reply.Type == "state" && reply.State == state && reply.ID == id {
+					return
+				}
+			case <-waitCtx.Done():
+				t.Fatalf("waiting for push-to-talk %q (press %d): %v", state, id, waitCtx.Err())
+			}
+		}
+	}
 	connected := make(chan struct{})
 	var once sync.Once
 	browser.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
@@ -199,12 +243,23 @@ func TestE2EWebRTCTalkback(t *testing.T) {
 		return slices.Clone(gatheredCandidates)
 	}, connected)
 
-	// Speak a 700 Hz tone in real time, 20 ms per packet.
+	waitTalk("listening", 0)
+	beforeTalk := camera.State()
+	if beforeTalk.TalkFrames != 0 || slices.Contains(beforeTalk.Directions, 3) {
+		t.Fatalf("talkback opened without a press: %+v", beforeTalk)
+	}
 	packets := opusTone(t, stack.FFmpeg, 700, 4)
+	sendTalk("start")
+	waitTalk("speaking", 1)
+
+	// Speak a 700 Hz tone in real time, 20 ms per packet.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for i := 0; i < len(packets); i++ {
 		<-ticker.C
+		if i%25 == 0 {
+			sendTalk("keepalive")
+		}
 		if err := microphone.WriteSample(media.Sample{Data: packets[i], Duration: 20 * time.Millisecond}); err != nil {
 			t.Fatal(err)
 		}
@@ -212,12 +267,21 @@ func TestE2EWebRTCTalkback(t *testing.T) {
 			break
 		}
 	}
-	if err := camera.Wait(ctx, "talkback frames", func(s netvuetest.Snapshot) bool { return s.TalkFrames >= 12 }); err != nil {
+	talkCtx, cancelTalk := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelTalk()
+	if err := camera.Wait(talkCtx, "talkback frames", func(s netvuetest.Snapshot) bool { return s.TalkFrames >= 12 }); err != nil {
+		t.Fatal(err)
+	}
+	sendTalk("stop")
+	waitTalk("listening", 1)
+	if err := camera.Wait(talkCtx, "listen direction restored", func(s netvuetest.Snapshot) bool {
+		return slices.Equal(s.Directions, []int{1, 3, 1})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	state := camera.State()
-	if !slices.Contains(state.Directions, 3) {
-		t.Fatalf("bridge never selected the talkback direction (3): %v", state.Directions)
+	if state.Logins != beforeTalk.Logins || state.LiveRequests != beforeTalk.LiveRequests || state.Streaming != 1 {
+		t.Fatalf("push-to-talk restarted the camera session: before %+v, after %+v", beforeTalk, state)
 	}
 	if len(state.ProtocolError) != 0 {
 		t.Fatalf("protocol errors: %v", state.ProtocolError)
