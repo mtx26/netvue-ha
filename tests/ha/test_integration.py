@@ -13,6 +13,7 @@ from PIL import Image
 from homeassistant.components import camera
 from homeassistant.components.camera.webrtc import DATA_WEBRTC_PROVIDERS
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_COMPONENT_LOADED
 from homeassistant.data_entry_flow import InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -551,10 +552,29 @@ class FrontendTests(HassTestCase):
         ) as register:
             await self.create_entry()
             await self.create_entry(host=OTHER_HOST, name="Other")
+            await self.hass.async_block_till_done()
         register.assert_awaited_once()
         (config,) = register.await_args.args[0]
         self.assertEqual(config.url_path, "/netvue_local/frontend")
         self.assertTrue((Path(config.path) / "netvue-camera-card.js").is_file())
+        add_js.assert_called_once()
+        self.assertRegex(add_js.call_args.args[1],
+                         r"^/netvue_local/frontend/netvue-camera-card\.js\?v=\d")
+
+    async def test_card_module_is_registered_when_frontend_loads_later(self):
+        with patch("homeassistant.components.frontend.add_extra_js_url") as add_js, patch(
+            "homeassistant.components.http.HomeAssistantHTTP.async_register_static_paths",
+            new_callable=AsyncMock,
+        ):
+            await self.create_entry()
+            add_js.assert_not_called()
+
+            self.hass.config.components.add("frontend")
+            self.hass.bus.async_fire(
+                EVENT_COMPONENT_LOADED, {"component": "frontend"}
+            )
+            await self.hass.async_block_till_done()
+
         add_js.assert_called_once()
         self.assertRegex(add_js.call_args.args[1],
                          r"^/netvue_local/frontend/netvue-camera-card\.js\?v=\d")

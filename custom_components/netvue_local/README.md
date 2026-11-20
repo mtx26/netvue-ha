@@ -65,8 +65,9 @@ Le flux vidéo principal n'est pas modifié.
 ### Carte Lovelace `netvue-camera-card` (seul lecteur interactif)
 
 L'intégration sert la carte `netvue-camera-card` (dossier `frontend/`, sans
-étape de build) et l'ajoute automatiquement aux modules JS de Home Assistant
-dès que `frontend` est chargé. Ajoutez-la à un tableau de bord :
+étape de build) et l'ajoute automatiquement aux modules JS de Home Assistant,
+y compris si `frontend` se charge après l'intégration. Ajoutez-la à un tableau
+de bord :
 
 ```yaml
 type: custom:netvue-camera-card

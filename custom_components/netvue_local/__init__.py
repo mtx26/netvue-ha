@@ -12,6 +12,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
+from homeassistant.setup import async_when_setup
 
 from .bridge_api import BridgeError, async_stop_camera
 from .const import CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL, DOMAIN
@@ -25,22 +26,36 @@ PLATFORMS = [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.
 FRONTEND_URL = "/netvue_local/frontend"
 CARD_MODULE = "netvue-camera-card.js"
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
+_STATIC_PATH_KEY = f"{DOMAIN}_frontend_static_path_registered"
+_FRONTEND_MODULE_REQUESTED_KEY = f"{DOMAIN}_frontend_module_requested"
+_FRONTEND_MODULE_REGISTERED_KEY = f"{DOMAIN}_frontend_module_registered"
+
+
+async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None:
+    if hass.data.get(_FRONTEND_MODULE_REGISTERED_KEY):
+        return
+
+    from homeassistant.components import frontend
+
+    version = (await async_get_integration(hass, DOMAIN)).version
+    frontend.add_extra_js_url(hass, f"{FRONTEND_URL}/{CARD_MODULE}?v={version}")
+    hass.data[_FRONTEND_MODULE_REGISTERED_KEY] = True
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the Netvue Lovelace card once per Home Assistant instance."""
-    if hass.data.setdefault(f"{DOMAIN}_frontend_registered", False):
-        return True
-    hass.data[f"{DOMAIN}_frontend_registered"] = True
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(FRONTEND_URL, str(_FRONTEND_DIR), cache_headers=False)]
-    )
-    if "frontend" in hass.config.components:
-        # Imported late: the frontend component is optional (headless installs).
-        from homeassistant.components import frontend
+    if not hass.data.get(_STATIC_PATH_KEY):
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(FRONTEND_URL, str(_FRONTEND_DIR), cache_headers=False)]
+        )
+        hass.data[_STATIC_PATH_KEY] = True
 
-        version = (await async_get_integration(hass, DOMAIN)).version
-        frontend.add_extra_js_url(hass, f"{FRONTEND_URL}/{CARD_MODULE}?v={version}")
+    if "frontend" in hass.config.components:
+        await _async_register_frontend(hass, "frontend")
+    elif not hass.data.get(_FRONTEND_MODULE_REQUESTED_KEY):
+        hass.data[_FRONTEND_MODULE_REQUESTED_KEY] = True
+        # Frontend is optional; wait for it if it loads after this integration.
+        async_when_setup(hass, "frontend", _async_register_frontend)
     return True
 
 
