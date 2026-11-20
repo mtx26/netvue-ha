@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -661,6 +663,32 @@ func testWebRTCVideoOnly(t *testing.T, servers []webrtc.ICEServer) {
 	}
 	api := manager.Handler()
 	path := "/api/v1/cameras/" + host + "/webrtc/video_only"
+	if len(servers) == 0 {
+		manager.mu.Lock()
+		rtspURL := manager.cameras[host].RTSPURL
+		manager.cameras[host].RTSPURL = "rtsp://127.0.0.1:0/test"
+		manager.mu.Unlock()
+		response := requestWebRTC(t, api, http.MethodPut, path, map[string]string{"offer": offer.SDP})
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("unavailable RTSP source: %d %s", response.Code, response.Body)
+		}
+		if manager.webRTCPeer(host, "video_only") != nil {
+			t.Fatal("failed RTSP setup retained the camera peer")
+		}
+		manager.mu.Lock()
+		manager.cameras[host].RTSPURL = rtspURL
+		manager.mu.Unlock()
+
+		manager.source = "invalid"
+		response = requestWebRTC(t, api, http.MethodPut, path, map[string]string{"offer": offer.SDP})
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("invalid ICE source: %d %s", response.Code, response.Body)
+		}
+		if manager.webRTCPeer(host, "video_only") != nil {
+			t.Fatal("failed ICE setup retained the camera peer")
+		}
+		manager.source = "127.0.0.1"
+	}
 	response := requestWebRTC(t, api, http.MethodPut, path, map[string]string{"offer": offer.SDP})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("video-only offer: %d %s", response.Code, response.Body)
@@ -805,6 +833,126 @@ func TestWebRTCCloseReservesCameraUntilWorkerFinishes(t *testing.T) {
 	}
 	if manager.webRTCPeer(p.host, p.id) != nil {
 		t.Fatal("camera reservation was not released")
+	}
+}
+
+func TestCanceledWebRTCCloseReleasesCameraAfterWorkersStop(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "closing")
+	p.workers.Add(1)
+	manager.mu.Lock()
+	manager.peers[p.host] = p
+	manager.wg.Add(1)
+	manager.mu.Unlock()
+	watchDone := make(chan struct{})
+	go func() {
+		manager.watchPeer(p, make(chan struct{}), time.Hour)
+		close(watchDone)
+	}()
+	var release sync.Once
+	defer func() {
+		release.Do(p.workers.Done)
+		select {
+		case <-watchDone:
+		case <-time.After(time.Second):
+			t.Error("watcher did not finish during cleanup")
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodDelete,
+		"/api/v1/cameras/192.168.10.20/webrtc/closing", nil).WithContext(ctx)
+	requestDone := make(chan struct{})
+	go func() {
+		manager.Handler().ServeHTTP(httptest.NewRecorder(), request)
+		close(requestDone)
+	}()
+	select {
+	case <-p.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("close did not cancel peer")
+	}
+	cancel()
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("canceled close did not return")
+	}
+	if manager.webRTCPeer(p.host, p.id) == nil {
+		t.Fatal("camera released before worker stopped")
+	}
+	release.Do(p.workers.Done)
+	select {
+	case <-watchDone:
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not finish after worker stopped")
+	}
+	if manager.webRTCPeer(p.host, p.id) != nil {
+		t.Fatal("camera still reserved after worker stopped")
+	}
+}
+
+func TestPeerWorkerWaitsRemainIndependentAfterCancellation(t *testing.T) {
+	p := newWebRTCPeer(t.Context(), "192.168.10.20", "closing")
+	p.workers.Add(1)
+	p.close()
+	for range 10 {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := waitPeerWorkers(ctx, p); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled wait = %v, want context.Canceled", err)
+		}
+	}
+
+	finished := make(chan error, 1)
+	go func() { finished <- waitPeerWorkers(t.Context(), p) }()
+	select {
+	case err := <-finished:
+		t.Fatalf("wait returned before worker finished: %v", err)
+	default:
+	}
+	p.workers.Done()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("wait after worker finished: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("wait did not finish after worker stopped")
+	}
+}
+
+func TestCanceledPeerWaitsDoNotAccumulateGoroutines(t *testing.T) {
+	const childEnv = "NETVUE_TEST_PEER_WAIT_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		cmd := exec.CommandContext(t.Context(), os.Args[0],
+			"-test.run=^TestCanceledPeerWaitsDoNotAccumulateGoroutines$")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("isolated wait test: %v\n%s", err, output)
+		}
+		return
+	}
+
+	p := newWebRTCPeer(t.Context(), "192.168.10.20", "closing")
+	p.workers.Add(1)
+	defer p.workers.Done()
+	p.close()
+	before := runtime.NumGoroutine()
+	for range 64 {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := waitPeerWorkers(ctx, p); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled wait = %v", err)
+		}
+	}
+	if added := runtime.NumGoroutine() - before; added > 4 {
+		t.Fatalf("canceled waits left %d goroutines blocked", added)
 	}
 }
 

@@ -7,6 +7,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"debug/buildinfo"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -36,12 +38,34 @@ var (
 	buildErr  error
 )
 
+func raceInstrumented(info *debug.BuildInfo) bool {
+	for _, setting := range info.Settings {
+		if setting.Key == "-race" && setting.Value == "true" {
+			return true
+		}
+	}
+	return false
+}
+
 func bridgeBinary(t *testing.T) string {
 	t.Helper()
+	race := false
+	if info, ok := debug.ReadBuildInfo(); ok {
+		race = raceInstrumented(info)
+	}
 	if path := os.Getenv("NETVUE_TEST_GO_BRIDGE"); path != "" {
 		binary, err := exec.LookPath(path)
 		if err != nil {
 			t.Fatalf("NETVUE_TEST_GO_BRIDGE: %v", err)
+		}
+		if race {
+			info, err := buildinfo.ReadFile(binary)
+			if err != nil {
+				t.Fatalf("read NETVUE_TEST_GO_BRIDGE build info: %v", err)
+			}
+			if !raceInstrumented(info) {
+				t.Fatal("NETVUE_TEST_GO_BRIDGE must be built with -race when running race tests")
+			}
 		}
 		return binary
 	}
@@ -56,7 +80,12 @@ func bridgeBinary(t *testing.T) string {
 			name += ".exe"
 		}
 		buildPath = filepath.Join(dir, name)
-		command := exec.Command("go", "build", "-o", buildPath, "github.com/mtx26/netvue-ha/cmd/netvue-bridge")
+		args := []string{"build"}
+		if race {
+			args = append(args, "-race")
+		}
+		args = append(args, "-o", buildPath, "github.com/mtx26/netvue-ha/cmd/netvue-bridge")
+		command := exec.Command("go", args...)
 		if output, err := command.CombinedOutput(); err != nil {
 			buildErr = fmt.Errorf("go build: %v: %s", err, output)
 		}
@@ -86,8 +115,10 @@ type Stack struct {
 }
 
 type output struct {
-	mu sync.Mutex
-	b  bytes.Buffer
+	mu      sync.Mutex
+	b       bytes.Buffer
+	done    chan struct{}
+	waitErr error
 }
 
 func (o *output) Write(p []byte) (int, error) {
@@ -145,18 +176,125 @@ func TestChildEnvironmentExcludesCloudflareTURNCredentials(t *testing.T) {
 	}
 }
 
+func TestChildRaceReportsFailTheHarness(t *testing.T) {
+	const testName = "TestChildRaceReportsFailTheHarness"
+	if os.Getenv("NETVUE_E2E_RACE_TEST_CHILD") == "1" {
+		fmt.Fprintln(os.Stderr, os.Getenv("NETVUE_E2E_RACE_TEST_OUTPUT"))
+		conn, err := net.Dial("tcp", os.Getenv("NETVUE_E2E_RACE_TEST_ADDRESS"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if os.Getenv("NETVUE_E2E_RACE_TEST_MODE") == "crash" {
+			os.Exit(7)
+		}
+		_, _ = io.Copy(io.Discard, conn)
+		_ = conn.Close()
+		return
+	}
+	if os.Getenv("NETVUE_E2E_RACE_TEST_HARNESS") == "1" {
+		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		if err := listener.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var conn net.Conn
+		t.Cleanup(func() {
+			if conn != nil {
+				_ = conn.Close()
+			}
+		})
+		logs := startProcess(t, "child", []string{
+			"NETVUE_E2E_RACE_TEST_CHILD=1",
+			"NETVUE_E2E_RACE_TEST_ADDRESS=" + listener.Addr().String(),
+		}, os.Args[0], "-test.run=^"+testName+"$")
+		conn, err = listener.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if os.Getenv("NETVUE_E2E_RACE_TEST_MODE") == "crash" {
+			_, _ = io.Copy(io.Discard, conn)
+			select {
+			case <-logs.done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("child did not exit")
+			}
+		}
+		return
+	}
+
+	for _, tc := range []struct {
+		name   string
+		output string
+		mode   string
+		fail   bool
+	}{
+		{name: "clean", output: "normal child log"},
+		{name: "race", output: "WARNING: DATA RACE", fail: true},
+		{name: "crash", output: "child crashed", mode: "crash", fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
+			command.Env = append(os.Environ(),
+				"NETVUE_E2E_RACE_TEST_HARNESS=1",
+				"NETVUE_E2E_RACE_TEST_OUTPUT="+tc.output,
+				"NETVUE_E2E_RACE_TEST_MODE="+tc.mode,
+			)
+			output, err := command.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("harness timed out: %v\n%s", ctx.Err(), output)
+			}
+			if tc.fail {
+				if err == nil || !bytes.Contains(output, []byte(tc.output)) {
+					t.Fatalf("child failure did not fail the harness: err=%v output=%s", err, output)
+				}
+			} else if err != nil {
+				t.Fatalf("clean child failed the harness: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
 func startProcess(t *testing.T, name string, env []string, exe string, args ...string) *output {
 	t.Helper()
-	logs := &output{}
+	logs := &output{done: make(chan struct{})}
 	command := exec.Command(exe, args...)
 	command.Stdout, command.Stderr = logs, logs
 	command.Env = childEnvironment(os.Environ(), env)
 	if err := command.Start(); err != nil {
 		t.Fatalf("start %s: %v", name, err)
 	}
+	go func() {
+		logs.waitErr = command.Wait()
+		close(logs.done)
+	}()
 	t.Cleanup(func() {
-		_ = command.Process.Kill()
-		_ = command.Wait()
+		exitedEarly := false
+		select {
+		case <-logs.done:
+			exitedEarly = true
+		default:
+			if err := command.Process.Kill(); err != nil {
+				t.Errorf("stop %s: %v", name, err)
+				exitedEarly = true
+			}
+			select {
+			case <-logs.done:
+			case <-time.After(10 * time.Second):
+				t.Errorf("%s did not exit after being stopped", name)
+				return
+			}
+		}
+		if exitedEarly {
+			t.Errorf("%s exited unexpectedly: %v", name, logs.waitErr)
+		}
+		if strings.Contains(logs.String(), "WARNING: DATA RACE") {
+			t.Errorf("%s reported a Go data race", name)
+		}
 		if t.Failed() {
 			t.Logf("%s output:\n%s", name, logs.String())
 		}
@@ -236,7 +374,10 @@ paths:
 
 	api := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	path := os.Getenv("PATH") + string(os.PathListSeparator) + filepath.Dir(ffmpeg)
-	startProcess(t, "netvue-bridge", []string{"PATH=" + path}, bridge, "serve", "--source", "127.0.0.1", "--listen", api)
+	startProcess(t, "netvue-bridge", []string{
+		"PATH=" + path,
+		"GORACE=" + os.Getenv("GORACE") + " log_path=stderr",
+	}, bridge, "serve", "--source", "127.0.0.1", "--listen", api)
 	waitTCP(t, api)
 	return &Stack{API: "http://" + api, FFmpeg: ffmpeg}
 }

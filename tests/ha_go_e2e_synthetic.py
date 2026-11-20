@@ -21,6 +21,27 @@ from PIL import Image
 logging.basicConfig(level=logging.WARNING)
 
 
+def check_bridge_race_report(logs) -> None:
+    logs.seek(0)
+    output = logs.read()
+    if b"WARNING: DATA RACE" in output:
+        raise RuntimeError(f"Go bridge reported a data race:\n{output.decode(errors='replace')}")
+
+
+async def stop_process(process: subprocess.Popen | None, name: str) -> None:
+    if process is None:
+        return
+    if process.poll() is not None:
+        raise RuntimeError(f"{name} exited unexpectedly: {process.returncode}")
+    process.terminate()
+    try:
+        await asyncio.to_thread(process.wait, 10)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        await asyncio.to_thread(process.wait)
+        raise RuntimeError(f"{name} did not stop after termination") from exc
+
+
 async def wait_port(port: int, process: subprocess.Popen) -> None:
     for _ in range(100):
         if process.poll() is not None:
@@ -147,13 +168,17 @@ async def main():
     if len({camera_host, camera2_host, bridge_host}) != 3:
         raise RuntimeError("The synthetic cameras and bridge must use distinct addresses")
 
-    with tempfile.TemporaryDirectory(prefix="netvue-ha-go-") as directory:
+    with (
+        tempfile.TemporaryDirectory(prefix="netvue-ha-go-") as directory,
+        tempfile.TemporaryFile() as server_logs,
+        tempfile.TemporaryFile() as bridge_logs,
+    ):
         root = Path(directory)
         custom_components = root / "custom_components"
         custom_components.mkdir()
         shutil.copytree(component, custom_components / "netvue_local")
         server = subprocess.Popen([str(mediamtx), str(config)], stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.PIPE)
+                                  stderr=server_logs)
         bridge_process = None
         hass = None
 
@@ -172,7 +197,8 @@ async def main():
 
             bridge_process = subprocess.Popen(
                 [str(bridge), "serve", "--source", bridge_host],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=bridge_logs,
+                env={**os.environ, "GORACE": os.getenv("GORACE", "") + " log_path=stderr"},
             )
             await wait_port(8765, bridge_process)
             hass = core.HomeAssistant(str(root))
@@ -418,14 +444,17 @@ async def main():
                   "and malformed media all fail safely and restart",
                   flush=True)
         finally:
-            if hass is not None:
-                await hass.async_stop(force=True)
-            for process in (bridge_process, server):
-                if process is not None:
-                    if process.poll() is None:
-                        process.terminate()
-                        await asyncio.to_thread(process.wait, 10)
-                    process.stderr.close()
+            try:
+                if hass is not None:
+                    await hass.async_stop(force=True)
+            finally:
+                try:
+                    await stop_process(bridge_process, "Go bridge")
+                finally:
+                    try:
+                        await stop_process(server, "MediaMTX")
+                    finally:
+                        check_bridge_race_report(bridge_logs)
 
 
 if __name__ == "__main__":

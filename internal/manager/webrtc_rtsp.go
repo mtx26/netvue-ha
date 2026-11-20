@@ -1,0 +1,136 @@
+package manager
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
+	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
+)
+
+func (p *webRTCPeer) openRTSP(rawURL string) (*gortsplib.Client, *description.Session, error) {
+	u, err := base.ParseURL(rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	protocol := gortsplib.ProtocolTCP
+	client := &gortsplib.Client{
+		Scheme: u.Scheme, Host: u.Host, Protocol: &protocol,
+		ReadTimeout: 10 * time.Second, WriteTimeout: 2 * time.Second,
+	}
+	if err := client.Start(); err != nil {
+		return nil, nil, fmt.Errorf("start RTSP reader: %w", err)
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		client.Close()
+		return nil, nil, context.Canceled
+	}
+	p.rtsp = client
+	p.mu.Unlock()
+	desc, _, err := client.Describe(u)
+	if err != nil {
+		return nil, nil, fmt.Errorf("describe RTSP stream: %w", err)
+	}
+	return client, desc, nil
+}
+
+func (p *webRTCPeer) setupRTSPAudio(
+	client *gortsplib.Client,
+	desc *description.Session,
+	media *description.Media,
+	audioFormat *format.MPEG4Audio,
+	frames chan<- aacRTPFrame,
+) error {
+	decoder, err := audioFormat.CreateDecoder()
+	if err != nil {
+		return fmt.Errorf("create RTSP AAC decoder: %w", err)
+	}
+	if _, err := client.Setup(desc.BaseURL, media, 0, 0); err != nil {
+		return fmt.Errorf("setup RTSP audio: %w", err)
+	}
+	var invalidAudio sync.Once
+	client.OnPacketRTP(media, audioFormat, func(packet *rtp.Packet) {
+		units, err := decoder.Decode(packet)
+		if err != nil {
+			if errors.Is(err, rtpmpeg4audio.ErrMorePacketsNeeded) {
+				return
+			}
+			invalidAudio.Do(func() { go p.fail("audio_invalid") })
+			return
+		}
+		pts, ok := client.PacketPTS(media, packet)
+		if !ok {
+			invalidAudio.Do(func() { go p.fail("audio_timestamp_unavailable") })
+			return
+		}
+		sampleRate := audioFormat.ClockRate()
+		sourceTimestamp := uint32(pts * 48000 / int64(sampleRate))
+		samplesPerUnit := 1024
+		if audioFormat.Config.FrameLengthFlag {
+			samplesPerUnit = 960
+		}
+		for i, unit := range units {
+			frame, err := aacAccessUnitToADTS(audioFormat, unit)
+			if err != nil {
+				invalidAudio.Do(func() { go p.fail("audio_invalid") })
+				return
+			}
+			timestamp := sourceTimestamp + uint32(int64(i*samplesPerUnit)*48000/int64(sampleRate))
+			select {
+			case frames <- aacRTPFrame{data: frame, timestamp: timestamp}:
+			case <-p.ctx.Done():
+				return
+			default:
+				invalidAudio.Do(func() { go p.fail("audio_overrun") })
+				return
+			}
+		}
+	})
+	return nil
+}
+
+func (p *webRTCPeer) setupRTSPVideo(
+	client *gortsplib.Client,
+	desc *description.Session,
+	media *description.Media,
+	h264 *format.H264,
+	sps []byte,
+	track *webrtc.TrackLocalStaticRTP,
+) error {
+	if _, err := client.Setup(desc.BaseURL, media, 0, 0); err != nil {
+		return fmt.Errorf("setup RTSP video: %w", err)
+	}
+	decoder, err := h264.CreateDecoder()
+	if err != nil {
+		return err
+	}
+	var invalidVideo sync.Once
+	client.OnPacketRTP(media, h264, func(packet *rtp.Packet) {
+		_, _ = client.PacketPTS(media, packet)
+		accessUnit, err := decoder.Decode(packet)
+		if err != nil && !errors.Is(err, rtph264.ErrMorePacketsNeeded) &&
+			!errors.Is(err, rtph264.ErrNonStartingPacketAndNoPrevious) {
+			invalidVideo.Do(func() { go p.fail("video_invalid") })
+			return
+		}
+		for _, nalu := range accessUnit {
+			if nalu[0]&0x1f == 7 && (len(nalu) < 4 || nalu[1] != sps[1] || nalu[2] != sps[2] || nalu[3] > sps[3]) {
+				invalidVideo.Do(func() { go p.fail("video_format_changed") })
+				return
+			}
+		}
+		_ = track.WriteRTP(packet)
+	})
+	return nil
+}

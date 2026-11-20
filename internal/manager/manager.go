@@ -38,7 +38,8 @@ type Camera struct {
 
 type cameraSession struct {
 	Camera
-	// Serialize lifecycle operations for the same camera.
+	// Serialize lifecycle operations; recheck manager.cameras after acquiring it
+	// because the session may have been deleted while waiting.
 	operationMu sync.Mutex
 	cancel      context.CancelFunc
 	done        chan struct{}
@@ -109,14 +110,10 @@ func newManager(
 
 // AddCamera registers a camera. added is false for an existing identical camera.
 func (manager *Manager) AddCamera(host, streamName string) (Camera, bool, error) {
-	targetIP := net.ParseIP(host)
-	if targetIP == nil || targetIP.To4() == nil {
-		return Camera{}, false, fmt.Errorf("%w: camera address must be IPv4", ErrInvalidCamera)
+	host, err := normalizeCameraHost(host)
+	if err != nil {
+		return Camera{}, false, err
 	}
-	if err := netvue.ValidateLANIPv4(targetIP.String()); err != nil {
-		return Camera{}, false, fmt.Errorf("%w: invalid camera address: %v", ErrInvalidCamera, err)
-	}
-	host = targetIP.To4().String()
 	if host == manager.source {
 		return Camera{}, false, fmt.Errorf("%w: camera and source addresses must differ", ErrInvalidCamera)
 	}
@@ -271,11 +268,11 @@ func (manager *Manager) Camera(host string) (Camera, bool) {
 
 func (manager *Manager) Cameras() []Camera {
 	manager.mu.RLock()
-	defer manager.mu.RUnlock()
 	cameras := make([]Camera, 0, len(manager.cameras))
 	for _, session := range manager.cameras {
 		cameras = append(cameras, session.Camera)
 	}
+	manager.mu.RUnlock()
 	sort.Slice(cameras, func(i, j int) bool {
 		return cameras[i].Host < cameras[j].Host
 	})

@@ -114,7 +114,9 @@ func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 		}
 	}()
 
+	started := make(chan struct{})
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		close(started)
 		<-ctx.Done()
 		return nil
 	})
@@ -124,6 +126,7 @@ func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 	if _, _, err := manager.AddCamera(host, "test"); err != nil {
 		t.Fatal(err)
 	}
+	<-started
 	manager.mu.Lock()
 	manager.cameras[host].RTSPURL = fmt.Sprintf("rtsp://%s/test", server.NetListener().Addr())
 	manager.mu.Unlock()

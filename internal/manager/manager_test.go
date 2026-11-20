@@ -66,6 +66,27 @@ func TestManagerRunsFiveIndependentCameras(t *testing.T) {
 	}
 }
 
+func TestManagerCanonicalizesCameraAddressAcrossOperations(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+
+	camera, added, err := manager.AddCamera("::ffff:192.168.10.20", "one_camera")
+	if err != nil || !added || camera.Host != "192.168.10.20" {
+		t.Fatalf("AddCamera() = %+v, added %v, error %v", camera, added, err)
+	}
+	if _, added, err := manager.AddCamera("192.168.10.20", "one_camera"); err != nil || added {
+		t.Fatalf("duplicate AddCamera() = added %v, error %v", added, err)
+	}
+	if _, found := manager.Camera("::ffff:192.168.10.20"); !found {
+		t.Fatal("camera not found by its IPv4-mapped address")
+	}
+	if _, err := manager.StopCamera(context.Background(), "::ffff:192.168.10.20"); err != nil {
+		t.Fatalf("StopCamera() error = %v", err)
+	}
+}
+
 func TestManagerConcurrentAddStartsOneSession(t *testing.T) {
 	var starts atomic.Int32
 	started := make(chan struct{}, 1)

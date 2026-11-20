@@ -29,6 +29,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | CI d'endurance | `endurance.yml` : race répété, fuzz long, endurance multi-caméra, manuel ou nocturne ; premier run GitHub à confirmer |
 | 🧪 | Stabilité réelle 24 h/24 | Protocole préparé dans la [phase 35](../findings/phase35-fiabilite-prolongee-et-performances.md) ; aucune validation réelle effectuée |
 | 🧪 | Performances de référence | Benchmarks et profils CPU/heap du gestionnaire ; aucune optimisation justifiée |
+| 🔄 | Refonte architecturale | Migration et limites suivies dans [refactor-progress.md](./refactor-progress.md) ; E2E média et parcours HA conteneurisé synthétiques réussis, refonte incomplète |
 
 ## 2. Audio
 

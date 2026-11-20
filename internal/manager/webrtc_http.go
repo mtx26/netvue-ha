@@ -143,7 +143,7 @@ func (manager *Manager) watchPeer(p *webRTCPeer, sessionDone <-chan struct{}, es
 			p.fail("session_closed")
 		}
 	}
-	p.workers.Wait()
+	<-p.workersStopped
 	manager.mu.Lock()
 	if manager.peers[p.host] == p {
 		delete(manager.peers, p.host)
@@ -273,33 +273,21 @@ func (manager *Manager) handleWebRTCClose(w http.ResponseWriter, r *http.Request
 	manager.mu.Unlock()
 	if p != nil {
 		p.close()
-		done := make(chan struct{})
-		go func() {
-			p.workers.Wait()
-			manager.mu.Lock()
-			if manager.peers[host] == p {
-				delete(manager.peers, host)
-			}
-			manager.mu.Unlock()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-r.Context().Done():
+		if err := waitPeerWorkers(r.Context(), p); err != nil {
 			return
 		}
+		manager.mu.Lock()
+		if manager.peers[host] == p {
+			delete(manager.peers, host)
+		}
+		manager.mu.Unlock()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func waitPeerWorkers(ctx context.Context, p *webRTCPeer) error {
-	done := make(chan struct{})
-	go func() {
-		p.workers.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-p.workersStopped:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

@@ -13,11 +13,8 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
-	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/pion/ice/v4"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -59,13 +56,18 @@ type webRTCPeer struct {
 	answered         bool
 	remoteCandidates int
 	workers          sync.WaitGroup
+	workersStopped   chan struct{}
 	connected        chan struct{}
 	connectOnce      sync.Once
 }
 
 func newWebRTCPeer(parent context.Context, host, id string) *webRTCPeer {
 	ctx, cancel := context.WithTimeout(parent, webRTCLifetime)
-	return &webRTCPeer{ctx: ctx, cancel: cancel, host: host, id: id, notify: make(chan struct{}), connected: make(chan struct{})}
+	return &webRTCPeer{
+		ctx: ctx, cancel: cancel, host: host, id: id,
+		notify: make(chan struct{}), connected: make(chan struct{}),
+		workersStopped: make(chan struct{}),
+	}
 }
 
 func (p *webRTCPeer) eventLocked(e webRTCEvent) bool {
@@ -144,6 +146,11 @@ func (p *webRTCPeer) close() {
 	pc, mux, client := p.pc, p.iceMux, p.rtsp
 	close(p.notify)
 	p.mu.Unlock()
+	// No worker can be added after closed is set under mu.
+	go func() {
+		p.workers.Wait()
+		close(p.workersStopped)
+	}()
 	p.cancel()
 	if client != nil {
 		client.Close()
@@ -156,30 +163,48 @@ func (p *webRTCPeer) close() {
 	}
 }
 
-func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, microphone, cameraAudio bool) error {
-	u, err := base.ParseURL(url)
+func (p *webRTCPeer) createPeerConnection(manager *Manager) (*webrtc.PeerConnection, error) {
+	sourceIP := net.ParseIP(manager.source)
+	if sourceIP == nil || sourceIP.To4() == nil {
+		return nil, errors.New("WebRTC source address is invalid")
+	}
+	udpConn, err := net.ListenPacket("udp4", net.JoinHostPort(manager.source, "0"))
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("bind WebRTC ICE to source address: %w", err)
 	}
-	protocol := gortsplib.ProtocolTCP
-	client := &gortsplib.Client{
-		Scheme: u.Scheme, Host: u.Host, Protocol: &protocol,
-		ReadTimeout: 10 * time.Second, WriteTimeout: 2 * time.Second,
+	mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: udpConn})
+	settings := webrtc.SettingEngine{}
+	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	settings.SetIncludeLoopbackCandidate(sourceIP.IsLoopback())
+	settings.SetIPFilter(func(ip net.IP) bool { return ip.Equal(sourceIP) })
+	settings.SetICEUDPMux(mux)
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+	var config webrtc.Configuration
+	if manager.turn != nil {
+		config.ICEServers, _ = manager.turn.credentials(p.ctx)
 	}
-	if err := client.Start(); err != nil {
-		return fmt.Errorf("start RTSP reader: %w", err)
+	pc, err := api.NewPeerConnection(config)
+	if err != nil {
+		_ = mux.Close()
+		return nil, err
 	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		client.Close()
-		return context.Canceled
+		_ = pc.Close()
+		_ = mux.Close()
+		return nil, context.Canceled
 	}
-	p.rtsp = client
+	p.pc = pc
+	p.iceMux = mux
 	p.mu.Unlock()
-	desc, _, err := client.Describe(u)
+	return pc, nil
+}
+
+func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, microphone, cameraAudio bool) error {
+	client, desc, err := p.openRTSP(url)
 	if err != nil {
-		return fmt.Errorf("describe RTSP stream: %w", err)
+		return err
 	}
 	var h264 *format.H264
 	media := desc.FindFormat(&h264)
@@ -222,40 +247,10 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 		}
 		audioFrames = make(chan aacRTPFrame, 32)
 	}
-	sourceIP := net.ParseIP(manager.source)
-	if sourceIP == nil || sourceIP.To4() == nil {
-		return errors.New("WebRTC source address is invalid")
-	}
-	udpConn, err := net.ListenPacket("udp4", net.JoinHostPort(manager.source, "0"))
+	pc, err := p.createPeerConnection(manager)
 	if err != nil {
-		return fmt.Errorf("bind WebRTC ICE to source address: %w", err)
-	}
-	mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: udpConn})
-	settings := webrtc.SettingEngine{}
-	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	settings.SetIncludeLoopbackCandidate(sourceIP.IsLoopback())
-	settings.SetIPFilter(func(ip net.IP) bool { return ip.Equal(sourceIP) })
-	settings.SetICEUDPMux(mux)
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
-	var config webrtc.Configuration
-	if manager.turn != nil {
-		config.ICEServers, _ = manager.turn.credentials(p.ctx)
-	}
-	pc, err := api.NewPeerConnection(config)
-	if err != nil {
-		_ = mux.Close()
 		return err
 	}
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		_ = pc.Close()
-		_ = mux.Close()
-		return context.Canceled
-	}
-	p.pc = pc
-	p.iceMux = mux
-	p.mu.Unlock()
 	pc.OnICECandidate(p.candidate)
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		if state == webrtc.PeerConnectionStateConnected {
@@ -322,79 +317,15 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	if err := p.answer(answer.SDP); err != nil {
 		return err
 	}
-	var audioDecoder *rtpmpeg4audio.Decoder
 	if cameraAudio {
-		audioDecoder, err = audioFormat.CreateDecoder()
-		if err != nil {
-			return fmt.Errorf("create RTSP AAC decoder: %w", err)
-		}
-		if _, err := client.Setup(desc.BaseURL, audioMedia, 0, 0); err != nil {
-			return fmt.Errorf("setup RTSP audio: %w", err)
-		}
-		var invalidAudio sync.Once
-		client.OnPacketRTP(audioMedia, audioFormat, func(packet *rtp.Packet) {
-			units, err := audioDecoder.Decode(packet)
-			if err != nil {
-				if errors.Is(err, rtpmpeg4audio.ErrMorePacketsNeeded) {
-					return
-				}
-				invalidAudio.Do(func() { go p.fail("audio_invalid") })
-				return
-			}
-			pts, ok := client.PacketPTS(audioMedia, packet)
-			if !ok {
-				invalidAudio.Do(func() { go p.fail("audio_timestamp_unavailable") })
-				return
-			}
-			sampleRate := audioFormat.ClockRate()
-			sourceTimestamp := uint32(pts * 48000 / int64(sampleRate))
-			samplesPerUnit := 1024
-			if audioFormat.Config.FrameLengthFlag {
-				samplesPerUnit = 960
-			}
-			for i, unit := range units {
-				frame, err := aacAccessUnitToADTS(audioFormat, unit)
-				if err != nil {
-					invalidAudio.Do(func() { go p.fail("audio_invalid") })
-					return
-				}
-				timestamp := sourceTimestamp + uint32(int64(i*samplesPerUnit)*48000/int64(sampleRate))
-				select {
-				case audioFrames <- aacRTPFrame{data: frame, timestamp: timestamp}:
-				case <-p.ctx.Done():
-					return
-				default:
-					invalidAudio.Do(func() { go p.fail("audio_overrun") })
-					return
-				}
-			}
-		})
-	}
-	if !transcodeVideo {
-		if _, err := client.Setup(desc.BaseURL, media, 0, 0); err != nil {
-			return fmt.Errorf("setup RTSP video: %w", err)
-		}
-		videoDecoder, err := h264.CreateDecoder()
-		if err != nil {
+		if err := p.setupRTSPAudio(client, desc, audioMedia, audioFormat, audioFrames); err != nil {
 			return err
 		}
-		var invalidVideo sync.Once
-		client.OnPacketRTP(media, h264, func(packet *rtp.Packet) {
-			_, _ = client.PacketPTS(media, packet)
-			accessUnit, err := videoDecoder.Decode(packet)
-			if err != nil && !errors.Is(err, rtph264.ErrMorePacketsNeeded) &&
-				!errors.Is(err, rtph264.ErrNonStartingPacketAndNoPrevious) {
-				invalidVideo.Do(func() { go p.fail("video_invalid") })
-				return
-			}
-			for _, nalu := range accessUnit {
-				if nalu[0]&0x1f == 7 && (len(nalu) < 4 || nalu[1] != sps[1] || nalu[2] != sps[2] || nalu[3] > sps[3]) {
-					invalidVideo.Do(func() { go p.fail("video_format_changed") })
-					return
-				}
-			}
-			_ = track.WriteRTP(packet)
-		})
+	}
+	if !transcodeVideo {
+		if err := p.setupRTSPVideo(client, desc, media, h264, sps, track); err != nil {
+			return err
+		}
 	}
 	if !transcodeVideo || cameraAudio {
 		if _, err := client.Play(nil); err != nil {
