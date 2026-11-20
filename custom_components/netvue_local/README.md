@@ -80,6 +80,8 @@ version 0.2.3 ajoute le plein écran et deux cartes Lovelace complémentaires.
 La version 0.2.4 corrige l'ajout de la synthèse d'état sans configuration :
 elle détecte les entités Netvue liées au même appareil.
 La version 0.2.5 ajoute les éditeurs visuels des trois cartes.
+La version 0.2.6 versionne aussi le chemin des modules importés afin d'éviter
+qu'un ancien fichier JavaScript reste en cache après une mise à jour.
 Le bouton plein écran permet de revenir au tableau de bord avec Échap ou en
 appuyant de nouveau sur le bouton. Il est désactivé si le navigateur ne prend
 pas cette fonction en charge.

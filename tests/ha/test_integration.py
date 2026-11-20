@@ -555,7 +555,7 @@ class FrontendTests(HassTestCase):
             await self.hass.async_block_till_done()
         register.assert_awaited_once()
         (config,) = register.await_args.args[0]
-        self.assertEqual(config.url_path, "/netvue_local/frontend")
+        self.assertRegex(config.url_path, r"^/netvue_local/frontend/\d+\.\d+\.\d+$")
         for module in (
             "netvue-camera-card.js",
             "netvue-camera-wall-card.js",
@@ -564,8 +564,10 @@ class FrontendTests(HassTestCase):
         ):
             self.assertTrue((Path(config.path) / module).is_file())
         add_js.assert_called_once()
-        self.assertRegex(add_js.call_args.args[1],
-                         r"^/netvue_local/frontend/netvue-camera-card\.js\?v=\d")
+        self.assertEqual(
+            add_js.call_args.args[1],
+            f"{config.url_path}/netvue-camera-card.js",
+        )
 
     async def test_card_module_is_registered_when_frontend_loads_later(self):
         with patch("homeassistant.components.frontend.add_extra_js_url") as add_js, patch(
@@ -583,7 +585,7 @@ class FrontendTests(HassTestCase):
 
         add_js.assert_called_once()
         self.assertRegex(add_js.call_args.args[1],
-                         r"^/netvue_local/frontend/netvue-camera-card\.js\?v=\d")
+                         r"^/netvue_local/frontend/\d+\.\d+\.\d+/netvue-camera-card\.js$")
 
     async def test_headless_install_skips_the_extra_module(self):
         with patch("homeassistant.components.frontend.add_extra_js_url") as add_js:

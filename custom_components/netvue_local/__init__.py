@@ -38,15 +38,20 @@ async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None
     from homeassistant.components import frontend
 
     version = (await async_get_integration(hass, DOMAIN)).version
-    frontend.add_extra_js_url(hass, f"{FRONTEND_URL}/{CARD_MODULE}?v={version}")
+    frontend.add_extra_js_url(hass, f"{FRONTEND_URL}/{version}/{CARD_MODULE}")
     hass.data[_FRONTEND_MODULE_REGISTERED_KEY] = True
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the Netvue Lovelace card once per Home Assistant instance."""
     if not hass.data.get(_STATIC_PATH_KEY):
+        version = (await async_get_integration(hass, DOMAIN)).version
         await hass.http.async_register_static_paths(
-            [StaticPathConfig(FRONTEND_URL, str(_FRONTEND_DIR), cache_headers=False)]
+            [StaticPathConfig(
+                f"{FRONTEND_URL}/{version}",
+                str(_FRONTEND_DIR),
+                cache_headers=False,
+            )]
         )
         hass.data[_STATIC_PATH_KEY] = True
 
