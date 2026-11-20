@@ -1,11 +1,23 @@
 {
   "version": 1,
   "skills": {
+    "comments": {
+      "source": "aaronsilinskas/ai-skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/comments/SKILL.md",
+      "computedHash": "9e24094d6003644e7ae83bd4d1a43325c3a224ebffe2a89d8caaa683d9ce145d"
+    },
     "github-actions-efficiency": {
       "source": "github/awesome-copilot",
       "sourceType": "github",
       "skillPath": "skills/github-actions-efficiency/SKILL.md",
       "computedHash": "92628da7f3eb2ae5625168f31587712a3cd77ac9ba5a23ffc24e86fd12c4408c"
+    },
+    "go-coding-standards": {
+      "source": "eduardo-sl/go-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/(code-quality)/go-coding-standards/SKILL.md",
+      "computedHash": "5a26317862eeaa74574ccc613cdf6127ab45397d880e32d664ef35af6ab91009"
     },
     "go-test-quality": {
       "source": "eduardo-sl/go-agent-skills",
@@ -18,6 +30,12 @@
       "sourceType": "github",
       "skillPath": ".claude/skills/ha-integration-knowledge/SKILL.md",
       "computedHash": "8a4dcc4f9ed4bf4fad65a74edff86e01f47da71cb70a483c80471806dc62bd79"
+    },
+    "refactor": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/refactor/SKILL.md",
+      "computedHash": "87789a786b96f99ba0680e89345a975106e10e7db1071c7cdc2e76d507c449d6"
     },
     "test-gap-audit": {
       "source": "github/awesome-copilot",
