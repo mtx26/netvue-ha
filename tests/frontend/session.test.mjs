@@ -146,6 +146,7 @@ test("the card invokes browser timers with their window receiver", async () => {
   for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) {
     browser[name] = function (...args) {
       calls.push([name, this === browser]);
+      if (this !== browser) throw new TypeError("Illegal invocation");
       return clock.api[name](...args);
     };
   }
@@ -155,6 +156,7 @@ test("the card invokes browser timers with their window receiver", async () => {
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   };
   install("window", browser);
+  install("document", { hidden: false });
   install("HTMLElement", class {});
   install("customElements", { get: () => undefined, define: () => {} });
   for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) {
@@ -186,7 +188,18 @@ test("the card invokes browser timers with their window receiver", async () => {
     await flush();
     pc.setState("connected");
     pc.setState("disconnected");
+    clock.advance(5000);
+    assert.equal(card._view.state, "reconnecting");
+    clock.advance(1000);
+    await flush();
+    assert.equal(signalling.offers.length, 2);
+    signalling.last.emit({ type: "session", session_id: "S2" });
+    signalling.last.emit({ type: "answer", answer: "v=0 answer" });
+    await flush();
+    pc.setState("connected");
+    assert.equal(card._view.state, "live");
     card._stopSession();
+    assert.equal(clock.pending, 0);
     assert.deepEqual(new Set(calls.map(([name]) => name)),
       new Set(["setTimeout", "clearTimeout", "setInterval", "clearInterval"]));
     assert.ok(calls.every(([, bound]) => bound), "browser timers must be called on window");

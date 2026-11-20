@@ -75,6 +75,12 @@ entity: camera.ma_camera
 name: Entrée   # facultatif
 ```
 
+La version 0.2.2 corrige le plantage `Illegal invocation` du lecteur et
+incrémente l'URL du module pour éviter de réutiliser la version 0.2.1 en cache.
+Après mise à jour, redémarrez Home Assistant puis rechargez complètement
+la page du tableau de bord. Aucun changement de configuration TURN n'est
+nécessaire pour cette correction.
+
 La carte ouvre **une seule** `RTCPeerConnection` pour la vidéo H.264, l'audio
 caméra (Opus) et le push-to-talk, via les commandes WebSocket natives de HA
 (`camera/webrtc/offer`, `camera/webrtc/candidate`, `camera/webrtc/get_client_config`)
