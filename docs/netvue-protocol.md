@@ -10,8 +10,11 @@ historiques locales peuvent rester dans `findings/` (ignoré par Git).
 - Le code Android analysé contient une découverte UDP broadcast ; une
   requête unicast et sa réponse ont aussi été testées.
 - La recherche utilisateur Go envoie une requête V2 UDP/36868 à l'adresse
-  broadcast du sous-réseau de l'interface configurée, puis collecte pendant
-  deux secondes les réponses compatibles avec la session Go. L'adresse
+  broadcast du sous-réseau de l'interface configurée, la renvoie toutes les
+  500 ms et collecte pendant deux secondes les réponses compatibles avec la
+  session Go, dédupliquées par adresse. La découverte unicast d'une session
+  renvoie aussi sa requête. Choix Go : en production, une caméra derrière un
+  répéteur Wi-Fi a manqué 1 recherche sur 17 avec une requête unique. L'adresse
   annoncée doit correspondre à l'émetteur ; les autres paquets sont ignorés.
   Une recherche réelle autorisée a trouvé la caméra 2 depuis le serveur.
   Ce filtrage n'établit pas à lui seul la compatibilité vidéo du modèle.

@@ -23,6 +23,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Multi-caméra réelle | Sessions indépendantes testées en synthétique ; valider plusieurs caméras simultanément en conditions réelles |
 | 🧪 | Parcours Home Assistant réel | Valider le parcours complet avec le code actuel, de l'entrée HA jusqu'à l'aperçu caméra ; l'interface et l'aperçu ne sont pas vérifiés avec la version actuelle |
 | 🧪 | Métadonnées LAN | Série, firmware, capacités, SSID et niveau de signal exposés et testés hors ligne ; présence réelle des champs et compatibilité d'autres modèles à vérifier |
+| 💡 | Suivi d'IP par numéro de série | En production, une caméra derrière un répéteur a changé d'IP (DHCP) et le pont réessayait indéfiniment l'ancienne ; retrouver la caméra par découverte LAN et numéro de série ([phase 40](../findings/phase40-transcodage-webrtc-partage.md)) |
 | 💡 | Informations appareil supplémentaires | Étudier modèle, version matérielle, MAC, IP Wi-Fi/Ethernet, propriétaire et état cloud ; sources et faisabilité locale à vérifier, sans dépendance cloud obligatoire |
 | 🧪 | Stabilité réelle 24 h/24 | Sessions réelles bornées d'environ 10 à 13 min observées sur l'ancien pont ([phases 11](../findings/phase11-recovery.md), [15](../findings/phase15-real-stability.md)) ; aucune endurance de 24 h ni validation équivalente du code Go actuel |
 | 🔄 | Refonte architecturale | Migration et limites suivies dans [refactor-progress.md](./refactor-progress.md) ; E2E média et parcours HA conteneurisé synthétiques réussis, refonte incomplète |
@@ -62,7 +63,7 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | WebRTC | Un essai réel a rencontré une offre navigateur incompatible avec le profil H.264 du flux ; adaptation testée hors ligne, lecture WebRTC réelle non confirmée. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
+| 🧪 | WebRTC | Un essai réel a rencontré une offre navigateur incompatible avec le profil H.264 du flux ; adaptation testée hors ligne, lecture WebRTC réelle non confirmée. Un FFmpeg d'adaptation par caméra, partagé entre spectateurs (phase 40) : 9 transcodeurs simultanés avaient saturé la limite de 0,5 CPU en production. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
 | 🧪 | Micro à distance sans VPN | Cloudflare TURN facultatif par installation, configuration ICE limitée aux caméras Netvue en mode WebRTC natif ; négociation via relais local testée, Cloudflare et restitution du micro hors LAN à valider |
 | 🧪 | Carte caméra Lovelace | Lecteur WebRTC, audio, push-to-talk, plein écran et éditeur visuel ; affichage réel à confirmer |
 | 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras, regroupement état/diagnostic, découverte automatique des entités et éditeurs visuels ; affichage réel à confirmer |

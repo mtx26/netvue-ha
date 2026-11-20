@@ -5,15 +5,95 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
+	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 )
 
 var webRTCBaselineSPS = []byte{0x67, 0x42, 0xe0, 0x1f}
+
+// webRTCVideoAdapter is one camera's H.264 adaptation, shared by all its
+// WebRTC viewers so the encoder cost does not grow with the number of viewers.
+type webRTCVideoAdapter struct {
+	url    string
+	track  *webrtc.TrackLocalStaticRTP
+	cancel context.CancelFunc
+	done   chan struct{}
+	users  int
+}
+
+// broadcastTrack ignores per-viewer write errors: each viewer's own connection
+// state ends that viewer, while the others keep receiving the shared stream.
+type broadcastTrack struct{ track *webrtc.TrackLocalStaticRTP }
+
+func (b broadcastTrack) WriteRTP(packet *rtp.Packet) error {
+	_ = b.track.WriteRTP(packet)
+	return nil
+}
+
+func webRTCH264Capability(sps []byte) webrtc.RTPCodecCapability {
+	return webrtc.RTPCodecCapability{
+		MimeType: webrtc.MimeTypeH264, ClockRate: 90000,
+		SDPFmtpLine: fmt.Sprintf("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=%x", sps[1:4]),
+	}
+}
+
+// acquireVideoAdapter joins the camera's running adaptation or starts one.
+// Each successful call must be paired with releaseVideoAdapter.
+func (manager *Manager) acquireVideoAdapter(host, url, ffmpeg string, inputSPS []byte) (*webRTCVideoAdapter, error) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.closed {
+		return nil, context.Canceled
+	}
+	if adapter := manager.adapters[host]; adapter != nil && adapter.url == url {
+		adapter.users++
+		return adapter, nil
+	}
+	track, err := webrtc.NewTrackLocalStaticRTP(webRTCH264Capability(webRTCBaselineSPS), "video", "netvue")
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(manager.ctx)
+	adapter := &webRTCVideoAdapter{url: url, track: track, cancel: cancel, done: make(chan struct{}), users: 1}
+	manager.adapters[host] = adapter
+	manager.wg.Add(1)
+	slog.Info("Netvue WebRTC adapting H.264", "camera", host, "input_profile_level", fmt.Sprintf("%x", inputSPS[1:4]))
+	go func() {
+		defer manager.wg.Done()
+		err := manager.adaptVideo(ctx, ffmpeg, url, broadcastTrack{track})
+		if ctx.Err() == nil {
+			slog.Warn("Netvue WebRTC H.264 adaptation stopped", "camera", host, "error", err)
+		}
+		manager.mu.Lock()
+		if manager.adapters[host] == adapter {
+			delete(manager.adapters, host)
+		}
+		manager.mu.Unlock()
+		cancel()
+		close(adapter.done)
+	}()
+	return adapter, nil
+}
+
+func (manager *Manager) releaseVideoAdapter(host string, adapter *webRTCVideoAdapter) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	adapter.users--
+	if adapter.users > 0 {
+		return
+	}
+	if manager.adapters[host] == adapter {
+		delete(manager.adapters, host)
+	}
+	adapter.cancel()
+}
 
 func transcodeH264ToWebRTC(ctx context.Context, ffmpeg, url string, track rtpTrackWriter) error {
 	ctx, cancel := context.WithCancel(ctx)

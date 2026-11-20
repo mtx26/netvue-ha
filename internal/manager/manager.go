@@ -60,6 +60,8 @@ type Manager struct {
 	runWithTalk   func(context.Context, string, string, string, *netvue.LiveTalkback) error
 	openAudio     func(context.Context, string) (talkSink, error)
 	ffmpegPath    func() (string, error)
+	adaptVideo    func(context.Context, string, string, rtpTrackWriter) error
+	adapters      map[string]*webRTCVideoAdapter
 	turn          *cloudflareTURN
 	discoverLAN   func(context.Context, string) ([]netvue.DiscoveryResult, error)
 	discovered    map[string]netvue.DiscoveryResult
@@ -120,6 +122,8 @@ func newManager(
 		discovered:    make(map[string]netvue.DiscoveryResult),
 		cameras:       make(map[string]*cameraSession),
 		peers:         make(map[string]*webRTCPeer),
+		adaptVideo:    transcodeH264ToWebRTC,
+		adapters:      make(map[string]*webRTCVideoAdapter),
 		tombstones:    make(map[string]time.Time),
 		closeComplete: make(chan struct{}),
 	}, nil

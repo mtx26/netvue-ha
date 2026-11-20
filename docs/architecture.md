@@ -41,8 +41,12 @@ Le lecteur interactif est unique : la carte Lovelace `netvue-camera-card`
 et passe par la signalisation WebRTC de HA, relayée au gestionnaire. Il n'y a
 ni option d'activation ni lecteur alternatif ; RTSP/MediaMTX reste disponible
 pour les intégrations externes. Jusqu'à 4 pairs par caméra (un par spectateur)
-lisent chacun le RTSP, négocient SDP/ICE et envoient la vidéo ; le H.264 peut
-être adapté par FFmpeg. L'audio caméra AAC devient de l'Opus via FFmpeg.
+lisent chacun le RTSP, négocient SDP/ICE et envoient la vidéo. Si le navigateur
+n'accepte pas le profil natif, le H.264 est adapté par **un seul** FFmpeg
+(baseline 3.1, 720p, 15 i/s) par caméra, partagé par tous ses spectateurs via
+une piste Pion commune et arrêté avec le dernier d'entre eux : le coût CPU suit
+le nombre de caméras, pas de spectateurs. L'audio caméra AAC devient de l'Opus
+via FFmpeg (un encodeur léger par pair).
 
 Push-to-talk (modèle half-duplex applicatif) : l'offre contient un transceiver
 audio `sendrecv` sans piste et un canal de données `netvue-ptt`. Au `start`, la carte fait `replaceTrack(micro)` ; au `stop`,

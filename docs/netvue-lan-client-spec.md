@@ -131,7 +131,8 @@ paquet peut transporter plusieurs unités.
 
 **APK :** `Q=8`, `V=2`, `P=[]` en UDP port destination **36868**, notamment en
 broadcast sur le LAN. **Go :** utilise aussi un unicast ciblé et attend jusqu'à
-2 secondes ; la recherche broadcast collecte les réponses pendant cette durée.
+2 secondes en renvoyant la requête toutes les 500 ms (pertes Wi-Fi observées) ;
+la recherche broadcast collecte les réponses pendant cette durée.
 Ces 2 secondes sont une politique client, pas un délai du protocole.
 L'APK peut aussi placer une liste d'identifiants dans `P` pour filtrer la
 recherche ; le pont envoie un tableau vide.

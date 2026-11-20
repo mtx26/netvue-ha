@@ -22,6 +22,83 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+func TestWebRTCVideoAdapterIsSharedPerCamera(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	started := make(chan context.Context, 4)
+	fail := make(chan error, 1)
+	manager.adaptVideo = func(ctx context.Context, _, _ string, _ rtpTrackWriter) error {
+		started <- ctx
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-fail:
+			return err
+		}
+	}
+	sps := []byte{0x67, 0x4d, 0x00, 0x29}
+	const host, url = "192.168.10.20", "rtsp://127.0.0.1:8554/test"
+	first, err := manager.acquireVideoAdapter(host, url, "ffmpeg", sps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.acquireVideoAdapter(host, url, "ffmpeg", sps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := manager.acquireVideoAdapter("192.168.10.21", "rtsp://127.0.0.1:8554/other", "ffmpeg", sps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || first == other {
+		t.Fatal("viewers of one camera must share exactly one adaptation")
+	}
+	firstCtx, otherCtx := <-started, <-started
+	if len(started) != 0 {
+		t.Fatal("started more than one adaptation per camera")
+	}
+	manager.releaseVideoAdapter(host, first)
+	if firstCtx.Err() != nil || otherCtx.Err() != nil {
+		t.Fatal("adaptation stopped while a viewer remained")
+	}
+	manager.releaseVideoAdapter(host, second)
+	manager.releaseVideoAdapter("192.168.10.21", other)
+	for _, adapter := range []*webRTCVideoAdapter{first, other} {
+		select {
+		case <-adapter.done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("adaptation did not stop after its last viewer")
+		}
+	}
+
+	restarted, err := manager.acquireVideoAdapter(host, url, "ffmpeg", sps)
+	if err != nil || restarted == first {
+		t.Fatalf("a new viewer must start a new adaptation: %v", err)
+	}
+	joined, err := manager.acquireVideoAdapter(host, url, "ffmpeg", sps)
+	if err != nil || joined != restarted {
+		t.Fatalf("second viewer did not join: %v", err)
+	}
+	<-started
+	fail <- errors.New("encoder exited")
+	select {
+	case <-restarted.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("encoder failure was not reported to viewers")
+	}
+	replacement, err := manager.acquireVideoAdapter(host, url, "ffmpeg", sps)
+	if err != nil || replacement == restarted {
+		t.Fatalf("a failed adaptation was reused: %v", err)
+	}
+	<-started
+	manager.releaseVideoAdapter(host, restarted)
+	manager.releaseVideoAdapter(host, joined)
+	manager.releaseVideoAdapter(host, replacement)
+	<-replacement.done
+}
+
 func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 	ffmpeg := os.Getenv("NETVUE_TEST_FFMPEG")
 	if ffmpeg == "" {
@@ -130,8 +207,49 @@ func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 	manager.mu.Lock()
 	manager.cameras[host].RTSPURL = fmt.Sprintf("rtsp://%s/test", server.NetListener().Addr())
 	manager.mu.Unlock()
+	api := manager.Handler()
+	// Two simultaneous viewers must be served by one shared adaptation.
+	viewers := []string{"baseline", "second"}
+	received := make([]chan *rtp.Packet, len(viewers))
+	for i, id := range viewers {
+		received[i] = connectTranscodedBrowser(t, ctx, api, "/api/v1/cameras/"+host+"/webrtc/"+id)
+	}
+	for i := range viewers {
+		output, sps := receiveTranscodedFrames(t, ctx, f, received[i])
+		if sps.ProfileIdc != 66 || sps.LevelIdc != 31 || sps.Width() != 960 || sps.Height() != 720 {
+			t.Fatalf("unexpected output: profile=%d level=%d size=%dx%d", sps.ProfileIdc, sps.LevelIdc, sps.Width(), sps.Height())
+		}
+		decode := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-xerror",
+			"-f", "h264", "-i", "pipe:0", "-frames:v", "4", "-f", "null", "-")
+		decode.Stdin = bytes.NewReader(output)
+		if log, err := decode.CombinedOutput(); err != nil {
+			t.Fatalf("decode transcoded frames: %v: %s", err, log)
+		}
+	}
+	manager.mu.RLock()
+	adapter := manager.adapters[host]
+	shared := len(manager.adapters) == 1 && adapter != nil && adapter.users == len(viewers)
+	manager.mu.RUnlock()
+	if !shared {
+		t.Fatal("viewers did not share one H.264 adaptation")
+	}
+	for _, id := range viewers {
+		path := "/api/v1/cameras/" + host + "/webrtc/" + id
+		if response := requestWebRTC(t, api, http.MethodDelete, path, nil); response.Code != http.StatusNoContent {
+			t.Fatalf("DELETE: %d %s", response.Code, response.Body)
+		}
+	}
+	select {
+	case <-adapter.done:
+	case <-ctx.Done():
+		t.Fatal("adaptation outlived its viewers")
+	}
+}
+
+func connectTranscodedBrowser(t *testing.T, ctx context.Context, api http.Handler, path string) chan *rtp.Packet {
+	t.Helper()
 	browser := newLocalTestPeerConnection(t)
-	defer browser.Close()
+	t.Cleanup(func() { _ = browser.Close() })
 	received := make(chan *rtp.Packet, 32)
 	browser.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		defer close(received)
@@ -144,6 +262,7 @@ func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 			case <-ctx.Done():
 				return
 			case received <- packet:
+			default:
 			}
 		}
 	})
@@ -165,8 +284,6 @@ func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("no browser ICE candidates")
 	}
-	api := manager.Handler()
-	path := "/api/v1/cameras/" + host + "/webrtc/baseline"
 	response := requestWebRTC(t, api, http.MethodPut, path, map[string]string{"offer": browser.LocalDescription().SDP})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("PUT: %d %s", response.Code, response.Body)
@@ -199,6 +316,11 @@ func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 			}
 		}
 	}
+	return received
+}
+
+func receiveTranscodedFrames(t *testing.T, ctx context.Context, f *format.H264, received <-chan *rtp.Packet) ([]byte, h264.SPS) {
+	t.Helper()
 	decoder, err := f.CreateDecoder()
 	if err != nil {
 		t.Fatal(err)
@@ -245,16 +367,5 @@ func TestWebRTCTranscodesMain41RTSP(t *testing.T) {
 			t.Fatalf("unexpected RTP timestamp delta: %d", p.Timestamp-firstPTS)
 		}
 	}
-	if response := requestWebRTC(t, api, http.MethodDelete, path, nil); response.Code != http.StatusNoContent {
-		t.Fatalf("DELETE: %d %s", response.Code, response.Body)
-	}
-	if sps.ProfileIdc != 66 || sps.LevelIdc != 31 || sps.Width() != 960 || sps.Height() != 720 {
-		t.Fatalf("unexpected output: profile=%d level=%d size=%dx%d", sps.ProfileIdc, sps.LevelIdc, sps.Width(), sps.Height())
-	}
-	decode := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-xerror",
-		"-f", "h264", "-i", "pipe:0", "-frames:v", "4", "-f", "null", "-")
-	decode.Stdin = bytes.NewReader(output)
-	if log, err := decode.CombinedOutput(); err != nil {
-		t.Fatalf("decode transcoded frames: %v: %s", err, log)
-	}
+	return output, sps
 }

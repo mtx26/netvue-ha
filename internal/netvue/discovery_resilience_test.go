@@ -61,6 +61,47 @@ func TestDiscoverIgnoresMalformedReplyBeforeValidReply(t *testing.T) {
 	}
 }
 
+func TestDiscoverLANResendsLostRequest(t *testing.T) {
+	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	reply := discoveryResponse(t, "127.0.0.2", 5555, "test", 0)
+	done := make(chan error, 1)
+	go func() {
+		if err := listener.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			done <- err
+			return
+		}
+		buffer := make([]byte, 1024)
+		if _, _, err := listener.ReadFromUDP(buffer); err != nil {
+			done <- err
+			return
+		}
+		_, remote, err := listener.ReadFromUDP(buffer)
+		if err == nil {
+			_, err = listener.WriteToUDP(reply, remote)
+		}
+		done <- err
+	}()
+	_, subnet, err := net.ParseCIDR("127.0.0.0/30")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hosts, err := discoverLAN(context.Background(), net.IPv4(127, 0, 0, 1), subnet, listener.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("responder failed: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "127.0.0.2" {
+		t.Fatalf("discovered hosts = %v, want camera answering the resent request", hosts)
+	}
+}
+
 func TestDiscoverTimesOutAfterOnlyMalformedReply(t *testing.T) {
 	responderDone := startDiscoveryResponder(t, []byte("malformed"))
 

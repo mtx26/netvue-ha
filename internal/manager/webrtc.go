@@ -317,12 +317,31 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
 		return fmt.Errorf("invalid SDP offer: %w", err)
 	}
-	track, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
-		MimeType: webrtc.MimeTypeH264, ClockRate: 90000,
-		SDPFmtpLine: fmt.Sprintf("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=%x", videoSPS[1:4]),
-	}, "video", "netvue")
-	if err != nil {
-		return err
+	var track *webrtc.TrackLocalStaticRTP
+	if transcodeVideo {
+		adapter, err := manager.acquireVideoAdapter(p.host, url, ffmpeg, sps)
+		if err != nil {
+			return err
+		}
+		if !p.spawn(func() {
+			defer manager.releaseVideoAdapter(p.host, adapter)
+			select {
+			case <-adapter.done:
+				if p.ctx.Err() == nil {
+					p.fail("video_transcode_failed")
+				}
+			case <-p.ctx.Done():
+			}
+		}) {
+			manager.releaseVideoAdapter(p.host, adapter)
+			return context.Canceled
+		}
+		track = adapter.track
+	} else {
+		track, err = webrtc.NewTrackLocalStaticRTP(webRTCH264Capability(videoSPS), "video", "netvue")
+		if err != nil {
+			return err
+		}
 	}
 	sender, err := pc.AddTrack(track)
 	if err != nil {
@@ -378,16 +397,6 @@ func (p *webRTCPeer) start(manager *Manager, url, offer, ffmpeg string, micropho
 				p.fail("rtsp_stream_ended")
 			}
 		}()
-	}
-	if transcodeVideo {
-		slog.Info("Netvue WebRTC adapting H.264", "input_profile_level", fmt.Sprintf("%x", sps[1:4]))
-		if !p.spawn(func() {
-			if err := transcodeH264ToWebRTC(p.ctx, ffmpeg, url, track); err != nil && p.ctx.Err() == nil {
-				p.fail("video_transcode_failed")
-			}
-		}) {
-			return context.Canceled
-		}
 	}
 	if cameraAudio {
 		if !p.spawn(func() { p.runCameraAudio(ffmpeg, audioFrames, gate) }) {

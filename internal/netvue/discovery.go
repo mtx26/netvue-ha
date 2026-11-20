@@ -16,10 +16,11 @@ import (
 var errDiscoveryRejected = errors.New("camera rejected discovery response")
 
 const (
-	discoveryPort        = 36868
-	discoveryTimeout     = 2 * time.Second
-	maxDiscoveredCameras = 256
-	maxDiscoveryTextSize = 128
+	discoveryPort           = 36868
+	discoveryTimeout        = 2 * time.Second
+	discoveryResendInterval = 500 * time.Millisecond
+	maxDiscoveredCameras    = 256
+	maxDiscoveryTextSize    = 128
 )
 
 var ErrDiscoveryTimeout = errors.New("Netvue discovery timed out")
@@ -49,7 +50,7 @@ type DiscoveryResult struct {
 	Metadata       *DiscoveryMetadata `json:"metadata,omitempty"`
 }
 
-// DiscoverLAN sends one discovery request to the source interface's subnet.
+// DiscoverLAN broadcasts discovery requests to the source interface's subnet.
 // Only hosts compatible with the existing unicast session protocol are returned.
 func DiscoverLAN(ctx context.Context, source string) ([]string, error) {
 	discovered, err := DiscoverLANMetadata(ctx, source)
@@ -111,36 +112,94 @@ func DiscoverCameraMetadata(ctx context.Context, source, target string) (Discove
 	return device.discoveryResult(), nil
 }
 
-func openDiscoverySocket(ctx context.Context, source net.IP, target *net.UDPAddr) (*net.UDPConn, func() bool, error) {
+type discoverySocket struct {
+	ctx      context.Context
+	conn     *net.UDPConn
+	request  []byte
+	target   *net.UDPAddr
+	deadline time.Time
+	nextSend time.Time
+	stop     func() bool
+}
+
+func openDiscoverySocket(ctx context.Context, source net.IP, target *net.UDPAddr) (*discoverySocket, error) {
 	request, err := EncodeCommand([]map[string]any{{"Q": 8, "V": 2, "P": []any{}}})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source})
 	if err != nil {
-		return nil, nil, fmt.Errorf("bind discovery socket: %w", err)
-	}
-	closeOnError := func(err error) (*net.UDPConn, func() bool, error) {
-		_ = conn.Close()
-		return nil, nil, err
+		return nil, fmt.Errorf("bind discovery socket: %w", err)
 	}
 	deadline := time.Now().Add(discoveryTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		return closeOnError(fmt.Errorf("set discovery deadline: %w", err))
+		_ = conn.Close()
+		return nil, fmt.Errorf("set discovery deadline: %w", err)
 	}
-	stopCancel := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	socket := &discoverySocket{
+		ctx:      ctx,
+		conn:     conn,
+		request:  request,
+		target:   target,
+		deadline: deadline,
+		stop:     context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) }),
+	}
 	if err := contextError(ctx); err != nil {
-		stopCancel()
-		return closeOnError(err)
+		socket.close()
+		return nil, err
 	}
-	if _, err := conn.WriteToUDP(request, target); err != nil {
-		stopCancel()
-		return closeOnError(fmt.Errorf("send discovery request: %w", err))
+	if err := socket.send(); err != nil {
+		socket.close()
+		return nil, err
 	}
-	return conn, stopCancel, nil
+	return socket, nil
+}
+
+func (s *discoverySocket) close() {
+	s.stop()
+	_ = s.conn.Close()
+}
+
+func (s *discoverySocket) send() error {
+	if _, err := s.conn.WriteToUDP(s.request, s.target); err != nil {
+		return fmt.Errorf("send discovery request: %w", err)
+	}
+	s.nextSend = time.Now().Add(discoveryResendInterval)
+	return nil
+}
+
+// read resends the request until the deadline: Wi-Fi links, notably through
+// repeaters, occasionally drop the request or its response.
+func (s *discoverySocket) read(buffer []byte) (int, *net.UDPAddr, error) {
+	for {
+		readDeadline := s.deadline
+		if s.nextSend.Before(readDeadline) {
+			readDeadline = s.nextSend
+		}
+		if err := s.conn.SetReadDeadline(readDeadline); err != nil {
+			return 0, nil, fmt.Errorf("set discovery deadline: %w", err)
+		}
+		// Checked after resetting the deadline so a concurrent cancellation is not lost.
+		if err := contextError(s.ctx); err != nil {
+			return 0, nil, err
+		}
+		n, remote, err := s.conn.ReadFromUDP(buffer)
+		if err == nil {
+			return n, remote, nil
+		}
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() || !time.Now().Before(s.deadline) {
+			return 0, nil, err
+		}
+		if !time.Now().Before(s.nextSend) {
+			if err := s.send(); err != nil {
+				return 0, nil, err
+			}
+		}
+	}
 }
 
 func discoverLAN(ctx context.Context, source net.IP, subnet *net.IPNet, target *net.UDPAddr) ([]string, error) {
@@ -161,16 +220,15 @@ func discoverLANMetadata(
 	subnet *net.IPNet,
 	target *net.UDPAddr,
 ) ([]DiscoveryResult, error) {
-	conn, stopCancel, err := openDiscoverySocket(ctx, source, target)
+	socket, err := openDiscoverySocket(ctx, source, target)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	defer stopCancel()
+	defer socket.close()
 	found := make(map[string]DiscoveryResult)
 	buffer := make([]byte, 65535)
 	for {
-		n, remote, err := conn.ReadFromUDP(buffer)
+		n, remote, err := socket.read(buffer)
 		if err != nil {
 			if ctxErr := contextError(ctx); ctxErr != nil {
 				return nil, ctxErr
@@ -223,19 +281,18 @@ func discover(ctx context.Context, source, target string) (camera, error) {
 		return camera{}, fmt.Errorf("%w: source and camera addresses must differ", ErrProtocol)
 	}
 
-	conn, stopCancel, err := openDiscoverySocket(
+	socket, err := openDiscoverySocket(
 		ctx, sourceIP, &net.UDPAddr{IP: targetIP, Port: discoveryPort},
 	)
 	if err != nil {
 		return camera{}, err
 	}
-	defer conn.Close()
-	defer stopCancel()
+	defer socket.close()
 
 	buffer := make([]byte, 65535)
 	var malformed error
 	for {
-		n, remote, err := conn.ReadFromUDP(buffer)
+		n, remote, err := socket.read(buffer)
 		if err != nil {
 			if ctxErr := contextError(ctx); ctxErr != nil {
 				return camera{}, ctxErr
