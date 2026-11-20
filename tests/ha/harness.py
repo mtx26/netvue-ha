@@ -167,6 +167,7 @@ class HassTestCase(unittest.IsolatedAsyncioTestCase):
     async def _cleanup(self) -> None:
         await self.hass.async_stop(force=True)
         await self.bridge.stop()
+        await asyncio.get_running_loop().shutdown_default_executor()
         self._tmp.cleanup()
 
     # -- helpers ---------------------------------------------------------
