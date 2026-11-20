@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "github-actions-efficiency": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/github-actions-efficiency/SKILL.md",
+      "computedHash": "92628da7f3eb2ae5625168f31587712a3cd77ac9ba5a23ffc24e86fd12c4408c"
+    },
+    "go-test-quality": {
+      "source": "eduardo-sl/go-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/(testing)/go-test-quality/SKILL.md",
+      "computedHash": "e2c67c798cc7c3487bcac970f6f6187e2bbfa378161678e545e631529fb8f8dc"
+    },
+    "ha-integration-knowledge": {
+      "source": "home-assistant/core",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/ha-integration-knowledge/SKILL.md",
+      "computedHash": "8a4dcc4f9ed4bf4fad65a74edff86e01f47da71cb70a483c80471806dc62bd79"
+    },
+    "test-gap-audit": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/test-gap-audit/SKILL.md",
+      "computedHash": "48b45411d63aee8c841fc6aeaba8d65a5029d15bdc7f43b66b71e4c2ca9ad5e2"
+    }
+  }
+}
