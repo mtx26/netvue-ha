@@ -10,9 +10,11 @@ import (
 )
 
 const (
-	connectTimeout      = 2 * time.Second
-	videoSilenceTimeout = 3 * time.Second
-	videoStartupTimeout = 5 * time.Second
+	connectTimeout = 2 * time.Second
+	// Lossy Wi-Fi links (repeaters) can stall TCP for several seconds while a
+	// lost segment is retransmitted; the Android LAN client tolerates 30 s.
+	videoSilenceTimeout = 10 * time.Second
+	videoStartupTimeout = 15 * time.Second
 )
 
 var (

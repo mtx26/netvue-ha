@@ -26,7 +26,7 @@ func (p *webRTCPeer) openRTSP(rawURL string) (*gortsplib.Client, *description.Se
 	protocol := gortsplib.ProtocolTCP
 	client := &gortsplib.Client{
 		Scheme: u.Scheme, Host: u.Host, Protocol: &protocol,
-		ReadTimeout: 10 * time.Second, WriteTimeout: 2 * time.Second,
+		ReadTimeout: 12 * time.Second, WriteTimeout: 2 * time.Second,
 	}
 	if err := client.Start(); err != nil {
 		return nil, nil, fmt.Errorf("start RTSP reader: %w", err)

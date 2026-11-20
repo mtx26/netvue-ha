@@ -41,6 +41,16 @@ Analyser les journaux de production du 20/11/2026 (21:58–22:51 UTC) : coupures
   unique était perdue de façon intermittente via le répéteur.
 - Après une coupure vidéo, une caméra ignore parfois la découverte quelques
   secondes ; le backoff existant le gère.
+- **Confirmé après déploiement de `f514bce` :** `.100` passe découverte et
+  login, mais la liaison via le répéteur perd des paquets : notre requête LIVE
+  est retransmise (`retrans:1/4`) et la réponse arrive après environ 4 s ; des
+  segments vidéo pleins arrivent (`rcvmss:1448`) mais restent hors ordre
+  (`bytes_received` bloqué à 147). Les délais Go (5 s au démarrage, 3 s de
+  silence) expiraient avant la récupération TCP, alors que l'application Netvue
+  affiche la caméra (l'APK tolère 30 s en LAN).
+- **Correction :** délais vidéo portés à 15 s (première image, SPS/PPS) et
+  10 s (silence) ; lecteurs WebRTC ffmpeg/gortsplib à 12 s. Non validé sur
+  `.100` tant que l'image n'est pas redéployée.
 
 ## Modifications
 

@@ -129,7 +129,7 @@ confirmé. Les réponses et codecs peuvent varier selon le modèle.
   réponse examiné ne référence que la version 1. Cette incohérence DEX ne
   prouve pas qu'une fermeture protocolaire soit utilisée.
 - Go n'envoie pas de heartbeat applicatif. Il traite l'absence de vidéo
-  pendant 3 secondes comme une interruption (5 secondes pour la première
+  pendant 10 secondes comme une interruption (15 secondes pour la première
   image), ferme la session et la remet au superviseur. `RunContinuous` réessaie
   séquentiellement avec un délai exponentiel de 2 à 30 secondes; l'attente
   repart du début après 5 minutes de session stable. L'annulation ferme les

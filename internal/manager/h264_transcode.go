@@ -99,7 +99,7 @@ func transcodeH264ToWebRTC(ctx context.Context, ffmpeg, url string, track rtpTra
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, ffmpeg,
 		"-nostdin", "-hide_banner", "-loglevel", "error",
-		"-rtsp_transport", "tcp", "-timeout", "5000000",
+		"-rtsp_transport", "tcp", "-timeout", "12000000",
 		"-analyzeduration", "500000", "-probesize", "500000",
 		"-threads", "1", "-i", url,
 		"-map", "0:v:0", "-an", "-filter_threads", "1",

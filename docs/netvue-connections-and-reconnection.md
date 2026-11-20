@@ -33,12 +33,15 @@ plus un an.
 
 | Situation | Délai | Effet |
 |---|---:|---|
-| Première image publiable | 5 s | Fermeture : démarrage vidéo impossible. |
-| Après la première image | 3 s | Fermeture : flux vidéo interrompu. |
-| Changement SPS/PPS | 5 s | Attente de la prochaine IDR. |
+| Première image publiable | 15 s | Fermeture : démarrage vidéo impossible. |
+| Après la première image | 10 s | Fermeture : flux vidéo interrompu. |
+| Changement SPS/PPS | 15 s | Attente de la prochaine IDR. |
 
 La détection porte sur une image H.264 publiée, pas sur la réception brute ou
-l'audio. L'audio ne prolonge pas les deadlines vidéo.
+l'audio. L'audio ne prolonge pas les deadlines vidéo. Ces marges couvrent les
+retransmissions TCP d'un Wi-Fi à pertes (répéteur, observé en phase 40) ;
+l'APK tolère 30 s d'inactivité en LAN. Les lecteurs WebRTC (ffmpeg, gortsplib)
+attendent 12 s.
 
 ## Reconnexion
 
