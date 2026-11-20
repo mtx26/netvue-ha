@@ -162,7 +162,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._session = new NetvueSession({
       entity: this._config.entity,
       signalling: createSignalling(() => this._hass),
-      timers: { setTimeout, clearTimeout, setInterval, clearInterval },
+      timers: window,
       isHidden: () => document.hidden,
       getPlaybackTime: () => this._video.currentTime,
       onState: (view) => {

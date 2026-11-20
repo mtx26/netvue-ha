@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HEALTHY_RESET_MS, NetvueSession, RecoveryPolicy } from "../../custom_components/netvue_local/frontend/session.js";
-import { FakeClock } from "./helpers.mjs";
+import { FakeClock, FakePC, fakeSignalling, flush } from "./helpers.mjs";
 
 test("policy: 1 s, 2 s, 4 s then null", () => {
   const policy = new RecoveryPolicy();
@@ -137,4 +137,63 @@ test("callbacks of a superseded connection are ignored", () => {
   h.clock.advance(10000);
   assert.equal(h.conns.length, 2);
   assert.ok(!h.names().includes("live"));
+});
+
+test("the card invokes browser timers with their window receiver", async () => {
+  const clock = new FakeClock();
+  const calls = [];
+  const browser = { customCards: [] };
+  for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) {
+    browser[name] = function (...args) {
+      calls.push([name, this === browser]);
+      return clock.api[name](...args);
+    };
+  }
+  const originals = new Map();
+  const install = (name, value) => {
+    originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  };
+  install("window", browser);
+  install("HTMLElement", class {});
+  install("customElements", { get: () => undefined, define: () => {} });
+  for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) {
+    install(name, browser[name]);
+  }
+  let pc;
+  install("RTCPeerConnection", class extends FakePC {
+    constructor(config) {
+      super(config);
+      pc = this;
+    }
+  });
+  try {
+    const { NetvueCameraCard } = await import("../../custom_components/netvue_local/frontend/netvue-camera-card.js");
+    const signalling = fakeSignalling();
+    const card = new NetvueCameraCard();
+    card._config = { entity: "camera.test" };
+    card._hass = {
+      callWS: signalling.getClientConfig,
+      connection: { subscribeMessage: (callback, message) => signalling.offer(message.entity_id, message.offer, callback) },
+    };
+    card._video = { currentTime: 0 };
+    card._render = () => {};
+    card._setStream = () => {};
+    card._startSession();
+    await flush();
+    signalling.last.emit({ type: "session", session_id: "S1" });
+    signalling.last.emit({ type: "answer", answer: "v=0 answer" });
+    await flush();
+    pc.setState("connected");
+    pc.setState("disconnected");
+    card._stopSession();
+    assert.deepEqual(new Set(calls.map(([name]) => name)),
+      new Set(["setTimeout", "clearTimeout", "setInterval", "clearInterval"]));
+    assert.ok(calls.every(([, bound]) => bound), "browser timers must be called on window");
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
 });
