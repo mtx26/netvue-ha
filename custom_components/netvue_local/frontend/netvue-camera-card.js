@@ -6,6 +6,7 @@ import { KEYBOARD, PressOwner } from "./press-owner.js";
 import { pttErrorKey, translator } from "./i18n.js";
 import "./netvue-camera-wall-card.js";
 import "./netvue-camera-status-card.js";
+import "./card-editors.js";
 
 const HIDDEN_PAUSE_MS = 60000;
 const ERROR_TOAST_MS = 4000;
@@ -51,6 +52,10 @@ function el(tag, attrs = {}, parent) {
 }
 
 export class NetvueCameraCard extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("netvue-camera-card-editor");
+  }
+
   static getStubConfig(hass, entities) {
     const cameras = (entities || Object.keys((hass && hass.states) || {})).filter((id) =>
       id.startsWith("camera."),

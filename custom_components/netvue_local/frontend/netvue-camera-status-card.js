@@ -63,10 +63,14 @@ function discoverCameras(hass, entityIds) {
 }
 
 export class NetvueCameraStatusCard extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("netvue-camera-status-card-editor");
+  }
+
   static getStubConfig(hass, entities) {
     return {
       type: "custom:netvue-camera-status-card",
-      cameras: discoverCameras(hass, entities),
+      entities: discoverCameras(hass, entities).map((camera) => camera.camera),
     };
   }
 
@@ -75,14 +79,26 @@ export class NetvueCameraStatusCard extends HTMLElement {
     this._config = null;
     this._hass = null;
     this._autoDiscover = false;
+    this._selectedEntities = null;
     this._built = false;
   }
 
   setConfig(config) {
-    if (!config || (config.cameras !== undefined && !Array.isArray(config.cameras))) {
-      throw new Error("cameras must be a list of camera status entries");
+    if (!config
+      || (config.cameras !== undefined && !Array.isArray(config.cameras))
+      || (config.entities !== undefined && !Array.isArray(config.entities))) {
+      throw new Error("cameras and entities must be lists");
     }
-    this._autoDiscover = !config.cameras || config.cameras.length === 0;
+    this._selectedEntities = Array.isArray(config.entities)
+      ? [...config.entities]
+      : null;
+    if (this._selectedEntities
+      && (this._selectedEntities.some((entity) => typeof entity !== "string" || !CAMERA_RE.test(entity))
+        || new Set(this._selectedEntities).size !== this._selectedEntities.length)) {
+      throw new Error("entities must contain distinct camera entities");
+    }
+    this._autoDiscover = this._selectedEntities === null
+      && (!config.cameras || config.cameras.length === 0);
     const cameras = (config.cameras || []).map((camera) => {
       if (!camera || typeof camera !== "object"
         || !isEntity(camera.camera, CAMERA_RE, true)
@@ -98,15 +114,21 @@ export class NetvueCameraStatusCard extends HTMLElement {
       throw new Error("cameras must not contain duplicate camera entities");
     }
     this._config = {
-      cameras: this._autoDiscover ? discoverCameras(this._hass) : cameras,
+      cameras: this._selectedEntities !== null
+        ? discoverCameras(this._hass, this._selectedEntities)
+        : this._autoDiscover ? discoverCameras(this._hass) : cameras,
     };
     this._render();
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (this._autoDiscover && this._config) {
-      this._config.cameras = discoverCameras(hass);
+    if (this._config) {
+      if (this._selectedEntities !== null) {
+        this._config.cameras = discoverCameras(hass, this._selectedEntities);
+      } else if (this._autoDiscover) {
+        this._config.cameras = discoverCameras(hass);
+      }
     }
     this._render();
   }

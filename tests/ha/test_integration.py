@@ -560,6 +560,7 @@ class FrontendTests(HassTestCase):
             "netvue-camera-card.js",
             "netvue-camera-wall-card.js",
             "netvue-camera-status-card.js",
+            "card-editors.js",
         ):
             self.assertTrue((Path(config.path) / module).is_file())
         add_js.assert_called_once()

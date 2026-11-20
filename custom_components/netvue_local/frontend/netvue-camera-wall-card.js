@@ -5,6 +5,10 @@ const STYLE = `
 `;
 
 export class NetvueCameraWallCard extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("netvue-camera-wall-card-editor");
+  }
+
   static getStubConfig(hass, entities) {
     const cameras = (entities || Object.keys((hass && hass.states) || {}))
       .filter((entity) => entity.startsWith("camera."));

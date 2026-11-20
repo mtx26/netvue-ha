@@ -34,6 +34,11 @@ class FakeElement {
     this.listeners.get(type)?.(event);
   }
 
+  dispatchEvent(event) {
+    this.dispatch(event.type, event);
+    return true;
+  }
+
   getAttribute(name) {
     return this.attributes.get(name) ?? null;
   }
@@ -247,15 +252,57 @@ test("the status card discovers matching Netvue entities when no camera list is 
     },
   };
   const card = new StatusCard();
-  assert.deepEqual(StatusCard.getStubConfig(hass).cameras, [{
-    camera: "camera.entry",
-    unavailable: "binary_sensor.entry_camera_unavailable",
-    session: "sensor.entry_session",
-    diagnostic: "sensor.entry_diagnostic",
-  }]);
+  assert.deepEqual(StatusCard.getStubConfig(hass).entities, ["camera.entry"]);
 
   card.setConfig({ type: "custom:netvue-camera-status-card" });
   card.hass = hass;
   card.connectedCallback();
   assert.equal(card._count.textContent, "1/1 available");
+});
+
+test("all three cards expose visual editors that emit their updated configuration", () => {
+  const WallCard = customElements.get("netvue-camera-wall-card");
+  const StatusCard = customElements.get("netvue-camera-status-card");
+  const cases = [
+    {
+      editor: NetvueCameraCard.getConfigElement(),
+      config: { type: "custom:netvue-camera-card", entity: "camera.entry" },
+      values: { entity: "camera.garage", name: "Garage" },
+    },
+    {
+      editor: WallCard.getConfigElement(),
+      config: { type: "custom:netvue-camera-wall-card", entities: ["camera.entry"] },
+      values: { entities: ["camera.entry", "camera.garage"] },
+    },
+    {
+      editor: StatusCard.getConfigElement(),
+      config: { type: "custom:netvue-camera-status-card", entities: ["camera.entry"] },
+      values: { entities: ["camera.entry", "camera.garage"] },
+    },
+  ];
+
+  for (const { editor, config, values } of cases) {
+    editor.hass = { language: "en" };
+    editor.setConfig(config);
+    editor.connectedCallback();
+    let updated;
+    editor.addEventListener("config-changed", (event) => {
+      updated = event.detail.config;
+    });
+    editor._form.dispatch("value-changed", {
+      detail: { value: { ...editor._form.data, ...values } },
+    });
+    assert.deepEqual(updated, { ...config, ...values });
+  }
+
+  const statusEditor = StatusCard.getConfigElement();
+  statusEditor.setConfig({
+    type: "custom:netvue-camera-status-card",
+    cameras: [{
+      camera: "camera.entry",
+      unavailable: "binary_sensor.entry_camera_unavailable",
+    }],
+  });
+  statusEditor.connectedCallback();
+  assert.deepEqual(statusEditor._form.data.entities, ["camera.entry"]);
 });
