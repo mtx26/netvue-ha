@@ -39,7 +39,7 @@ jobs:
       - name: go test -race -count=N
         env:
           RACE_COUNT: ${{ inputs.race_count || '20' }}
-        run: go test -race -count="$RACE_COUNT" -timeout 50m ./...
+        run: go test -race -count="$RACE_COUNT" -skip '^TestManagerEndurance' -timeout 50m ./...
 
   fuzz:
     name: Long fuzz
@@ -70,5 +70,5 @@ jobs:
         env:
           ENDURANCE_COUNT: ${{ inputs.endurance_count || '10' }}
         run: |
-          go test -race -v -run 'Endurance' -count="$ENDURANCE_COUNT" \
+          go test -race -v -run '^TestManagerEndurance' -count="$ENDURANCE_COUNT" \
             -timeout 40m ./internal/manager

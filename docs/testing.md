@@ -91,12 +91,13 @@ fatale reste un échec.
 ## Endurance
 
 Workflow [endurance.yml](../.github/workflows/endurance.yml) (nuit ou
-`workflow_dispatch`, jamais sur PR) : `go test -race -count=N`, fuzzing long
-(`fuzztime`) et tests d'endurance multi-caméra (churn, panne isolée,
-goroutines, arrêt propre). En local :
+`workflow_dispatch`, jamais sur PR) : race répété sur la suite générale, fuzzing
+long (`fuzztime`) et tests d'endurance multi-caméra répétés. Les tests
+`TestManagerEndurance` sont exclus du job race général et restent exécutés par
+le job multi-caméra, sans supprimer de scénario. En local :
 
 ```sh
-go test -race -run Endurance -count=10 ./internal/manager
+go test -race -run '^TestManagerEndurance' -count=10 ./internal/manager
 ```
 
 ## Interpréter les erreurs
@@ -112,8 +113,14 @@ go test -race -run Endurance -count=10 ./internal/manager
 ## Ce que vérifie la CI
 
 [ci.yml](../.github/workflows/ci.yml), jobs parallèles : `go` (test, race, vet,
-build, fuzz 2 s par cible), `ha` (ruff + pytest), `build` + `integration`
+build, fuzz 2 s par cible, actionlint), `ha` (ruff + pytest), `build` + `integration`
 (binaires compilés une fois ; MediaMTX/FFmpeg, WebRTC/audio, E2E ; aucun `SKIP`
 toléré), `docker` (image construite, démarrée, `/api/v1/status`, rendu de la
 stack Portainer sans déploiement). `publish` n'a lieu que sur `main` après
 succès de tous les jobs ; jamais sur PR, aucun déploiement automatique.
+
+Sur une PR, les jobs `build`, `integration` et `docker` sont ignorés uniquement
+si tous les fichiers modifiés sont sous `docs/`, `findings/` ou `README.md`.
+Tout autre changement, ainsi que chaque push sur `main` et lancement manuel,
+conserve la validation complète avant publication. Les tests Go et HA rapides
+restent exécutés sur chaque PR.

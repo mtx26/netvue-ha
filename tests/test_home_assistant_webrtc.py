@@ -217,14 +217,21 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(lambda: not self.provider._sessions)
         self.assertEqual(sum(r[0] == "DELETE" for r in self.requests), 1)
 
-    async def test_single_peer_and_cancelled_shutdown_waits_for_delete(self):
+    async def test_handoff_and_cancelled_shutdown_waits_for_delete(self):
         self.block_delete = True
         await self.provider.async_handle_async_webrtc_offer(
             self.camera, "offer", "one", lambda _: None)
-        with self.assertRaisesRegex(HomeAssistantError, "already has"):
-            await self.provider.async_handle_async_webrtc_offer(
-                self.camera, "offer", "two", lambda _: None)
         await asyncio.wait_for(self.offer_started.wait(), 2)
+        await self.provider.async_handle_async_webrtc_offer(
+            self.camera, "offer", "two", lambda _: None)
+        await self.wait_for(lambda: any(
+            request[0] == "GET" and request[1].endswith("/one/events")
+            for request in self.requests
+        ))
+        self.assertEqual(
+            [request[1] for request in self.requests if request[0] == "PUT"],
+            ["/api/v1/cameras/192.168.10.2/webrtc/one"],
+        )
         task = asyncio.create_task(self.provider.async_shutdown())
         await asyncio.wait_for(self.delete_started.wait(), 2)
         task.cancel()

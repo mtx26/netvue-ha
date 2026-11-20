@@ -9,12 +9,14 @@ import socket
 import subprocess
 import sys
 import tempfile
+from io import BytesIO
 from pathlib import Path
 
 from aiohttp import ClientConnectorError, ClientSession
 from homeassistant import bootstrap, core, loader
 from homeassistant.components import camera
 from homeassistant.helpers import entity_registry as er
+from PIL import Image
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -243,6 +245,16 @@ async def main():
                 wait_for_next_keyframe=True), 20)
             if not image or not image.startswith(b"\xff\xd8"):
                 raise RuntimeError("Home Assistant did not decode a synthetic JPEG")
+            with Image.open(BytesIO(image)) as frame:
+                frame.load()
+                red, green, blue = frame.convert("RGB").getpixel(
+                    (frame.width // 2, frame.height // 2)
+                )
+            if red < 160 or red < green * 2 or red < blue * 2:
+                raise RuntimeError(
+                    f"Home Assistant decoded an unexpected image pixel: "
+                    f"RGB({red}, {green}, {blue}), expected synthetic red"
+                )
 
             await wait_camera_ready(camera2_host)
             async with ClientSession() as session:
