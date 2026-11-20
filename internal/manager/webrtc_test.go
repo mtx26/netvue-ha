@@ -23,6 +23,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	"github.com/pion/ice/v4"
 	"github.com/pion/opus"
 	"github.com/pion/rtp"
 	"github.com/pion/turn/v5"
@@ -31,6 +32,26 @@ import (
 )
 
 type testRTSPHandler struct{ stream *gortsplib.ServerStream }
+
+type blockingClosePacketConn struct {
+	net.PacketConn
+	closeStarted chan struct{}
+	allowClose   chan struct{}
+	releaseOnce  sync.Once
+	closeOnce    sync.Once
+	closeCalls   atomic.Int32
+}
+
+func (conn *blockingClosePacketConn) Close() error {
+	conn.closeCalls.Add(1)
+	conn.closeOnce.Do(func() { close(conn.closeStarted) })
+	<-conn.allowClose
+	return conn.PacketConn.Close()
+}
+
+func (conn *blockingClosePacketConn) release() {
+	conn.releaseOnce.Do(func() { close(conn.allowClose) })
+}
 
 func (h *testRTSPHandler) OnDescribe(*gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	return &base.Response{StatusCode: base.StatusOK}, h.stream, nil
@@ -836,6 +857,83 @@ func TestWebRTCCloseReservesCameraUntilWorkerFinishes(t *testing.T) {
 	}
 }
 
+func TestWebRTCCloseWaitsForResourcesWhenClosersRace(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	packetConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &blockingClosePacketConn{
+		PacketConn: packetConn, closeStarted: make(chan struct{}), allowClose: make(chan struct{}),
+	}
+	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "closing")
+	p.iceMux = ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn})
+	manager.mu.Lock()
+	manager.peers[p.host] = p
+	manager.wg.Add(1)
+	manager.mu.Unlock()
+	watchFinished := make(chan struct{})
+	go func() {
+		manager.watchPeer(p, make(chan struct{}), time.Hour)
+		close(watchFinished)
+	}()
+	t.Cleanup(func() {
+		conn.release()
+		p.close()
+		select {
+		case <-watchFinished:
+		case <-time.After(time.Second):
+			t.Error("peer watcher did not finish during cleanup")
+		}
+	})
+
+	closeFinished := make(chan struct{})
+	go func() {
+		p.close()
+		close(closeFinished)
+	}()
+	select {
+	case <-conn.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("peer close did not reach ICE resource cleanup")
+	}
+
+	p.close()
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	err = waitPeerStopped(ctx, p)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait before resource close = %v, want context deadline", err)
+	}
+	if manager.webRTCPeer(p.host, p.id) == nil {
+		t.Fatal("camera reservation released before ICE resources closed")
+	}
+
+	conn.release()
+	select {
+	case <-closeFinished:
+	case <-time.After(time.Second):
+		t.Fatal("peer close did not finish after ICE resource was released")
+	}
+	if err := waitPeerStopped(t.Context(), p); err != nil {
+		t.Fatalf("wait after peer close: %v", err)
+	}
+	select {
+	case <-watchFinished:
+	case <-time.After(time.Second):
+		t.Fatal("peer watcher did not release its reservation")
+	}
+	if manager.webRTCPeer(p.host, p.id) != nil {
+		t.Fatal("camera reservation retained after peer stopped")
+	}
+	if got := conn.closeCalls.Load(); got != 1 {
+		t.Fatalf("ICE resource closed %d times, want 1", got)
+	}
+}
+
 func TestCanceledWebRTCCloseReleasesCameraAfterWorkersStop(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
 		<-ctx.Done()
@@ -903,13 +1001,13 @@ func TestPeerWorkerWaitsRemainIndependentAfterCancellation(t *testing.T) {
 	for range 10 {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		if err := waitPeerWorkers(ctx, p); !errors.Is(err, context.Canceled) {
+		if err := waitPeerStopped(ctx, p); !errors.Is(err, context.Canceled) {
 			t.Fatalf("canceled wait = %v, want context.Canceled", err)
 		}
 	}
 
 	finished := make(chan error, 1)
-	go func() { finished <- waitPeerWorkers(t.Context(), p) }()
+	go func() { finished <- waitPeerStopped(t.Context(), p) }()
 	select {
 	case err := <-finished:
 		t.Fatalf("wait returned before worker finished: %v", err)
@@ -947,7 +1045,7 @@ func TestCanceledPeerWaitsDoNotAccumulateGoroutines(t *testing.T) {
 	for range 64 {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		if err := waitPeerWorkers(ctx, p); !errors.Is(err, context.Canceled) {
+		if err := waitPeerStopped(ctx, p); !errors.Is(err, context.Canceled) {
 			t.Fatalf("canceled wait = %v", err)
 		}
 	}

@@ -292,6 +292,12 @@ ne sont pas nécessairement un rebouclage naturel.
 - Les horloges audio et vidéo doivent être reliées et monotones. L'hypothèse
   d'une origine commune et la synchronisation perceptuelle restent à mesurer
   sur chaque appareil ; une lecture RTSP courte ne prouve pas la stabilité.
+- Dans le chemin AAC caméra → Opus/WebRTC actuel, seul le premier PTS AAC ancre
+  l'horloge RTP ; les discontinuités suivantes ne sont pas propagées par
+  FFmpeg. Les tests synthétiques confirment ce comportement, mais ne mesurent
+  pas la synchronisation perceptuelle ; une lacune source peut ne pas être
+  représentée dans la timeline audio. Ce chemin ne garantit donc pas une
+  synchronisation A/V stricte.
 
 ## 8. Envoi microphone : recette expérimentale, non garantie
 

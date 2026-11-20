@@ -56,7 +56,8 @@ type webRTCPeer struct {
 	answered         bool
 	remoteCandidates int
 	workers          sync.WaitGroup
-	workersStopped   chan struct{}
+	resourcesClosed  chan struct{}
+	stopped          chan struct{}
 	connected        chan struct{}
 	connectOnce      sync.Once
 }
@@ -66,7 +67,7 @@ func newWebRTCPeer(parent context.Context, host, id string) *webRTCPeer {
 	return &webRTCPeer{
 		ctx: ctx, cancel: cancel, host: host, id: id,
 		notify: make(chan struct{}), connected: make(chan struct{}),
-		workersStopped: make(chan struct{}),
+		resourcesClosed: make(chan struct{}), stopped: make(chan struct{}),
 	}
 }
 
@@ -149,7 +150,8 @@ func (p *webRTCPeer) close() {
 	// No worker can be added after closed is set under mu.
 	go func() {
 		p.workers.Wait()
-		close(p.workersStopped)
+		<-p.resourcesClosed
+		close(p.stopped)
 	}()
 	p.cancel()
 	if client != nil {
@@ -161,6 +163,7 @@ func (p *webRTCPeer) close() {
 	if mux != nil {
 		_ = mux.Close()
 	}
+	close(p.resourcesClosed)
 }
 
 func (p *webRTCPeer) createPeerConnection(manager *Manager) (*webrtc.PeerConnection, error) {

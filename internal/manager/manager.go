@@ -341,7 +341,7 @@ func (manager *Manager) stopSession(ctx context.Context, host string, remove boo
 
 	if peer != nil {
 		peer.fail("camera_stopped")
-		if err := waitPeerWorkers(ctx, peer); err != nil {
+		if err := waitPeerStopped(ctx, peer); err != nil {
 			return Camera{}, false, err
 		}
 	}

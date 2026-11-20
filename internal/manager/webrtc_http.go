@@ -104,11 +104,8 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 	stop()
 	if err != nil {
 		p.close()
-		manager.mu.Lock()
-		if manager.peers[host] == p {
-			delete(manager.peers, host)
-		}
-		manager.mu.Unlock()
+		<-p.stopped
+		manager.releaseWebRTCPeer(p)
 		switch {
 		case errors.Is(err, errWebRTCCodecMismatch):
 			slog.Warn("Netvue WebRTC negotiation failed", "reason", "codec_mismatch")
@@ -143,7 +140,11 @@ func (manager *Manager) watchPeer(p *webRTCPeer, sessionDone <-chan struct{}, es
 			p.fail("session_closed")
 		}
 	}
-	<-p.workersStopped
+	<-p.stopped
+	manager.releaseWebRTCPeer(p)
+}
+
+func (manager *Manager) releaseWebRTCPeer(p *webRTCPeer) {
 	manager.mu.Lock()
 	if manager.peers[p.host] == p {
 		delete(manager.peers, p.host)
@@ -273,21 +274,17 @@ func (manager *Manager) handleWebRTCClose(w http.ResponseWriter, r *http.Request
 	manager.mu.Unlock()
 	if p != nil {
 		p.close()
-		if err := waitPeerWorkers(r.Context(), p); err != nil {
+		if err := waitPeerStopped(r.Context(), p); err != nil {
 			return
 		}
-		manager.mu.Lock()
-		if manager.peers[host] == p {
-			delete(manager.peers, host)
-		}
-		manager.mu.Unlock()
+		manager.releaseWebRTCPeer(p)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func waitPeerWorkers(ctx context.Context, p *webRTCPeer) error {
+func waitPeerStopped(ctx context.Context, p *webRTCPeer) error {
 	select {
-	case <-p.workersStopped:
+	case <-p.stopped:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
