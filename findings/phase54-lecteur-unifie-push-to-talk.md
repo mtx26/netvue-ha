@@ -121,3 +121,25 @@ Les identifiants Cloudflare TURN ont une durée de base d'une heure. Le pont ten
 - Limites : aucun nouveau run GitHub ni essai matériel. Les répétitions
   Windows ont révélé des pertes RTP intermittentes avec échec du contrôle de
   niveau sonore ; leur cause reste à diagnostiquer, sans assouplir les seuils.
+
+## Diagnostic `invalid Opus payload`
+
+- Les journaux réels signalent un arrêt du micro, sans taille ni indication
+  de bourrage ; ils ne suffisent pas à déterminer le paquet responsable.
+- Défaut reproduit hors ligne : un paquet RTP de bourrage seul, valide après
+  sérialisation/désérialisation Pion, déclenchait cette même erreur.
+- Correction : consommer sa séquence sans décodage ni mise à jour de l'horloge
+  audio. Les charges vides sans bourrage et celles dépassant 8192 octets
+  restent rejetées ; l'erreur précise maintenant taille et indicateurs de
+  bourrage, sans contenu audio.
+- Validation : huit tests Opus réussis, dont conversion FFmpeg AAC et signal
+  non silencieux ; tests RTP/DTX avec détecteur de courses réussis, compilation
+  du pont, suite complète `internal/manager`, `goimports` et `go vet ./...`
+  réussis. Staticcheck signale des messages d'erreur capitalisés et des API
+  dépréciées dans du code inchangé ; ces alertes restent hors périmètre.
+  Le test de bourrage échouait
+  avant la correction ; il couvre aussi le réordonnancement et le bouclage
+  des séquences.
+- État : correction locale, sans publication ni déploiement. La cause du
+  paquet réellement reçu et la restitution sur haut-parleur restent à
+  confirmer en conditions réelles.

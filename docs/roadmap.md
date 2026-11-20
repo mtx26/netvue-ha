@@ -39,7 +39,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Réception audio | AAC/ADTS 8 kHz mono décodé sur la caméra 2 ; PCM 16 bits non validé sur caméra |
 | 🧪 | RTSP audio/vidéo | AAC-LC mono 8 kHz capturé sur la caméra ; pendant le talk, la publication a redémarré au changement de format audio et a attendu un IDR après changement H.264. Continuité A/V et avertissements DTS restent à confirmer ([phase 45](../findings/phase45-validation-reelle-talkback.md), [phase 39](../findings/phase39-talkback.md)) |
 | 🧪 | Audio bidirectionnel Go | Envoi Go direct d'une sinusoïde AAC-LC/ADTS 700 Hz, 0,5 s, -33,5 dBFS RMS ; pic spectral de retour à -53,7 dBFS, contre -62,3/-64,4 dBFS avant/après. Signal compatible avec un retour acoustique, mais haut-parleur et son audible non confirmés ([phase 45](../findings/phase45-validation-reelle-talkback.md)) |
-| 🧪 | Microphone Home Assistant | Lecteur unique `netvue-camera-card` (push-to-talk momentané, half-duplex, sans renégociation) validé en synthétique (Go, Python, Node), E2E Linux avec contrôle explicite répété dix fois ; nouveau run CI, navigateur réel et caméra réelle à valider ([phase 54](../findings/phase54-lecteur-unifie-push-to-talk.md), [phase 45](../findings/phase45-validation-reelle-talkback.md)) |
+| 🧪 | Microphone Home Assistant | Lecteur unique `netvue-camera-card` (push-to-talk momentané, half-duplex, sans renégociation) validé en synthétique (Go, Python, Node), E2E Linux répété dix fois ; rejet erroné du bourrage RTP corrigé hors ligne après erreur Opus réelle. Nouveau run CI et restitution réelle à valider ([phase 54](../findings/phase54-lecteur-unifie-push-to-talk.md), [phase 45](../findings/phase45-validation-reelle-talkback.md)) |
 
 ## 3. Enregistrement
 

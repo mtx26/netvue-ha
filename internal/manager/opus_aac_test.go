@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +74,9 @@ func TestOpusAACStreamingFFmpeg(t *testing.T) {
 	sink := &testTalkSink{first: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() { done <- transcodeOpusToAAC(ctx, ffmpeg, source, sink) }()
+	source.packets <- &rtp.Packet{
+		Header: rtp.Header{SequenceNumber: 65535, Padding: true}, PaddingSize: 20,
+	}
 	for i := range 150 {
 		source.packets <- &rtp.Packet{Header: rtp.Header{SequenceNumber: uint16(i), Timestamp: uint32(i * 960)}, Payload: []byte{0xf8, 0xff, 0xfe}}
 	}
@@ -306,5 +310,57 @@ func TestOpusDTXDoesNotReplaySilence(t *testing.T) {
 	}
 	if pcm.Len() != 2*160*2 {
 		t.Fatalf("DTX added stale silence: %d bytes", pcm.Len())
+	}
+}
+
+func TestOpusRTPPaddingDoesNotInterruptMicrophone(t *testing.T) {
+	ctx := t.Context()
+	source := &testAudioSource{ctx: ctx, packets: make(chan *rtp.Packet, 5)}
+	for _, packet := range []*rtp.Packet{
+		{Header: rtp.Header{SequenceNumber: 65534, Timestamp: 4000, Padding: true}, PaddingSize: 20},
+		{Header: rtp.Header{SequenceNumber: 65535, Timestamp: 0}, Payload: []byte{0xf8, 0xff, 0xfe}},
+		{Header: rtp.Header{SequenceNumber: 1, Timestamp: 960}, Payload: []byte{0xf8, 0xff, 0xfe}},
+		{Header: rtp.Header{SequenceNumber: 0, Timestamp: 0, Padding: true}, PaddingSize: 20},
+		{Header: rtp.Header{SequenceNumber: 2, Timestamp: 0, Padding: true}, PaddingSize: 20},
+	} {
+		data, err := packet.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var received rtp.Packet
+		if err := received.Unmarshal(data); err != nil {
+			t.Fatal(err)
+		}
+		source.packets <- &received
+	}
+	close(source.packets)
+	decoder, err := opus.NewDecoderWithOutput(8000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pcm bytes.Buffer
+	if err := readOpusPCM(ctx, source, &decoder, &pcm, 8000, 1); err != nil {
+		t.Fatal(err)
+	}
+	if pcm.Len() != 2*160*2 {
+		t.Fatalf("padding changed PCM output: got %d bytes, want %d", pcm.Len(), 2*160*2)
+	}
+}
+
+func TestOpusRTPInvalidPayloadStillFails(t *testing.T) {
+	for _, payload := range [][]byte{nil, make([]byte, 8193)} {
+		ctx := t.Context()
+		source := &testAudioSource{ctx: ctx, packets: make(chan *rtp.Packet, 1)}
+		source.packets <- &rtp.Packet{Payload: payload}
+		close(source.packets)
+		decoder, err := opus.NewDecoderWithOutput(8000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pcm bytes.Buffer
+		err = readOpusPCM(ctx, source, &decoder, &pcm, 8000, 1)
+		if err == nil || !strings.Contains(err.Error(), "invalid Opus payload") || pcm.Len() != 0 {
+			t.Fatalf("payload size %d: error=%v, PCM bytes=%d", len(payload), err, pcm.Len())
+		}
 	}
 }

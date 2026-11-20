@@ -123,8 +123,13 @@ func readOpusPCM(ctx context.Context, source rtpAudioReader, decoder *opus.Decod
 	haveSeq, haveTimestamp := false, false
 	pending := make(map[uint16]*rtp.Packet, 3)
 	process := func(packet *rtp.Packet, lost uint16) error {
+		// WebRTC padding consumes a sequence number, but carries no audio or clock update.
+		if len(packet.Payload) == 0 && packet.Padding && packet.PaddingSize > 0 {
+			return nil
+		}
 		if len(packet.Payload) == 0 || len(packet.Payload) > 8192 {
-			return errors.New("invalid Opus payload")
+			return fmt.Errorf("invalid Opus payload: bytes=%d padding=%t padding_bytes=%d",
+				len(packet.Payload), packet.Padding, packet.PaddingSize)
 		}
 		if haveTimestamp {
 			gap := int32(packet.Timestamp - expectedTimestamp)

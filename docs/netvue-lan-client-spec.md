@@ -335,6 +335,10 @@ Le relais Cloudflare TURN facultatif ne modifie pas ces formats ni la session
 LAN Netvue. Il transporte le média WebRTC chiffré entre le navigateur et le
 pont lorsque le chemin direct ne peut pas être utilisé.
 
+Le pont compte les paquets RTP uniquement constitués de bourrage dans la
+séquence, sans les décoder comme Opus ni modifier l'horloge audio. Ce cas est
+couvert synthétiquement ; les paquets vides sans bourrage restent rejetés.
+
 Le push-to-talk est piloté explicitement (canal de données `netvue-ptt`,
 voir [architecture](./architecture.md)), non par la présence de RTP : le
 talkback s'ouvre sur `start` et se ferme sur `stop`, timeout de keepalive,
