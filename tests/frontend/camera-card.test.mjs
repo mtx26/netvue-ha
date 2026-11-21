@@ -243,6 +243,43 @@ test("timeline seeks across recordings, reports gaps and follows a growing segme
   assert.equal(card._video.hidden, false);
 });
 
+test("history hides REC and the ten-second controls seek across segments", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const start = Date.parse("2026-11-20T12:00:00Z");
+  card.hass = {
+    states: {
+      "camera.test": { attributes: { netvue_entry_id: "entry1" } },
+      "sensor.recording": {
+        state: "continuous",
+        attributes: { netvue_entry_id: "entry1", manual: false, continuous: true, active: true },
+      },
+    },
+    async callApi() {
+      return { recordings: [
+        { id: "a".repeat(32), start: new Date(start).toISOString(), duration: 60 },
+        { id: "b".repeat(32), start: new Date(start + 60000).toISOString(), duration: 60 },
+      ] };
+    },
+    async callWS(message) { return { path: message.path }; },
+  };
+  assert.equal(card._recordingIndicator.hidden, false);
+  await card._openHistory();
+  assert.equal(card._recordingIndicator.hidden, true);
+  await card._historySeek(start + 55000);
+  card._historyForwardButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(card._historySegment.id, "b".repeat(32));
+  assert.equal(card._historyPendingSeek.offset, 5);
+  card._historyBackButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(card._historySegment.id, "a".repeat(32));
+  assert.equal(card._historyPendingSeek.offset, 55);
+  card._closeHistory(false);
+  assert.equal(card._recordingIndicator.hidden, false);
+});
+
 test("timeline graduations follow the available recording bounds across days", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });

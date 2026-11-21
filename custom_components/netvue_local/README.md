@@ -102,8 +102,9 @@ est disponible. En mode continu, le bouton d'enregistrement manuel est masqué ;
 le mode continu se règle avec l'interrupteur de la caméra dans Home Assistant.
 Sinon, le bouton permet de démarrer ou d'arrêter l'enregistrement manuel.
 L'icône d'historique ouvre une chronologie dans la carte : sélectionner une
-date ou déplacer le curseur, revenir de 10 minutes ou d'une heure, puis utiliser
-les commandes du lecteur. La frise graduée affiche au maximum 24 heures,
+date ou déplacer le curseur, avancer ou reculer de 10 secondes, revenir de
+10 minutes ou d'une heure, puis utiliser les commandes du lecteur. Le voyant
+REC n'est affiché que sur le direct. La frise graduée affiche au maximum 24 heures,
 coupures comprises ; une date plus ancienne déplace cette fenêtre sans effacer
 les enregistrements. La conservation dépend de la rétention configurée (sept
 jours par défaut), de la limite de stockage et des enregistrements

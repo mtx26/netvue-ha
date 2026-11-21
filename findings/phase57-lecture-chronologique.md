@@ -9,6 +9,8 @@ La frise affiche au maximum 24 heures ; une autre date déplace la fenêtre sans
 modifier la conservation.
 Une recherche manuelle dans le lecteur annule la reprise automatique en
 attente afin qu'une réponse tardive ne replace pas le curseur.
+Dans l'historique, le voyant REC est masqué ; un curseur contrasté et des
+boutons de saut de dix secondes facilitent la navigation.
 
 ## Modifications
 
@@ -32,6 +34,8 @@ La recherche dans la barre du lecteur a aussi été vérifiée sur un MP4
 fragmenté exporté par MediaMTX, avec plages HTTP locales.
 Un test frontend vérifie l'annulation d'une reprise programmée ou déjà en cours
 lors d'une recherche manuelle.
+Les sauts entre segments et le déplacement de la frise ont été vérifiés dans
+un navigateur local avec une vidéo synthétique et des plages HTTP.
 
 ## Limites
 

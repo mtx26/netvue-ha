@@ -50,6 +50,7 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 }
 .history-panel[hidden], video[hidden] { display: none; }
 .history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.history-steps { display: flex; gap: 8px; }
 .history-panel button, .history-panel a { box-sizing: border-box; min-height: 36px; padding: 5px 10px;
   font-size: 13px; }
 .history-panel a { display: inline-flex; align-items: center; color: #fff; background: rgba(0,0,0,.8);
@@ -58,10 +59,18 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 .history-panel input[type="datetime-local"] { box-sizing: border-box; max-width: 100%; min-height: 36px;
   padding: 4px 8px; color: #fff; background: #222; border: 1px solid #888; border-radius: 6px;
   color-scheme: dark; font: inherit; font-size: 13px; }
-.history-panel input[type="range"] { display: block; box-sizing: border-box; width: 100%; height: 24px;
-  margin: 0; cursor: pointer; accent-color: var(--primary-color, #03a9f4); }
+.history-panel input[type="range"] { display: block; box-sizing: border-box; width: 100%; height: 28px;
+  margin: 0; padding: 0; cursor: pointer; appearance: none; -webkit-appearance: none; background: transparent; }
+.history-panel input[type="range"]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: #858f99; }
+.history-panel input[type="range"]::-moz-range-track { height: 6px; border-radius: 3px; background: #858f99; }
+.history-panel input[type="range"]::-webkit-slider-thumb { width: 20px; height: 20px; margin-top: -7px;
+  border: 2px solid #fff; border-radius: 50%; background: #0288d1; box-shadow: 0 0 0 2px #004a70;
+  appearance: none; -webkit-appearance: none; }
+.history-panel input[type="range"]::-moz-range-thumb { box-sizing: border-box; width: 20px; height: 20px;
+  border: 2px solid #fff; border-radius: 50%; background: #0288d1; box-shadow: 0 0 0 2px #004a70; }
+.history-panel input[type="range"]:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
 .history-panel input[type="range"]:disabled { cursor: default; }
-.history-ticks { position: relative; display: flex; justify-content: space-between; margin: 0 8px;
+.history-ticks { position: relative; display: flex; justify-content: space-between; margin: 0 10px;
   min-height: 35px; color: #ddd; font-size: 11px; line-height: 1.25; }
 .history-ticks[hidden] { display: none; }
 .history-tick { position: relative; width: 1px; height: 5px; background: #aaa; }
@@ -521,6 +530,13 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyTenButton = el("button", { type: "button" }, historyControls);
     this._historyTenButton.textContent = "−10 min";
     this._historyTenButton.addEventListener("click", () => this._historyJump(-600000));
+    const historySteps = el("div", { class: "history-steps" }, historyControls);
+    this._historyBackButton = el("button", { type: "button" }, historySteps);
+    this._historyBackButton.textContent = "−10 s";
+    this._historyBackButton.addEventListener("click", () => this._historyJump(-10000));
+    this._historyForwardButton = el("button", { type: "button" }, historySteps);
+    this._historyForwardButton.textContent = "+10 s";
+    this._historyForwardButton.addEventListener("click", () => this._historyJump(10000));
     this._historyDate = el("input", { type: "datetime-local", step: "1" }, historyControls);
     this._historyDate.addEventListener("change", () => {
       const time = new Date(this._historyDate.value).getTime();
@@ -947,7 +963,7 @@ export class NetvueCameraCard extends HTMLElement {
     const recording = this._recordingState();
     const manual = Boolean(recording?.attributes?.manual);
     const continuous = Boolean(recording?.attributes?.continuous);
-    this._recordingIndicator.hidden = !recording
+    this._recordingIndicator.hidden = this._history || !recording
       || recording.state === "unavailable"
       || recording.state === "unknown"
       || !recording.attributes?.active;
@@ -970,6 +986,8 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.setAttribute("aria-label", t("recordingHistory"));
     this._historyButton.title = t("recordingHistory");
     this._historyLiveButton.textContent = t("historyLive");
+    this._historyBackButton.setAttribute("aria-label", t("historyBackTenSeconds"));
+    this._historyForwardButton.setAttribute("aria-label", t("historyForwardTenSeconds"));
     this._historyDate.setAttribute("aria-label", t("historyDate"));
     this._historyRange.setAttribute("aria-label", t("historyTimeline"));
     this._historyDownload.textContent = t("historyDownload");
