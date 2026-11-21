@@ -97,6 +97,17 @@ entity: camera.ma_camera
 name: Entrée   # facultatif
 ```
 
+Le voyant **REC** apparaît lorsque l'enregistrement est demandé et que le flux
+est disponible. En mode continu, le bouton d'enregistrement manuel est masqué ;
+le mode continu se règle avec l'interrupteur de la caméra dans Home Assistant.
+Sinon, le bouton permet de démarrer ou d'arrêter l'enregistrement manuel.
+L'icône d'historique ouvre les enregistrements de cette caméra dans le
+navigateur multimédia de Home Assistant, où ils peuvent être lus.
+
+Le voyant reflète l'état rapporté par le pont et ne confirme pas à lui seul
+que les fichiers ont été écrits correctement. La navigation dans une vidéo
+peut être limitée par le serveur de lecture.
+
 La version 0.2.2 corrige le plantage `Illegal invocation` du lecteur. La
 version 0.2.3 ajoute le plein écran et deux cartes Lovelace complémentaires.
 La version 0.2.4 corrige l'ajout de la synthèse d'état sans configuration :

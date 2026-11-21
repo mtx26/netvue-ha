@@ -41,6 +41,8 @@ class FakeBridge:
         self.requests: list[tuple[str, str]] = []
         self.status_override: int | None = None
         self.turn_response: dict | None = None
+        self.recordings: dict[str, list[dict]] = {}
+        self.recording_content = b"synthetic-video"
         self.port = _free_port()
         self._runner: web.AppRunner | None = None
 
@@ -57,6 +59,9 @@ class FakeBridge:
         app.router.add_get(base + "/{host}", self._get)
         app.router.add_post(base + "/{host}/start", self._start)
         app.router.add_delete(base + "/{host}", self._delete)
+        app.router.add_get(base + "/{host}/recordings", self._recordings)
+        app.router.add_get(base + "/{host}/recordings/{id}/download", self._recording_download)
+        app.router.add_post(base + "/{host}/recording/{mode}", self._recording_mode)
         session = base + "/{host}/webrtc/{session}"
         app.router.add_route("*", session, self._webrtc)
         app.router.add_route("*", session + "/{tail:.*}", self._webrtc)
@@ -85,6 +90,32 @@ class FakeBridge:
         if self.turn_response is None:
             return web.Response(status=204)
         return web.json_response(self.turn_response)
+
+    async def _recordings(self, request):
+        if (forced := self._forced(request)) is not None:
+            return forced
+        return web.json_response({"recordings": self.recordings.get(request.match_info["host"], [])})
+
+    async def _recording_download(self, request):
+        if (forced := self._forced(request)) is not None:
+            return forced
+        recordings = self.recordings.get(request.match_info["host"], [])
+        if not any(item["id"] == request.match_info["id"] for item in recordings):
+            return web.Response(status=404)
+        return web.Response(
+            body=self.recording_content,
+            content_type="video/mp4",
+            headers={"Content-Disposition": 'attachment; filename="recording.mp4"'},
+        )
+
+    async def _recording_mode(self, request):
+        if (forced := self._forced(request)) is not None:
+            return forced
+        return web.json_response({
+            "manual": request.match_info["mode"] == "start",
+            "continuous": False,
+            "active": True,
+        })
 
     async def _create(self, request):
         if (forced := self._forced(request)) is not None:

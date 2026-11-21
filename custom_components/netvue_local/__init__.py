@@ -74,6 +74,8 @@ class NetvueRecordingListView(HomeAssistantView):
                 timeout=5,
             ) as response:
                 data = await response.json()
+                if response.status == 200:
+                    await entry.runtime_data.async_request_refresh()
                 return web.json_response(data, status=response.status)
         except (ClientError, TimeoutError):
             return web.json_response(
@@ -101,6 +103,8 @@ class NetvueRecordingListView(HomeAssistantView):
                 timeout=5,
             ) as response:
                 data = await response.json()
+                if response.status == 200:
+                    await entry.runtime_data.async_request_refresh()
                 return web.json_response(data, status=response.status)
         except (ClientError, TimeoutError):
             return web.json_response(
@@ -139,49 +143,7 @@ class NetvueRecordingDeleteView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request, entry_id, recording_id):
-        hass = request.app["hass"]
-        entry = _recording_entry(hass, entry_id)
-        if entry is None:
-            return web.json_response({"error": "camera not found"}, status=404)
-        host = entry.runtime_data.camera.host
-        session = async_get_clientsession(hass)
-        try:
-            upstream = session.get(
-                f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
-                f"{quote(recording_id, safe='')}/download",
-                timeout=None,
-            )
-            response = await upstream.__aenter__()
-        except (ClientError, TimeoutError):
-            return web.json_response(
-                {"error": "recording service unavailable"}, status=502
-            )
-        if response.status != 200:
-            data = await response.read()
-            await upstream.__aexit__(None, None, None)
-            return web.Response(
-                body=data,
-                status=response.status,
-                content_type=response.headers.get("Content-Type", "application/json"),
-            )
-        output = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Disposition": response.headers.get(
-                    "Content-Disposition",
-                    f'attachment; filename="netvue-{recording_id}.mp4"',
-                ),
-                "Content-Type": response.headers.get("Content-Type", "video/mp4"),
-            },
-        )
-        await output.prepare(request)
-        try:
-            async for chunk in response.content.iter_chunked(64 * 1024):
-                await output.write(chunk)
-            await output.write_eof()
-        finally:
-            await upstream.__aexit__(None, None, None)
-        return output
+        return await _stream_recording(request, entry_id, recording_id, inline=False)
 
     async def delete(self, request, entry_id, recording_id):
         hass = request.app["hass"]
@@ -204,6 +166,53 @@ class NetvueRecordingDeleteView(HomeAssistantView):
             )
 
 
+class NetvueRecordingPlaybackView(HomeAssistantView):
+    url = "/api/netvue_local/playback/{entry_id}/{recording_id}"
+    name = "api:netvue_local:recording_playback"
+    requires_auth = True
+
+    async def get(self, request, entry_id, recording_id):
+        return await _stream_recording(request, entry_id, recording_id, inline=True)
+
+
+async def _stream_recording(request, entry_id, recording_id, *, inline):
+    hass = request.app["hass"]
+    entry = _recording_entry(hass, entry_id)
+    if entry is None:
+        return web.json_response({"error": "camera not found"}, status=404)
+    host = entry.runtime_data.camera.host
+    session = async_get_clientsession(hass)
+    try:
+        response = await session.get(
+            f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
+            f"{quote(recording_id, safe='')}/download",
+            timeout=None,
+        )
+    except (ClientError, TimeoutError):
+        return web.json_response({"error": "recording service unavailable"}, status=502)
+    async with response:
+        if response.status != 200:
+            return web.Response(
+                body=await response.read(),
+                status=response.status,
+                headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+            )
+        output = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Disposition": "inline" if inline else response.headers.get(
+                    "Content-Disposition", f'attachment; filename="netvue-{recording_id}.mp4"'
+                ),
+                "Content-Type": response.headers.get("Content-Type", "video/mp4"),
+            },
+        )
+        await output.prepare(request)
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            await output.write(chunk)
+        await output.write_eof()
+        return output
+
+
 async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None:
     if hass.data.get(_FRONTEND_MODULE_REGISTERED_KEY):
         return
@@ -219,6 +228,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the Netvue Lovelace card once per Home Assistant instance."""
     hass.http.register_view(NetvueRecordingListView())
     hass.http.register_view(NetvueRecordingDeleteView())
+    hass.http.register_view(NetvueRecordingPlaybackView())
     if not hass.data.get(_STATIC_PATH_KEY):
         version = (await async_get_integration(hass, DOMAIN)).version
         await hass.http.async_register_static_paths(

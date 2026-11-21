@@ -15,10 +15,6 @@ class FakeElement {
     return child;
   }
 
-  replaceChildren(...children) {
-    this.children = children;
-  }
-
   get firstChild() {
     return this.children[0] || null;
   }
@@ -141,40 +137,58 @@ function findByClass(node, className) {
   return null;
 }
 
-test("recording controls use Home Assistant API paths and keep direct download URLs", async () => {
+test("manual recording controls and the REC indicator reflect continuous mode", async () => {
   const calls = [];
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
-  card._history.hidden = true;
   const recordingState = {
-    attributes: { netvue_entry_id: "entry/1", manual: false },
+    state: "inactive",
+    attributes: { netvue_entry_id: "entry1", manual: false, continuous: false, active: false },
   };
   card.hass = {
     states: {
-      "camera.test": { attributes: { netvue_entry_id: "entry/1" } },
+      "camera.test": { attributes: { netvue_entry_id: "entry1" } },
       "sensor.recording": recordingState,
     },
     async callApi(method, path, body) {
       calls.push({ method, url: `/api/${path}`, body });
-      return { recordings: [{ id: "segment/1", start: "2026-01-01T00:00:00Z", duration: 1 }] };
     },
   };
 
+  assert.equal(card._recordButton.hidden, false);
+  assert.equal(card._recordingIndicator.hidden, true);
   await card._toggleManualRecording();
   recordingState.attributes.manual = true;
+  recordingState.attributes.active = true;
+  card._render();
+  assert.equal(card._recordingIndicator.hidden, false);
+  assert.equal(card._recordButton.getAttribute("aria-label"), "Stop recording");
   await card._toggleManualRecording();
-  await card._toggleHistory();
+  recordingState.attributes.continuous = true;
+  card._render();
+  assert.equal(card._recordButton.hidden, true);
+  assert.equal(card._recordingIndicator.hidden, false);
+  await card._toggleManualRecording();
+  recordingState.attributes.active = false;
+  card._render();
+  assert.equal(card._recordingIndicator.hidden, true);
 
   assert.deepEqual(calls, [
-    { method: "POST", url: "/api/netvue_local/recordings/entry%2F1", body: { enabled: true } },
-    { method: "POST", url: "/api/netvue_local/recordings/entry%2F1", body: { enabled: false } },
-    { method: "GET", url: "/api/netvue_local/recordings/entry%2F1", body: undefined },
+    { method: "POST", url: "/api/netvue_local/recordings/entry1", body: { enabled: true } },
+    { method: "POST", url: "/api/netvue_local/recordings/entry1", body: { enabled: false } },
   ]);
-  assert.equal(card._history.hidden, false);
-  const row = findByClass(card._history, "history-row");
-  assert.equal(row.children[1].getAttribute("href"),
-    "/api/netvue_local/recordings/entry%2F1/segment%2F1");
+});
+
+test("history opens this camera in the Home Assistant media browser", () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  let destination;
+  window.location = { assign: (path) => { destination = path; } };
+  card.hass = { states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } } };
+  card._openHistory();
+  assert.equal(decodeURIComponent(destination),
+    "/media-browser/browser/app,media-source://netvue_local/entry1");
 });
 
 test("the full-screen button enters and exits across shadow DOM retargeting", async () => {

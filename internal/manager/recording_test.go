@@ -76,6 +76,36 @@ func TestRecordingManagerManualContinuousAndList(t *testing.T) {
 	}
 }
 
+func TestRecordingCanBeResolvedAfterSegmentDurationChanges(t *testing.T) {
+	var calls int
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		duration := 10
+		if calls > 1 {
+			duration = 20
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name": "camera",
+			"segments": []map[string]any{{
+				"start": "2026-11-20T12:00:00Z", "duration": duration,
+			}},
+		})
+	}))
+	defer control.Close()
+	t.Setenv("NETVUE_RECORDINGS_DIR", t.TempDir())
+	manager := newRecordingManager(t.Context())
+	manager.controlURL = control.URL
+
+	segments, err := manager.list("camera", time.Time{}, time.Time{})
+	if err != nil || len(segments) != 1 {
+		t.Fatalf("list = %+v, %v", segments, err)
+	}
+	segment, found, err := manager.findSegment("camera", segments[0].ID)
+	if err != nil || !found || segment.Duration != 20 {
+		t.Fatalf("growing segment = %+v, found %t, error %v", segment, found, err)
+	}
+}
+
 func TestRecordingCleanupDeletesOnlyExpiredSegmentFiles(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("NETVUE_RECORDINGS_DIR", dir)

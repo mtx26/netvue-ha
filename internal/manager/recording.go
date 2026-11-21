@@ -267,8 +267,8 @@ func (manager *recordingManager) controlJSON(method, path string, body any) erro
 	return nil
 }
 
-func recordingID(streamName string, start time.Time, duration float64) string {
-	value := fmt.Sprintf("%s|%s|%.3f", streamName, start.UTC().Format(time.RFC3339Nano), duration)
+func recordingID(streamName string, start time.Time) string {
+	value := fmt.Sprintf("%s|%s", streamName, start.UTC().Format(time.RFC3339Nano))
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:16])
 }
@@ -311,7 +311,7 @@ func (manager *recordingManager) list(streamName string, start, end time.Time) (
 		}
 		endTime := startTime.Add(time.Duration(duration * float64(time.Second)))
 		segments = append(segments, RecordingSegment{
-			ID:    recordingID(streamName, startTime, duration),
+			ID:    recordingID(streamName, startTime),
 			Start: startTime, End: endTime, Duration: duration, Format: "fmp4",
 		})
 	}

@@ -1,12 +1,12 @@
 {
   "domain": "netvue_local",
   "name": "Netvue Local",
-  "version": "0.2.9",
+  "version": "0.2.11",
   "documentation": "https://github.com/mtx26/netvue-ha",
   "issue_tracker": "https://github.com/mtx26/netvue-ha/issues",
   "codeowners": [],
   "config_flow": true,
-  "dependencies": ["http", "stream"],
+  "dependencies": ["http", "media_source", "stream"],
   "after_dependencies": ["frontend"],
   "integration_type": "device",
   "iot_class": "local_polling"

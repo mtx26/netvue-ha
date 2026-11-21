@@ -29,7 +29,7 @@ video { width: 100%; max-height: 80vh; background: #000; }
 .bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px;
   padding: 8px; background: linear-gradient(transparent, rgba(0,0,0,.6)); line-height: 1.4; }
 .status { flex: 1; color: #fff; font-size: 14px; }
-button { font: inherit; color: #fff; background: rgba(255,255,255,.2); border: 1px solid rgba(255,255,255,.5);
+button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px solid rgba(255,255,255,.5);
   border-radius: 20px; padding: 8px 14px; cursor: pointer; min-height: 40px; }
 .bar button { width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 44px; }
@@ -39,14 +39,11 @@ button { font: inherit; color: #fff; background: rgba(255,255,255,.2); border: 1
   width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 30px; line-height: 1; }
 .previous { left: 8px; }
 .next { right: 8px; }
-.history { position: absolute; left: 8px; right: 8px; bottom: 64px; max-height: 45%;
-  overflow: auto; padding: 8px; border-radius: 8px; background: rgba(20,20,20,.95);
-  color: #fff; line-height: 1.4; font-size: 13px; }
-.history[hidden] { display: none; }
-.history a { color: var(--primary-text-color, #fff); }
-.history-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 0; }
+.recording-indicator { position: absolute; top: 8px; right: 8px; padding: 4px 8px;
+  border-radius: 4px; background: #b00020; color: #fff; font-size: 13px; line-height: 1.4; }
+.recording-indicator[hidden] { display: none; }
 button:focus-visible { outline: 3px solid var(--primary-color, #03a9f4); outline-offset: 2px; }
-button[disabled] { opacity: .5; cursor: default; }
+button[disabled] { color: rgba(255,255,255,.65); cursor: default; }
 .ptt { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .ptt[aria-pressed="true"] { background: var(--error-color, #db4437); border-color: #fff; }
 .toast { position: absolute; left: 8px; right: 8px; top: 8px; padding: 8px 12px; border-radius: 8px;
@@ -400,7 +397,10 @@ export class NetvueCameraCard extends HTMLElement {
     this._retry = el("button", { type: "button" }, this._overlay);
     this._retry.addEventListener("click", () => this._retryClicked());
     this._toast = el("div", { class: "toast", role: "alert" }, wrap);
-    this._history = el("div", { class: "history", hidden: "" }, wrap);
+    this._recordingIndicator = el("div", {
+      class: "recording-indicator", hidden: "", role: "status",
+    }, wrap);
+    this._recordingIndicator.textContent = "● REC";
     this._previousButton = el("button", { type: "button", class: "navigate previous" }, wrap);
     this._previousButton.textContent = "‹";
     this._previousButton.addEventListener("click", () => this._wall?._navigate(-1));
@@ -412,7 +412,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._recordButton = el("button", { type: "button", class: "record" }, bar);
     this._recordButton.addEventListener("click", () => this._toggleManualRecording());
     this._historyButton = el("button", { type: "button", class: "history-button" }, bar);
-    this._historyButton.addEventListener("click", () => this._toggleHistory());
+    this._historyButton.addEventListener("click", () => this._openHistory());
     this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
     this._bindPtt(this._pttButton);
     this._muteButton = el("button", { type: "button", class: "mute" }, bar);
@@ -491,9 +491,13 @@ export class NetvueCameraCard extends HTMLElement {
 
   async _toggleManualRecording() {
     const entryId = this._entryId();
-    if (!entryId || !this._hass?.callApi) return;
+    if (!entryId || !this._hass?.callApi || this._recordingPending) return;
     const current = this._recordingState();
+    if (!current || current.state === "unavailable" || current.state === "unknown"
+        || current.attributes?.continuous) return;
     const enabled = !(current?.attributes?.manual);
+    this._recordingPending = true;
+    this._render();
     try {
       await this._hass.callApi(
         "POST",
@@ -502,45 +506,17 @@ export class NetvueCameraCard extends HTMLElement {
       );
     } catch (error) {
       this._toastKey = "recordingError";
+    } finally {
+      this._recordingPending = false;
       this._render();
     }
   }
 
-  async _toggleHistory() {
+  _openHistory() {
     const entryId = this._entryId();
-    if (!entryId || !this._hass?.callApi) return;
-    if (!this._history.hidden) {
-      this._history.hidden = true;
-      return;
-    }
-    try {
-      const data = await this._hass.callApi(
-        "GET",
-        `netvue_local/recordings/${encodeURIComponent(entryId)}`,
-      );
-      this._history.replaceChildren();
-      const close = el("button", { type: "button" }, this._history);
-      close.textContent = "×";
-      close.addEventListener("click", () => { this._history.hidden = true; });
-      const rows = data.recordings || [];
-      if (!rows.length) {
-        el("div", {}, this._history).textContent = "Aucun enregistrement";
-      }
-      for (const recording of rows) {
-        const row = el("div", { class: "history-row" }, this._history);
-        el("span", {}, row).textContent =
-          `${new Date(recording.start).toLocaleString()} · ${Math.round(recording.duration)} s`;
-        const link = el("a", {
-          href: `/api/netvue_local/recordings/${encodeURIComponent(entryId)}/${encodeURIComponent(recording.id)}`,
-        }, row);
-        link.textContent = "Télécharger";
-        link.download = "";
-      }
-      this._history.hidden = false;
-    } catch (error) {
-      this._toastKey = "recordingError";
-      this._render();
-    }
+    if (!entryId) return;
+    const item = `app,media-source://netvue_local/${entryId}`;
+    window.location.assign(`/media-browser/browser/${encodeURIComponent(item)}`);
   }
 
   _label() {
@@ -609,8 +585,16 @@ export class NetvueCameraCard extends HTMLElement {
     this._pttButton.title = this._pttButton.getAttribute("aria-label");
     const recording = this._recordingState();
     const manual = Boolean(recording?.attributes?.manual);
+    const continuous = Boolean(recording?.attributes?.continuous);
+    this._recordingIndicator.hidden = !recording
+      || recording.state === "unavailable"
+      || recording.state === "unknown"
+      || !recording.attributes?.active;
     setIcon(this._recordButton, ICONS.record);
-    this._recordButton.disabled = !this._entryId();
+    this._recordButton.hidden = continuous;
+    this._recordButton.disabled = !this._entryId()
+      || !recording || recording.state === "unavailable" || recording.state === "unknown"
+      || Boolean(this._recordingPending);
     this._recordButton.setAttribute("aria-pressed", String(manual));
     this._recordButton.setAttribute(
       "aria-label",

@@ -87,7 +87,9 @@ sont contrôlés par l'API Go, puis persistés dans
 
 Le service Playback MediaMTX reste limité à `127.0.0.1:9996`. Le pont expose
 la liste, le téléchargement et la suppression via son API loopback. Home
-Assistant vérifie l'authentification avant de servir ces opérations.
+Assistant expose les archives dans son navigateur multimédia et signe les URL
+de lecture ; ses vues restent authentifiées. Le proxy transmet la vidéo en flux,
+sans prise en charge spécifique des requêtes HTTP Range.
 
 ## Intégration Home Assistant
 
