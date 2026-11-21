@@ -39,7 +39,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | Zones de détection | Une zone rectangulaire via la roue dentée de chaque carte ; toute l'image par défaut et bouton pour la resélectionner ; tests hors ligne, validation réelle nécessaire |
 | 🧪 | Notifications HA | Six événements voiture confirmés dans l'historique HA du Garage ; une automatisation de notification réelle reste à valider |
 | 🧪 | Statistiques | Latence, FPS, ratio d'images positives, images ignorées et erreurs par caméra dans l'API IA ; exposition HA implémentée, recharge réelle à valider ([phase 59](../findings/phase59-detection-accuracy-performance.md)) |
-| 🧪 | Détection d'objets | Suivi indépendant des objets, compteur par catégorie et réglages de cadres séparés pour le direct, le replay et l'export. Comparer les modèles pour les scènes nocturnes ; flux réel à valider. Classes COCO seulement ([phase 60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |
+| 🧪 | Détection d'objets | Suivi indépendant des objets, compteur par catégorie et réglages séparés pour le direct, le replay et l'export. Alignement des cadres vérifié hors ligne ; flux réel à valider et modèles nocturnes à comparer. Classes COCO seulement ([phase 60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |
 
 ## 5. Expérience utilisateur
 

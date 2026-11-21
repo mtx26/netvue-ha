@@ -13,7 +13,9 @@ class FakeElement {
   }
 
   appendChild(child) {
+    child.parentNode?.removeChild(child);
     this.children.push(child);
+    child.parentNode = this;
     return child;
   }
 
@@ -37,6 +39,7 @@ class FakeElement {
     const index = this.children.indexOf(child);
     if (index >= 0) {
       this.children.splice(index, 1);
+      child.parentNode = null;
     }
     return child;
   }
@@ -170,6 +173,14 @@ globalThis.customElements = {
   },
 };
 globalThis.document = new FakeDocument();
+globalThis.ResizeObserver = class {
+  constructor(callback) {
+    this.callback = callback;
+    this.targets = new Set();
+  }
+  observe(target) { this.targets.add(target); }
+  disconnect() { this.targets.clear(); }
+};
 globalThis.window = {
   customCards: [],
   addEventListener() {},
@@ -967,6 +978,45 @@ test("live boxes hold until the next AI state without following unrelated update
   card._render();
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
   card.disconnectedCallback();
+});
+
+test("detection boxes follow the active picture instead of the replay timeline or black bars", () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card.connectedCallback();
+  const live = card._video;
+  const replay = card._historyVideo;
+  const overlay = card._detectionOverlay;
+  const size = () => [overlay.style.width, overlay.style.height];
+  const detections = [{
+    category: "car", frame_width: 640, frame_height: 360,
+    box: { x1: 20, y1: 40, x2: 100, y2: 120 },
+  }];
+
+  Object.assign(live, { clientWidth: 320, clientHeight: 240 });
+  live.dispatch("emptied");
+  card._drawDetections(detections);
+  assert.equal(overlay.parentNode, live.parentNode);
+  assert.deepEqual(size(), ["0px", "0px"]);
+  Object.assign(live, { videoWidth: 1920, videoHeight: 1080 });
+  live.dispatch("loadedmetadata");
+  assert.deepEqual(size(), ["320px", "180px"]);
+
+  Object.assign(replay, { videoWidth: 640, videoHeight: 480, clientWidth: 800, clientHeight: 450 });
+  card._history = true;
+  card._drawDetections(detections);
+  assert.equal(overlay.parentNode, replay.parentNode);
+  assert.deepEqual(size(), ["600px", "450px"]);
+  replay.clientHeight = 300;
+  card._detectionResizeObserver.callback();
+  assert.deepEqual(size(), ["400px", "300px"]);
+
+  card._history = false;
+  card._drawDetections(detections);
+  assert.equal(overlay.parentNode, live.parentNode);
+  assert.deepEqual(size(), ["320px", "180px"]);
+  card.disconnectedCallback();
+  assert.equal(card._detectionResizeObserver.targets.size, 0);
 });
 
 test("replay holds the preceding sample until a clear update and ignores future samples", () => {

@@ -79,6 +79,16 @@ et les boites de detection IA live/historiques sans perturber WebRTC.
   plage de dix minutes. L'alignement à l'écran, en direct et en replay, reste
   à vérifier dans le tableau de bord après déploiement de `0.2.31`.
 
+## Suivi 0.2.33 — alignement des cadres
+
+Le calque SVG est affiché par-dessus la vidéo du lecteur actif et dimensionné
+sur l'image, sans les bandes noires ni la frise. Il suit
+les changements de dimensions du lecteur et de résolution de la vidéo. Ce
+correctif concerne l'affichage, pas les détections ni l'export MP4.
+Alignement et superposition vérifiés dans le navigateur avec une vidéo
+synthétique en direct, en replay et en plein écran CSS. Caméra réelle et
+iPhone non testés pour ce correctif.
+
 ## Suivi 0.2.32 — cadres synchronisés et réglages
 
 - Le cadre direct reste affiché jusqu'au prochain état IA reçu par la carte.

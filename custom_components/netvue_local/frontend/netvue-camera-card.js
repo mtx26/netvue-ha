@@ -28,16 +28,22 @@ const STYLE = `
 ha-card { overflow: hidden; position: relative; }
 .wrap { position: relative; container-type: inline-size; background: #000; line-height: 0; }
 video { width: 100%; max-height: 80vh; background: #000; }
+.live-player, .history-player { position: relative; }
+.live-player { isolation: isolate; }
+.live-player video, .history-player video { display: block; object-fit: contain; }
+.wrap[data-history] .live-player, .history-player[hidden] { display: none; }
 .wrap[data-fullscreen], :host([wall-active]) .wrap {
   width: 100vw; height: 100vh; height: 100dvh; display: flex; align-items: center; justify-content: center;
 }
+.wrap[data-fullscreen] .live-player, :host([wall-active]) .live-player { width: 100%; height: 100%; }
 .wrap[data-fullscreen] video, :host([wall-active]) video {
   width: 100%; height: 100%; max-height: 100vh; max-height: 100dvh; object-fit: contain;
 }
 .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 12px; color: #fff; background: rgba(0,0,0,.55); line-height: 1.4; }
 .overlay[hidden], .toast[hidden], button[hidden] { display: none; }
-.detections { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.detections { position: absolute; z-index: 1; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 0; height: 0; overflow: hidden; pointer-events: none; }
 .detections[hidden] { display: none; }
 .detections rect { fill: none; stroke: #00d4ff; stroke-width: 4; vector-effect: non-scaling-stroke; }
 .detections text { fill: white; font: bold 16px sans-serif; paint-order: stroke; stroke: black; stroke-width: 4px; stroke-linejoin: round; }
@@ -77,9 +83,6 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 .volume-range:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
 .bar .mute svg path:first-child { fill: currentColor; stroke: none; }
 .wrap[data-history] .bar { display: none; }
-.history-player { position: relative; }
-.history-player[hidden] { display: none; }
-.history-player video { display: block; }
 .history-player video::-webkit-media-controls-fullscreen-button { display: none; }
 .history-actions { position: absolute; top: 4px; right: 4px; z-index: 2; display: flex;
   justify-content: flex-end; align-items: center; width: min(338px, calc(100% - 8px));
@@ -309,6 +312,8 @@ export class NetvueCameraCard extends HTMLElement {
   connectedCallback() {
     this._build();
     this._connected = true;
+    this._detectionResizeObserver.observe(this._video);
+    this._detectionResizeObserver.observe(this._historyVideo);
     window.addEventListener("blur", this._onRelease);
     window.addEventListener("pagehide", this._onRelease);
     window.addEventListener("pointerup", this._onWindowPointer);
@@ -322,6 +327,7 @@ export class NetvueCameraCard extends HTMLElement {
 
   disconnectedCallback() {
     this._connected = false;
+    this._detectionResizeObserver.disconnect();
     this._closeSettings();
     this._releasePtt();
     window.removeEventListener("blur", this._onRelease);
@@ -595,18 +601,27 @@ export class NetvueCameraCard extends HTMLElement {
     const card = el("ha-card", {}, root);
     const wrap = el("div", { class: "wrap" }, card);
     this._wrap = wrap;
-    const video = (this._video = el("video", { playsinline: "", autoplay: "" }, wrap));
+    this._livePlayer = el("div", { class: "live-player" }, wrap);
+    const video = (this._video = el("video", { playsinline: "", autoplay: "" }, this._livePlayer));
     video.muted = true;
     this._detectionOverlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     this._detectionOverlay.setAttribute("class", "detections");
     this._detectionOverlay.setAttribute("viewBox", "0 0 640 360");
-    this._detectionOverlay.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    this._detectionOverlay.setAttribute("preserveAspectRatio", "none");
     this._detectionOverlay.setAttribute("aria-hidden", "true");
-    wrap.appendChild(this._detectionOverlay);
+    this._detectionOverlay.setAttribute("hidden", "");
+    this._livePlayer.appendChild(this._detectionOverlay);
     this._historyPlayer = el("div", { class: "history-player", hidden: "" }, wrap);
     this._historyVideo = el("video", {
       playsinline: "", controls: "", controlslist: "nofullscreen", hidden: "",
     }, this._historyPlayer);
+    const fitDetections = () => this._fitDetectionOverlay();
+    this._detectionResizeObserver = new ResizeObserver(fitDetections);
+    for (const source of [video, this._historyVideo]) {
+      for (const event of ["loadedmetadata", "resize", "emptied"]) {
+        source.addEventListener(event, fitDetections);
+      }
+    }
     this._historyVideo.addEventListener("loadedmetadata", () => this._historyMetadata());
     this._historyVideo.addEventListener("timeupdate", () => this._historyTimeUpdate());
     this._historyVideo.addEventListener("ended", () => this._historyEnded());
@@ -854,7 +869,20 @@ export class NetvueCameraCard extends HTMLElement {
     this._drawDetections(attributes.detections.slice(0, 12));
   }
 
+  _fitDetectionOverlay() {
+    const video = this._history ? this._historyVideo : this._video;
+    const scale = video.videoWidth > 0 && video.videoHeight > 0
+      ? Math.min(video.clientWidth / video.videoWidth, video.clientHeight / video.videoHeight) : 0;
+    this._detectionOverlay.style.width = `${scale ? video.videoWidth * scale : 0}px`;
+    this._detectionOverlay.style.height = `${scale ? video.videoHeight * scale : 0}px`;
+  }
+
   _drawDetections(detections) {
+    const player = this._history ? this._historyPlayer : this._livePlayer;
+    if (this._detectionOverlay.parentNode !== player) {
+      player.appendChild(this._detectionOverlay);
+      this._fitDetectionOverlay();
+    }
     const key = JSON.stringify(detections);
     if (key === this._renderedDetections) return;
     this._renderedDetections = key;
