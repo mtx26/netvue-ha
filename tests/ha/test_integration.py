@@ -4,12 +4,14 @@ Run from the repository root; see tests/ha/harness.py for the isolation model.
 """
 
 import asyncio
+import json
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
+import probatio
 from homeassistant.components import camera
 from homeassistant.components.camera.webrtc import DATA_WEBRTC_PROVIDERS
 from homeassistant.config_entries import ConfigEntryState
@@ -18,6 +20,7 @@ from homeassistant.data_entry_flow import InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import config_validation as cv
 
 import custom_components.netvue_local as netvue_local
 from custom_components.netvue_local import camera as camera_platform
@@ -46,6 +49,23 @@ class _ControlledSleeper:
 
 
 class ConfigFlowTests(HassTestCase):
+    async def test_add_camera_forms_serialize_for_frontend(self):
+        self.bridge.discovered = [HOST]
+        flow = self.hass.config_entries.flow
+        for step in ("manual", "discovery"):
+            with self.subTest(step=step):
+                result = await flow.async_init(DOMAIN, context={"source": "user"})
+                result = await flow.async_configure(
+                    result["flow_id"], {"next_step_id": step}
+                )
+                fields = probatio.to_field_list(
+                    result["data_schema"], custom_serializer=cv.custom_serializer
+                )
+                json.dumps(fields)
+                zones = next(field for field in fields if field["name"] == "ai_zones")
+                self.assertIn("object", zones["selector"])
+                flow.async_abort(result["flow_id"])
+
     async def test_manual_flow_creates_entry_and_managed_session(self):
         flow = self.hass.config_entries.flow
         result = await flow.async_init(DOMAIN, context={"source": "user"})
@@ -181,6 +201,18 @@ class ConfigFlowTests(HassTestCase):
 
 
 class OptionsFlowTests(HassTestCase):
+    async def test_options_form_serializes_for_frontend(self):
+        entry = await self.create_entry()
+        manager = self.hass.config_entries.options
+        result = await manager.async_init(entry.entry_id)
+        fields = probatio.to_field_list(
+            result["data_schema"], custom_serializer=cv.custom_serializer
+        )
+        json.dumps(fields)
+        zones = next(field for field in fields if field["name"] == "ai_zones")
+        self.assertIn("object", zones["selector"])
+        manager.async_abort(result["flow_id"])
+
     async def _init(self, entry, **values):
         manager = self.hass.config_entries.options
         result = await manager.async_init(entry.entry_id)

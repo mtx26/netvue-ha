@@ -7,6 +7,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
+from homeassistant.helpers.selector import ObjectSelector
 
 from .bridge_api import BridgeError, async_discover_cameras, async_stop_camera
 from .const import (
@@ -90,7 +91,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
                 vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=3):
                     vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_ZONES, default={}): dict,
+                vol.Required(CONF_AI_ZONES, default={}): ObjectSelector(),
             }), errors=errors,
         )
 
@@ -156,7 +157,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
                 vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=3):
                     vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_ZONES, default={}): dict,
+                vol.Required(CONF_AI_ZONES, default={}): ObjectSelector(),
             }), errors=errors,
         )
 
@@ -266,6 +267,6 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
                 vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=default_ai_confirmation):
                     vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_ZONES, default=default_ai_zones): dict,
+                vol.Required(CONF_AI_ZONES, default=default_ai_zones): ObjectSelector(),
             }), errors=errors,
         )

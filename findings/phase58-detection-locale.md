@@ -31,6 +31,10 @@ existants, puis exposer son état et ses événements dans Home Assistant.
   La roue dentée de chaque carte caméra ouvre le dessin des zones ; l'interface
   reste à valider dans Home Assistant réel.
 - Roadmap et architecture mises à jour.
+- Correction du formulaire HA : le type `dict` brut provoquait une erreur
+  HTTP 500 (`unable to serialize schema`) dans les paramètres. Les zones
+  utilisent désormais `ObjectSelector` dans l'ajout manuel, la découverte
+  et les options ; tests de sérialisation du formulaire ajoutés.
 - Correction du lecteur IA : remplacement de `cv2.VideoCapture` par PyAV.
   Un H.264 synthétique 360p → 1080p → 360p reproduit avec OpenCV 4.12
   les erreurs `Slice parameters 0, 1080 are invalid` et des dimensions
