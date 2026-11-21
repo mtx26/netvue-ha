@@ -56,7 +56,7 @@ class MetadataTests(HassTestCase):
         self.assertEqual(device.sw_version, "1.0")
         self.assertIsNone(device.model)
         self.assertEqual(device.identifiers, {(DOMAIN, entry.entry_id)})
-        self.assertEqual(len(self.entity_ids(entry)), 12)
+        self.assertEqual(len(self.entity_ids(entry)), 13)
         attributes = self.state(entry, "sensor", "diagnostic").attributes
         self.assertEqual(attributes["wifi_ssid"], METADATA["wifi_ssid"])
         self.assertEqual(attributes["wifi_signal_level"], 37)

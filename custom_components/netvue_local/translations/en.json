@@ -82,6 +82,27 @@
       "ai_detection": {"name": "AI detection"}
     },
     "sensor": {
+      "detected_objects": {
+        "name": "Detected objects",
+        "state": {
+          "none": "No objects detected",
+          "disabled": "AI disabled",
+          "starting": "AI starting",
+          "reconnecting": "Stream reconnecting",
+          "stream_unavailable": "Stream unavailable",
+          "not_configured": "AI not configured",
+          "unknown": "Unidentified object",
+          "person": "Person",
+          "bird": "Bird",
+          "cat": "Cat",
+          "dog": "Dog",
+          "car": "Car",
+          "bus": "Bus",
+          "truck": "Truck",
+          "bicycle": "Bicycle",
+          "motorcycle": "Motorcycle"
+        }
+      },
       "session": {
         "name": "Session status",
         "state": {

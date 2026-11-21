@@ -25,6 +25,10 @@ existants, puis exposer son état et ses événements dans Home Assistant.
   minimale.
 - Intégration HA : capteur de détection, switch d'activation et événements
   `netvue_local_event`.
+- Capteur textuel « Objets détectés » : affiche les catégories reconnues
+  (par exemple Personne, Chien), distingue absence d'objet, IA désactivée
+  et reconnexion. Le capteur binaire existant reste disponible pour les
+  automatisations ; les catégories et confiances restent dans les attributs.
 - Configuration IA : activation, seuil de confiance, cadence, confirmation
   et zones JSON disponibles directement lors de l'ajout manuel ou découverte
   de la caméra, puis modifiables dans les options de l'intégration.

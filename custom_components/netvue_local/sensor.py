@@ -5,7 +5,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.translation import async_get_translations
 
+from .const import DOMAIN
 from .coordinator import CameraData, NetvueCoordinator, NetvueEntity
 
 
@@ -28,11 +30,64 @@ _DIAGNOSTIC_OPTIONS = [
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
+    translations = await async_get_translations(hass, hass.config.language, "entity", {DOMAIN})
+    prefix = f"component.{DOMAIN}.entity.sensor.detected_objects.state."
+    labels = {
+        key.removeprefix(prefix): value
+        for key, value in translations.items() if key.startswith(prefix)
+    }
     async_add_entities([
         NetvueSessionSensor(entry, entry.runtime_data),
         NetvueDiagnosticSensor(entry, entry.runtime_data),
         NetvueRecordingSensor(entry, entry.runtime_data),
+        NetvueDetectedObjectsSensor(entry, entry.runtime_data, labels),
     ])
+
+
+class NetvueDetectedObjectsSensor(NetvueEntity, SensorEntity):
+    _attr_has_entity_name = True
+    _attr_translation_key = "detected_objects"
+    _attr_icon = "mdi:shape"
+
+    def __init__(
+        self, entry: ConfigEntry, coordinator: NetvueCoordinator, labels: dict[str, str]
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_detected_objects"
+        self._labels = labels
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data
+        return super().available and data is not None and data.detection is not None
+
+    @property
+    def native_value(self) -> str | None:
+        data = self.coordinator.data
+        if data is None or data.detection is None:
+            return None
+        detection = data.detection
+        if not detection.enabled:
+            return self._labels["disabled"]
+        if detection.state != "detecting":
+            return self._labels.get(detection.state, detection.state)
+        categories = dict.fromkeys(
+            item.get("category") for item in detection.detections
+            if isinstance(item.get("category"), str)
+        )
+        if not detection.detections:
+            return self._labels["none"]
+        return ", ".join(
+            self._labels.get(category, self._labels["unknown"])
+            for category in categories
+        ) or self._labels["unknown"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if data is None or data.detection is None:
+            return {}
+        return {"detections": data.detection.detections, "enabled": data.detection.enabled}
 
 
 class NetvueSessionSensor(NetvueEntity, SensorEntity):

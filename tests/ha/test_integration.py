@@ -24,6 +24,7 @@ from homeassistant.helpers import config_validation as cv
 
 import custom_components.netvue_local as netvue_local
 from custom_components.netvue_local import camera as camera_platform
+from custom_components.netvue_local.bridge_api import BridgeError, DetectionStatus
 from custom_components.netvue_local.const import DOMAIN
 from custom_components.netvue_local.webrtc import NetvueWebRTCProvider
 from harness import HOST, STREAM_NAME, HassTestCase
@@ -320,6 +321,39 @@ class OptionsFlowTests(HassTestCase):
 
 
 class EntityTests(HassTestCase):
+    async def test_detected_objects_are_named_and_distinguish_ai_status(self):
+        self.hass.config.language = "fr"
+        with (
+            patch("custom_components.netvue_local.coordinator.async_set_detection_config",
+                  new_callable=AsyncMock),
+            patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                  new_callable=AsyncMock) as status,
+        ):
+            status.return_value = DetectionStatus(True, "detecting", [], None, None)
+            entry = await self.create_entry()
+            self.assertEqual(self.state(entry, "sensor", "detected_objects").state,
+                             "Aucun objet détecté")
+            cases = [
+                (True, "detecting", [
+                    {"category": "person", "confidence": 0.9},
+                    {"category": "dog", "confidence": 0.8},
+                    {"category": "person", "confidence": 0.85},
+                ], "Personne, Chien"),
+                (False, "detecting", [{"category": "person"}], "IA désactivée"),
+                (True, "reconnecting", [{"category": "person"}], "Reconnexion du flux"),
+                (True, "detecting", [{"category": "future"}], "Objet non identifié"),
+            ]
+            for enabled, state, objects, expected in cases:
+                with self.subTest(expected=expected):
+                    status.return_value = DetectionStatus(enabled, state, objects, None, None)
+                    await self.refresh(entry)
+                    self.assertEqual(self.state(entry, "sensor", "detected_objects").state,
+                                     expected)
+            status.side_effect = BridgeError("AI unavailable")
+            await self.refresh(entry)
+            self.assertEqual(self.state(entry, "sensor", "detected_objects").state,
+                             "unavailable")
+
     async def test_entities_device_and_initial_states(self):
         entry = await self.create_entry(name="Salon")
         registry = er.async_get(self.hass)
@@ -330,7 +364,7 @@ class EntityTests(HassTestCase):
              ("binary_sensor", "_unavailable"),
              ("button", "_restart"), ("button", "_start_recording"),
              ("button", "_stop_recording"), ("camera", ""),
-             ("sensor", "_diagnostic"), ("sensor", "_recording"),
+             ("sensor", "_detected_objects"), ("sensor", "_diagnostic"), ("sensor", "_recording"),
              ("sensor", "_session"), ("switch", "_ai_detection_enabled"),
              ("switch", "_continuous_recording")],
         )

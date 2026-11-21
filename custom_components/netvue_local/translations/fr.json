@@ -82,6 +82,27 @@
       "ai_detection": {"name": "Détection IA"}
     },
     "sensor": {
+      "detected_objects": {
+        "name": "Objets détectés",
+        "state": {
+          "none": "Aucun objet détecté",
+          "disabled": "IA désactivée",
+          "starting": "Démarrage de l'IA",
+          "reconnecting": "Reconnexion du flux",
+          "stream_unavailable": "Flux indisponible",
+          "not_configured": "IA non configurée",
+          "unknown": "Objet non identifié",
+          "person": "Personne",
+          "bird": "Oiseau",
+          "cat": "Chat",
+          "dog": "Chien",
+          "car": "Voiture",
+          "bus": "Bus",
+          "truck": "Camion",
+          "bicycle": "Vélo",
+          "motorcycle": "Moto"
+        }
+      },
       "session": {
         "name": "État de la session",
         "state": {
