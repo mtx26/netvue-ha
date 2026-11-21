@@ -64,6 +64,7 @@ type recordingManager struct {
 	playbackAddress string
 	client          *http.Client
 	playbackSlots   chan struct{}
+	overlaySlot     chan struct{}
 
 	mu     sync.RWMutex
 	states map[string]recordingState
@@ -78,6 +79,7 @@ func newRecordingManager(ctx context.Context) *recordingManager {
 		playbackAddress: defaultRecordingPlaybackURL,
 		client:          &http.Client{Timeout: 5 * time.Second},
 		playbackSlots:   make(chan struct{}, 2),
+		overlaySlot:     make(chan struct{}, 1),
 		states:          make(map[string]recordingState),
 	}
 	if dir == "" {

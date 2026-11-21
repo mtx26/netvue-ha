@@ -14,7 +14,8 @@ const ERROR_TOAST_MS = 4000;
 const HISTORY_FOLLOW_POLL_MS = 5000;
 const HISTORY_FOLLOW_BUFFER_MS = 10000;
 const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const DETECTION_TTL_MS = 6000;
+const OVERLAY_DEFAULTS = { live: true, replay: true, export: false };
+const HISTORY_SAMPLE_MAX_GAP_SECONDS = 3;
 const ENTITY_RE = /^camera\.[a-z0-9_]+$/;
 const DETECTION_LABELS_FR = {
   person: "Personne", bird: "Oiseau", cat: "Chat", dog: "Chien",
@@ -175,6 +176,7 @@ button[disabled] { color: rgba(255,255,255,.65); cursor: default; }
 .settings-panel[hidden] { display: none; }
 .settings-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .settings-header button { color: inherit; background: transparent; border-color: currentColor; }
+.overlay-setting { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 `;
 
@@ -201,7 +203,6 @@ const ICONS = {
   exitFullscreen: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3M21 8h-5V3M21 16h-5v5M3 16h5v5"/></svg>',
   record: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/></svg>',
   history: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>',
-  detections: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5"/><circle cx="12" cy="12" r="3"/></svg>',
   backHour: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 7M4 5v5h5"/><text x="8" y="15">1h</text></svg>',
   backMinutes: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 7M4 5v5h5"/><text x="6" y="15" style="font-size:7px">10m</text></svg>',
   backFifteen: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 7M4 5v5h5"/><text x="8" y="15">15</text></svg>',
@@ -250,8 +251,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyScrubbing = false;
     this._historyFollowTimer = null;
     this._historyFollowPending = false;
-    this._detectionTimer = null;
-    this._showDetections = true;
+    this._overlayPreferences = { ...OVERLAY_DEFAULTS };
     this._historyDetections = [];
     this._cssFullscreen = false;
     this._onRelease = () => this._releasePtt();
@@ -276,6 +276,7 @@ export class NetvueCameraCard extends HTMLElement {
     }
     const changed = this._config && this._config.entity !== config.entity;
     this._config = { ...config };
+    this._loadOverlayPreferences();
     if (this._built) {
       this._render();
     }
@@ -288,6 +289,7 @@ export class NetvueCameraCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._loadOverlayPreferences();
     if (this._connected) {
       this._sync();
     }
@@ -336,7 +338,6 @@ export class NetvueCameraCard extends HTMLElement {
     this.removeAttribute("css-fullscreen");
     this._paused = false;
     this._closeHistory(false);
-    this._clearTimer("_detectionTimer");
     this._stopSession();
     this._video.srcObject = null;
   }
@@ -657,6 +658,9 @@ export class NetvueCameraCard extends HTMLElement {
     });
     this._historyDownload = el("a", { download: "netvue-recording.mp4", hidden: "" }, historyActions);
     setIcon(this._historyDownload, ICONS.download);
+    this._historyDownload.addEventListener("click", (event) => this._downloadAnnotated(event));
+    this._historySettingsButton = el("button", { type: "button" }, historyActions);
+    this._historySettingsButton.addEventListener("click", () => this._openSettings());
     this._historyFullscreenButton = el("button", { type: "button", class: "history-fullscreen" }, historyActions);
     this._historyFullscreenButton.addEventListener("click", () => this._toggleFullscreen());
     this._overlay = el("div", { class: "overlay" }, wrap);
@@ -682,11 +686,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.addEventListener("click", () => this._openHistory());
     this._settingsButton = el("button", { type: "button", class: "settings" }, bar);
     this._settingsButton.addEventListener("click", () => this._openSettings());
-    this._detectionButton = el("button", { type: "button", class: "detection-toggle" }, bar);
-    this._detectionButton.addEventListener("click", () => {
-      this._showDetections = !this._showDetections;
-      this._render();
-    });
     this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
     this._bindPtt(this._pttButton);
     const volumeControl = el("div", { class: "volume-control" }, bar);
@@ -733,6 +732,13 @@ export class NetvueCameraCard extends HTMLElement {
     this._settingsTitle = el("strong", {}, settingsHeader);
     this._settingsClose = el("button", { type: "button" }, settingsHeader);
     this._settingsClose.addEventListener("click", () => this._closeSettings());
+    this._overlaySettings = {};
+    for (const key of Object.keys(OVERLAY_DEFAULTS)) {
+      const row = el("label", { class: "overlay-setting" }, this._settingsPanel);
+      const input = el("input", { type: "checkbox" }, row);
+      this._overlaySettings[key] = { input, text: el("span", {}, row) };
+      input.addEventListener("change", () => this._setOverlayPreference(key, input.checked));
+    }
     this._settingsPanel.addEventListener("cancel", (event) => {
       event.preventDefault();
       this._closeSettings();
@@ -740,7 +746,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._settingsPanel.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         this._closeSettings();
-        this._settingsButton.focus();
         event.stopPropagation();
       }
     });
@@ -801,29 +806,62 @@ export class NetvueCameraCard extends HTMLElement {
     return state?.attributes?.netvue_entry_id || null;
   }
 
-  _renderDetections() {
-    this._clearTimer("_detectionTimer");
-    while (this._detectionOverlay.firstChild) {
-      this._detectionOverlay.removeChild(this._detectionOverlay.firstChild);
+  _loadOverlayPreferences() {
+    const key = this._entryId();
+    if (key === this._overlayEntryId) return;
+    this._overlayEntryId = key;
+    this._overlayPreferences = { ...OVERLAY_DEFAULTS };
+    if (!key) return;
+    try {
+      const saved = JSON.parse(window.localStorage?.getItem(`netvue-overlay:${key}`) ?? "null");
+      for (const name of Object.keys(OVERLAY_DEFAULTS)) {
+        if (typeof saved?.[name] === "boolean") this._overlayPreferences[name] = saved[name];
+      }
+    } catch (error) {
+      console.warn("Netvue: unable to read overlay preferences", error);
     }
-    this._detectionOverlay.setAttribute("hidden", "");
-    if (!this._showDetections || this._history || !this._config || this._view.state !== "live") return;
+  }
+
+  _setOverlayPreference(key, checked) {
+    this._overlayPreferences[key] = checked;
+    try {
+      window.localStorage?.setItem(`netvue-overlay:${this._entryId()}`,
+        JSON.stringify(this._overlayPreferences));
+    } catch (error) {
+      console.warn("Netvue: unable to save overlay preferences", error);
+    }
+    this._render();
+  }
+
+  _renderDetections() {
+    if (!this._overlayPreferences.live || !this._config || this._view.state !== "live") {
+      this._drawDetections([]);
+      return;
+    }
     const registry = this._hass?.entities || {};
     const device = registry[this._config.entity]?.device_id;
-    if (!device) return;
     const entity = Object.values(registry).find((item) =>
-      item.device_id === device && item.translation_key === "ai_detection"
+      device && item.device_id === device && item.translation_key === "ai_detection"
       && item.entity_id?.startsWith("binary_sensor."),
     );
     const state = entity && this._hass.states[entity.entity_id];
     const attributes = state?.attributes;
-    const timestamp = attributes?.last_frame_at;
-    const remaining = timestamp * 1000 + DETECTION_TTL_MS - Date.now();
     if (state?.state !== "on" || !attributes.enabled || attributes.state !== "detecting"
-        || typeof timestamp !== "number" || !Number.isFinite(remaining)
-        || remaining <= 0 || remaining > DETECTION_TTL_MS
-        || !Array.isArray(attributes.detections)) return;
-    for (const detection of attributes.detections.slice(0, 12)) {
+        || !Array.isArray(attributes.detections)) {
+      this._drawDetections([]);
+      return;
+    }
+    this._drawDetections(attributes.detections.slice(0, 12));
+  }
+
+  _drawDetections(detections) {
+    const key = JSON.stringify(detections);
+    if (key === this._renderedDetections) return;
+    this._renderedDetections = key;
+    while (this._detectionOverlay.firstChild) {
+      this._detectionOverlay.removeChild(this._detectionOverlay.firstChild);
+    }
+    for (const detection of detections) {
       if (typeof detection?.category !== "string") continue;
       const confidence = detection.confidence;
       const score = typeof confidence === "number" && Number.isFinite(confidence)
@@ -834,7 +872,8 @@ export class NetvueCameraCard extends HTMLElement {
       const frameWidth = detection.frame_width;
       const frameHeight = detection.frame_height;
       if (box && Number.isFinite(frameWidth) && Number.isFinite(frameHeight)
-          && frameWidth > 0 && frameHeight > 0) {
+          && frameWidth > 0 && frameHeight > 0
+          && [box.x1, box.y1, box.x2, box.y2].every(Number.isFinite)) {
         this._detectionOverlay.setAttribute("viewBox", `0 0 ${frameWidth} ${frameHeight}`);
         const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         rect.setAttribute("x", String(box.x1));
@@ -853,23 +892,19 @@ export class NetvueCameraCard extends HTMLElement {
     }
     const visible = this._detectionOverlay.children.length > 0;
     this._detectionOverlay.toggleAttribute("hidden", !visible);
-    if (visible) {
-      this._detectionTimer = setTimeout(() => {
-        this._detectionTimer = null;
-        this._renderDetections();
-      }, remaining);
-    }
   }
 
   _openSettings() {
-    if (!this._entryId() || !this._hass?.callApi || this._zoneEditor) return;
+    if (!this._entryId() || this._settingsPanel.open) return;
     this._releasePtt();
-    const editor = document.createElement("netvue-camera-card-editor");
-    editor.setAttribute("zones-only", "");
-    editor.setConfig({ entity: this._config.entity });
-    editor.hass = this._hass;
-    this._zoneEditor = editor;
-    this._settingsPanel.appendChild(editor);
+    if (!this._history && this._hass?.callApi) {
+      const editor = document.createElement("netvue-camera-card-editor");
+      editor.setAttribute("zones-only", "");
+      editor.setConfig({ entity: this._config.entity });
+      editor.hass = this._hass;
+      this._zoneEditor = editor;
+      this._settingsPanel.appendChild(editor);
+    }
     this._settingsPanel.hidden = false;
     this._settingsPanel.showModal();
     this._settingsClose.focus();
@@ -883,7 +918,31 @@ export class NetvueCameraCard extends HTMLElement {
       this._settingsPanel.removeChild(this._zoneEditor);
       this._zoneEditor = null;
     }
-    this._settingsButton.focus();
+    (this._history ? this._historySettingsButton : this._settingsButton).focus();
+  }
+
+  async _downloadAnnotated(event) {
+    if (!this._overlayPreferences.export) return;
+    event.preventDefault();
+    const segment = this._historySegment;
+    const entryId = this._entryId();
+    if (!segment || !entryId || this._exportPending) return;
+    this._exportPending = true;
+    try {
+      const signed = await this._hass.callWS({
+        type: "auth/sign_path",
+        path: `/api/netvue_local/recordings/${encodeURIComponent(entryId)}/${segment.id}?overlay=1`,
+        expires: 300,
+      });
+      const link = document.createElement("a");
+      link.href = signed.path;
+      link.download = "netvue-recording-annotated.mp4";
+      link.click();
+    } catch {
+      if (this._history) this._historyMessage.textContent = this._t("historyExportError");
+    } finally {
+      this._exportPending = false;
+    }
   }
 
   _recordingState() {
@@ -1070,6 +1129,9 @@ export class NetvueCameraCard extends HTMLElement {
     this._historySegment = null;
     this._historyPendingSeek = null;
     this._historyCursor = time;
+    this._historyDetections = [];
+    this._historyDownload.hidden = true;
+    this._renderHistoryDetections();
     if (time < Number(this._historyRange.min) || time > Number(this._historyRange.max)) {
       this._setHistoryWindow(time);
     }
@@ -1119,10 +1181,14 @@ export class NetvueCameraCard extends HTMLElement {
         this._hass.callApi("GET", `netvue_local/recordings/${encodeURIComponent(entryId)}/${segment.id}/metadata`)
           .then((metadata) => {
             if (!this._history || generation !== this._historyGeneration) return;
-            this._historyDetections = Array.isArray(metadata?.events) ? metadata.events : [];
+            this._historyDetections = Array.isArray(metadata?.events)
+              ? metadata.events.filter((sample) => Number.isFinite(sample?.timestamp))
+                .sort((a, b) => a.timestamp - b.timestamp)
+              : [];
             this._renderHistoryDetections();
           })
           .catch(() => {
+            if (!this._history || generation !== this._historyGeneration) return;
             this._historyDetections = [];
             this._renderHistoryDetections();
           });
@@ -1144,6 +1210,7 @@ export class NetvueCameraCard extends HTMLElement {
       return;
     }
     this._historyVideo.currentTime = Math.min(pending.offset, Math.max(0, this._historyVideo.duration - 0.1));
+    this._renderHistoryDetections();
     this._historyMessage.textContent = "";
     const generation = pending.generation;
     this._historyVideo.play().catch(() => {
@@ -1167,56 +1234,20 @@ export class NetvueCameraCard extends HTMLElement {
   }
 
   _renderHistoryDetections() {
-    if (!this._showDetections || !this._history || !Array.isArray(this._historyDetections)) {
-      this._detectionOverlay.setAttribute("hidden", "");
-      while (this._detectionOverlay.firstChild) {
-        this._detectionOverlay.removeChild(this._detectionOverlay.firstChild);
-      }
-      return;
-    }
-    while (this._detectionOverlay.firstChild) {
-      this._detectionOverlay.removeChild(this._detectionOverlay.firstChild);
-    }
-    if (!this._historySegment || !Number.isFinite(this._historyVideo.currentTime)) {
-      this._detectionOverlay.setAttribute("hidden", "");
+    if (!this._overlayPreferences.replay || !this._historySegment || this._historyPendingSeek
+        || !Number.isFinite(this._historyVideo.currentTime)) {
+      this._drawDetections([]);
       return;
     }
     const absoluteSeconds = (this._historySegment.start / 1000)
       + this._historyVideo.currentTime;
-    const event = this._historyDetections
-      .slice()
-      .sort((a, b) => Math.abs(a.timestamp - absoluteSeconds) - Math.abs(b.timestamp - absoluteSeconds))
-      .find((candidate) => {
-        return candidate.timestamp >= absoluteSeconds - 2
-          && candidate.timestamp <= absoluteSeconds + 2;
-      });
-    if (!event || !Array.isArray(event.boxes) || event.boxes.length === 0
-        || !Number.isFinite(event.frame_width) || !Number.isFinite(event.frame_height)) {
-      this._detectionOverlay.setAttribute("hidden", "");
-      return;
-    }
-    this._detectionOverlay.setAttribute("viewBox", `0 0 ${event.frame_width} ${event.frame_height}`);
-    for (const box of event.boxes.slice(0, 32)) {
-      if (!["x1", "y1", "x2", "y2"].every((key) => Number.isFinite(box[key]))) continue;
-      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      rect.setAttribute("x", String(box.x1));
-      rect.setAttribute("y", String(box.y1));
-      rect.setAttribute("width", String(Math.max(0, box.x2 - box.x1)));
-      rect.setAttribute("height", String(Math.max(0, box.y2 - box.y1)));
-      rect.setAttribute("class", "detection-box");
-      this._detectionOverlay.appendChild(rect);
-      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      text.setAttribute("x", String(Math.max(0, box.x1)));
-      text.setAttribute("y", String(Math.max(0, box.y1 - 4)));
-      text.setAttribute("class", "detection-label");
-      const category = typeof box.category === "string" ? box.category : event.category;
-      const label = Object.prototype.hasOwnProperty.call(DETECTION_LABELS_FR, category)
-        ? DETECTION_LABELS_FR[category] : "Objet non identifié";
-      const confidence = typeof box.confidence === "number" ? box.confidence : event.confidence;
-      text.textContent = `${label}${typeof confidence === "number" ? ` ${Math.round(confidence * 100)} %` : ""}`;
-      this._detectionOverlay.appendChild(text);
-    }
-    this._detectionOverlay.toggleAttribute("hidden", this._detectionOverlay.children.length === 0);
+    const event = this._historyDetections.findLast((sample) => sample.timestamp <= absoluteSeconds);
+    const boxes = Array.isArray(event?.boxes)
+      && absoluteSeconds - event.timestamp < HISTORY_SAMPLE_MAX_GAP_SECONDS ? event.boxes : [];
+    this._drawDetections(boxes.slice(0, 32).map((box) => ({
+      box, category: box.category ?? event.category, confidence: box.confidence ?? event.confidence,
+      frame_width: event.frame_width, frame_height: event.frame_height,
+    })));
   }
 
   async _historyEnded() {
@@ -1332,7 +1363,8 @@ export class NetvueCameraCard extends HTMLElement {
     const fullscreen = this._isFullscreen();
     this.toggleAttribute("css-fullscreen", this._cssFullscreen);
     this._wrap.toggleAttribute("data-fullscreen", Boolean(fullscreen));
-    this._renderDetections();
+    if (this._history) this._renderHistoryDetections();
+    else this._renderDetections();
     const navigation = fullscreen && this._wall && this._wall._isFullscreen()
       && this._wall._cards.length > 1;
     this._previousButton.hidden = !navigation;
@@ -1349,12 +1381,6 @@ export class NetvueCameraCard extends HTMLElement {
       button.setAttribute("aria-pressed", String(fullscreen));
       button.title = button.getAttribute("aria-label");
     }
-    setIcon(this._detectionButton, ICONS.detections);
-    const detectionLabel = (this._hass?.locale?.language || this._hass?.language || "").startsWith("fr")
-      ? "Afficher les détections en direct" : "Show live detections";
-    this._detectionButton.setAttribute("aria-label", detectionLabel);
-    this._detectionButton.setAttribute("aria-pressed", String(this._showDetections));
-    this._detectionButton.title = detectionLabel;
     setIcon(this._pttButton, ICONS.mic);
     const available = state === "live" && ptt.ready;
     this._pttButton.disabled = !available && !ptt.pressed;
@@ -1386,10 +1412,18 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.disabled = !this._entryId();
     this._historyButton.setAttribute("aria-label", t("recordingHistory"));
     this._historyButton.title = t("recordingHistory");
-    setIcon(this._settingsButton, ICONS.settings);
-    this._settingsButton.disabled = !this._entryId() || !this._hass?.callApi;
-    this._settingsButton.setAttribute("aria-label", t("cameraSettings"));
-    this._settingsButton.title = t("cameraSettings");
+    for (const button of [this._settingsButton, this._historySettingsButton]) {
+      setIcon(button, ICONS.settings);
+      button.disabled = !this._entryId();
+      button.setAttribute("aria-label", t("cameraSettings"));
+      button.title = t("cameraSettings");
+    }
+    for (const [key, label] of Object.entries({
+      live: "overlayLive", replay: "overlayReplay", export: "overlayExport",
+    })) {
+      this._overlaySettings[key].text.textContent = t(label);
+      this._overlaySettings[key].input.checked = this._overlayPreferences[key];
+    }
     this._settingsPanel.setAttribute("aria-label", t("cameraSettings"));
     this._settingsTitle.textContent = t("cameraSettings");
     this._settingsClose.textContent = t("closeSettings");

@@ -34,6 +34,7 @@ from .const import (
     CONF_HOST,
     CONF_STREAM_NAME,
     CONF_STREAM_URL,
+    DEFAULT_AI_CONFIDENCE,
     DOMAIN,
 )
 from .coordinator import NetvueCoordinator
@@ -263,7 +264,10 @@ async def _stream_recording(request, entry_id, recording_id, *, inline):
             request.method,
             f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
             f"{quote(recording_id, safe='')}/download",
-            params={"duration": request.query["duration"]} if "duration" in request.query else None,
+            params={
+                key: request.query[key] for key in ("duration", "overlay")
+                if key in request.query
+            },
             headers={
                 key: request.headers[key] for key in ("Range", "If-Range")
                 if key in request.headers
@@ -278,7 +282,7 @@ async def _stream_recording(request, entry_id, recording_id, *, inline):
                 body=await response.read(),
                 status=response.status,
                 headers={
-                    key: response.headers[key] for key in ("Content-Type", "Content-Range")
+                    key: response.headers[key] for key in ("Content-Type", "Content-Range", "Retry-After")
                     if key in response.headers
                 },
             )
@@ -327,7 +331,7 @@ class NetvueDetectionConfigView(HomeAssistantView):
                 CONF_AI_ENABLED, entry.data.get(CONF_AI_ENABLED, True)
             ),
             CONF_AI_CONFIDENCE: entry.options.get(
-                CONF_AI_CONFIDENCE, entry.data.get(CONF_AI_CONFIDENCE, 0.45)
+                CONF_AI_CONFIDENCE, entry.data.get(CONF_AI_CONFIDENCE, DEFAULT_AI_CONFIDENCE)
             ),
             CONF_AI_FPS: entry.options.get(
                 CONF_AI_FPS, entry.data.get(CONF_AI_FPS, 3)

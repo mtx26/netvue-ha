@@ -98,6 +98,19 @@ class MediaSourceTests(HassTestCase):
                 self.assertEqual(download.headers["Content-Disposition"],
                                  'attachment; filename="recording.mp4"')
                 self.assertEqual(await download.read(), self.bridge.recording_content)
+                self.assertIsNone(self.bridge.recording_overlays[-1])
+                annotated_url = async_sign_path(
+                    self.hass,
+                    f"/api/netvue_local/recordings/{entry.entry_id}/{recording_id}"
+                    "?overlay=1&duration=12.5",
+                    timedelta(hours=24),
+                )
+                annotated = await client.get(annotated_url)
+                self.assertEqual(annotated.status, 200)
+                self.assertEqual(self.bridge.recording_overlays[-1], "1")
+                self.assertEqual(self.bridge.recording_durations[-1], "12.5")
+                tampered = await client.get(annotated_url.replace("overlay=1", "overlay=0"))
+                self.assertEqual(tampered.status, 401)
                 missing_url = async_process_play_media_url(
                     self.hass, f"/api/netvue_local/playback/{entry.entry_id}/{'c' * 32}",
                     allow_relative_url=True,

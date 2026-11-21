@@ -89,6 +89,7 @@
           "disabled": "AI disabled",
           "starting": "AI starting",
           "reconnecting": "Stream reconnecting",
+          "inference_error": "AI detection error",
           "stream_unavailable": "Stream unavailable",
           "not_configured": "AI not configured",
           "unknown": "Unidentified object",

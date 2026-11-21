@@ -89,6 +89,7 @@
           "disabled": "IA désactivée",
           "starting": "Démarrage de l'IA",
           "reconnecting": "Reconnexion du flux",
+          "inference_error": "Erreur de détection IA",
           "stream_unavailable": "Flux indisponible",
           "not_configured": "IA non configurée",
           "unknown": "Objet non identifié",

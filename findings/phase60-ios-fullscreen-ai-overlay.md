@@ -78,3 +78,48 @@ et les boites de detection IA live/historiques sans perturber WebRTC.
 - Le pont de production renvoyait des boîtes historiques en HTTP 200 sur une
   plage de dix minutes. L'alignement à l'écran, en direct et en replay, reste
   à vérifier dans le tableau de bord après déploiement de `0.2.31`.
+
+## Suivi 0.2.32 — cadres synchronisés et réglages
+
+- Le cadre direct reste affiché jusqu'au prochain état IA reçu par la carte.
+  Un état vide l'efface ; un état indisponible le masque. Aucun minuteur
+  d'affichage ne peut l'effacer entre deux relevés.
+- L'IA enregistre la transition vers un état vide après un état positif. En
+  replay, seul le dernier échantillon atteint peut s'afficher : une détection
+  à venir n'anticipe plus le cadre. Une coupure de trois secondes protège
+  contre les cadres périmés lorsque les métadonnées sont manquantes,
+  notamment pour les anciens enregistrements.
+- La roue dentée est accessible en direct et en replay. Les choix sont
+  indépendants, enregistrés pour cette caméra dans le navigateur. Par défaut,
+  les cadres sont visibles à l'écran et absents du MP4 téléchargé.
+- Activation en production non effectuée. Pour utiliser les transitions
+  historiques et l'export annoté, mettre à jour l'intégration, le pont et le
+  service IA.
+
+### Deux voitures dans le Garage
+
+- Sur la capture fournie, le modèle installé renvoyait deux boîtes de voiture
+  à 0,474 et 0,388. Au seuil de 0,45, la seconde était écartée.
+- Aucun seuil ni aucune durée spéciale pour les voitures : toutes les pistes
+  confirmées restent visibles pendant la durée de vie déjà utilisée par le
+  tracker (cinq inférences manquées). Seules les observations réelles peuvent
+  générer un événement. Le capteur indique aussi le nombre par classe.
+- Deux pistes simultanées et leur disparition indépendante sont testées sur
+  une séquence synthétique. Les essais de contraste et de recadrage n'ont pas
+  confirmé les deux voitures entières au seuil inchangé sur cette capture.
+  La comparaison de modèles sur des images nocturnes reste à faire.
+- Le seuil de confiance par défaut est passé de 0,45 à 0,38 pour toutes les
+  classes. Une valeur déjà enregistrée dans les options d'une caméra est
+  conservée ; régler manuellement la caméra existante pour essayer le nouveau
+  seuil. Cette baisse peut augmenter les faux positifs.
+
+### Corrections après revue
+
+- Une erreur d'inférence efface immédiatement l'état IA et enregistre un
+  marqueur de fin pour le replay. La reprise repart sans pistes périmées.
+- Le replay et l'export consultent la même fenêtre, y compris les trois
+  secondes qui précèdent le segment. La route historique sans dates garde
+  son comportement d'origine ; le direct utilise toujours le statut IA.
+- Le pont accepte un seul export annoté à la fois et exige un téléchargement
+  complet pour ne pas réencoder à chaque requête partielle. Le MP4 original
+  conserve la reprise HTTP. La charge sur un long segment reste à mesurer.

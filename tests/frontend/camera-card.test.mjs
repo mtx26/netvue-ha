@@ -501,7 +501,7 @@ test("history overlay exposes jumps, date, download and a clear return to live",
   assert.deepEqual(actions.children, [
     card._historyLiveButton, card._historyHourButton, card._historyTenButton,
     card._historyBackButton, card._historyForwardButton, card._historyDatePicker, card._historyDownload,
-    card._historyFullscreenButton,
+    card._historySettingsButton, card._historyFullscreenButton,
   ]);
   assert.equal(card._historyLiveButton.textContent, "LIVE");
   assert.equal(card._historyLiveButton.getAttribute("aria-label"), "Back to live");
@@ -537,6 +537,49 @@ test("history overlay exposes jumps, date, download and a clear return to live",
   assert.equal(card._history, false);
   assert.equal(card._historyPlayer.hidden, true);
   assert.equal(card._historyDownload.hidden, true);
+});
+
+test("only annotated export signs a download with the overlay option", async (t) => {
+  const entries = new Map();
+  t.mock.method(document, "createElement", (tag) => {
+    const element = new FakeElement(tag);
+    element.click = () => entries.set("download", element.href);
+    return element;
+  });
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const saved = new Map();
+  window.localStorage = {
+    getItem: (key) => saved.get(key),
+    setItem: (key, value) => saved.set(key, value),
+  };
+  t.after(() => { delete window.localStorage; });
+  const requests = [];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callWS(message) {
+      requests.push(message);
+      return { path: "/signed/annotated" };
+    },
+  };
+  card._historySegment = { id: "a".repeat(32) };
+  let prevented = 0;
+  const event = { preventDefault() { prevented++; } };
+  await card._downloadAnnotated(event);
+  assert.equal(prevented, 0);
+  card._overlaySettings.export.input.checked = true;
+  card._overlaySettings.export.input.dispatch("change");
+  await card._downloadAnnotated(event);
+  assert.equal(prevented, 1);
+  assert.equal(requests[0].path, `/api/netvue_local/recordings/entry1/${"a".repeat(32)}?overlay=1`);
+  assert.equal(entries.get("download"), "/signed/annotated");
+  const reloaded = new NetvueCameraCard();
+  reloaded.setConfig({ entity: "camera.test" });
+  reloaded.hass = card.hass;
+  reloaded._build();
+  assert.equal(reloaded._overlaySettings.export.input.checked, true);
+  assert.equal(reloaded._overlaySettings.replay.input.checked, true);
 });
 
 test("timeline graduations follow the available recording bounds across days", async () => {
@@ -856,7 +899,7 @@ test("webkit fullscreen and rejected requests preserve replay position", async (
   card.disconnectedCallback();
 });
 
-test("live detection overlay uses only fresh detections from the camera device", (t) => {
+test("live boxes hold until the next AI state without following unrelated updates", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100000 });
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
@@ -893,30 +936,28 @@ test("live detection overlay uses only fresh detections from the camera device",
     card._detectionOverlay.children.filter((item) => item.tagName === "text").map((item) => item.textContent),
     ["Personne 87 %", "Chien 90 %"],
   );
-  card._detectionButton.dispatch("click");
+  card._overlaySettings.live.input.checked = false;
+  card._overlaySettings.live.input.dispatch("change");
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
-  assert.equal(card._detectionButton.getAttribute("aria-pressed"), "false");
   card._history = true;
   card._render();
   card._history = false;
   card._render();
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
-  card._detectionButton.dispatch("click");
+  card._overlaySettings.live.input.checked = true;
+  card._overlaySettings.live.input.dispatch("change");
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
   card._history = true;
   card._render();
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
-  assert.equal(card._detectionButton.getAttribute("aria-pressed"), "true");
   card._history = false;
   card._render();
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
-  t.mock.timers.tick(5999);
-  assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
-  t.mock.timers.tick(1);
-  assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
-  detection.attributes.last_frame_at = 106;
+  const firstBox = card._detectionOverlay.firstChild;
+  t.mock.timers.tick(60000);
   card._render();
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
+  assert.equal(card._detectionOverlay.firstChild, firstBox);
   const detections = detection.attributes.detections;
   detection.attributes.detections = [];
   card._render();
@@ -925,6 +966,35 @@ test("live detection overlay uses only fresh detections from the camera device",
   detection.state = "unavailable";
   card._render();
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
+  card.disconnectedCallback();
+});
+
+test("replay holds the preceding sample until a clear update and ignores future samples", () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card.connectedCallback();
+  card._history = true;
+  card._historySegment = { start: 100000 };
+  card._historyDetections = [
+    { timestamp: 101, frame_width: 640, frame_height: 360,
+      boxes: [{ category: "car", x1: 20, y1: 40, x2: 100, y2: 120 }] },
+    { timestamp: 103, boxes: [] },
+  ];
+  const renderAt = (time) => {
+    card._historyVideo.currentTime = time;
+    card._render();
+    return !card._detectionOverlay.hasAttribute("hidden");
+  };
+  assert.equal(renderAt(0.9), false);
+  assert.equal(renderAt(1), true);
+  assert.equal(renderAt(2.9), true);
+  assert.equal(renderAt(3), false);
+  assert.equal(renderAt(1.5), true);
+  card._overlaySettings.replay.input.checked = false;
+  card._overlaySettings.replay.input.dispatch("change");
+  assert.equal(renderAt(1.5), false);
+  assert.equal(card._overlaySettings.live.input.checked, true);
+  assert.equal(card._overlaySettings.export.input.checked, false);
   card.disconnectedCallback();
 });
 

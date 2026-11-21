@@ -1,5 +1,7 @@
 """Session status reported by the local Go bridge."""
 
+from collections import Counter
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
@@ -71,16 +73,17 @@ class NetvueDetectedObjectsSensor(NetvueLiveDetectionEntity, SensorEntity):
             return self._labels["disabled"]
         if detection.state != "detecting":
             return self._labels.get(detection.state, detection.state)
-        categories = dict.fromkeys(
+        categories = Counter(
             item.get("category") for item in detection.detections
             if isinstance(item.get("category"), str)
         )
         if not detection.detections:
             return self._labels["none"]
-        return ", ".join(
-            self._labels.get(category, self._labels["unknown"])
-            for category in categories
-        ) or self._labels["unknown"]
+        labels = []
+        for category, count in categories.items():
+            label = self._labels.get(category, self._labels["unknown"])
+            labels.append(f"{label} ×{count}" if count > 1 else label)
+        return ", ".join(labels) or self._labels["unknown"]
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:

@@ -1,3 +1,4 @@
+import json
 import unittest
 import tempfile
 from fractions import Fraction
@@ -6,12 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import av
 import numpy as np
+from onnxruntime.capi.onnxruntime_pybind11_state import Fail
 
 from netvue_ai import (
     AiService,
     CameraWorker,
     Detection,
     IoUTracker,
+    Track,
     YoloDetector,
     iou,
     point_in_zone,
@@ -20,6 +23,36 @@ from netvue_ai import (
 
 
 class AiUnitTest(unittest.TestCase):
+    def test_two_cars_confirm_and_survive_independent_short_misses(self):
+        tracker = IoUTracker(confirmation_frames=2)
+        left = Detection(2, "car", 0.65, (0, 0, 30, 30))
+        right = Detection(2, "car", 0.52, (50, 0, 90, 40))
+        tracker.update([left, right])
+        self.assertEqual(tracker.visible(), [])
+        tracker.update([left, right])
+        self.assertEqual([track.box for track in tracker.visible()], [left.box, right.box])
+        for _ in range(5):
+            matched = tracker.update([right])
+            self.assertEqual([track.box for track in matched], [right.box])
+        self.assertEqual([track.box for track in tracker.visible()], [left.box, right.box])
+        tracker.update([right])
+        self.assertEqual([track.box for track in tracker.visible()], [right.box])
+
+    def test_metadata_saves_one_sample_per_frame_and_clears_on_first_empty_update(self):
+        worker = CameraWorker("netvue_192_0_2_1", {}, MagicMock(confidence=0.45), 3, 1)
+        track = Track(track_id=1, label="car", confidence=0.9, box=(5, 5, 40, 30))
+        other = Track(track_id=2, label="person", confidence=0.8, box=(7, 7, 20, 30))
+        with patch("netvue_ai.urllib.request.urlopen") as post:
+            post.return_value.__enter__.return_value.status = 201
+            worker.persist_metadata(1.0, (48, 64), [])
+            worker.persist_metadata(2.0, (48, 64), [track, other])
+            worker.persist_metadata(2.5, (48, 64), [])
+            worker.persist_metadata(3.0, (48, 64), [])
+        seen = [json.loads(call.args[0].data) for call in post.call_args_list]
+        self.assertEqual([sample["timestamp"] for sample in seen], [2.0, 2.5])
+        self.assertEqual([box["category"] for box in seen[0]["boxes"]], ["car", "person"])
+        self.assertEqual((seen[1]["event"], seen[1]["boxes"]), ("object_cleared", []))
+
     def test_enabled_logs_only_state_changes(self):
         worker = CameraWorker("test", {}, MagicMock(confidence=0.45), fps=1, confirmation=2)
         with self.assertLogs("netvue_ai", level="INFO") as logs:
@@ -154,16 +187,16 @@ class AiUnitTest(unittest.TestCase):
 
     def test_worker_counts_skipped_frames_and_recovers_from_inference_error(self):
         detector = MagicMock(confidence=0.45)
-        worker = CameraWorker("test", {}, detector, fps=1, confirmation=2)
-        results = [RuntimeError("inference failed"), []]
+        worker = CameraWorker("test", {}, detector, fps=1, confirmation=1)
+        results = [[Detection(2, "car", 0.8, (5, 5, 30, 30))], Fail("ONNX failed"), []]
+        snapshots = []
 
         def frames():
-            for _ in range(3):
+            for _ in range(4):
                 yield av.VideoFrame(64, 48)
+                snapshots.append(worker.snapshot())
 
         def detect(_frame, _confidence):
-            if detector.detect.call_count == 2:
-                worker.running = False
             result = results.pop(0)
             if isinstance(result, Exception):
                 raise result
@@ -172,20 +205,27 @@ class AiUnitTest(unittest.TestCase):
         detector.detect.side_effect = detect
         with (
             patch("netvue_ai.video_frames", side_effect=lambda _url: frames()),
-            patch("netvue_ai.time.monotonic", side_effect=[1.0, 1.1, 2.0]),
-            patch("netvue_ai.time.sleep"),
+            patch("netvue_ai.time.monotonic", side_effect=[1.0, 1.1, 2.0, 3.0]),
+            patch("netvue_ai.time.sleep", side_effect=lambda _: setattr(worker, "running", False)),
+            patch.object(worker, "persist_metadata") as persist,
             self.assertLogs("netvue_ai", level="WARNING") as logs,
         ):
             worker.run()
 
         metrics = worker.snapshot()
-        self.assertEqual(metrics["frames_decoded"], 3)
+        self.assertEqual(metrics["frames_decoded"], 4)
         self.assertEqual(metrics["frames_skipped"], 1)
-        self.assertEqual(metrics["inference_count"], 2)
+        self.assertEqual(metrics["inference_count"], 3)
         self.assertEqual(metrics["inference_errors"], 1)
         self.assertEqual(metrics["error_count"], 1)
         self.assertEqual(metrics["inference_fps"], 1.0)
         self.assertIn("Inference failed for test", logs.output[0])
+        self.assertEqual(snapshots[0]["detections"][0]["category"], "car")
+        self.assertEqual(snapshots[2]["state"], "inference_error")
+        self.assertEqual(snapshots[2]["detections"], [])
+        self.assertEqual(snapshots[3]["state"], "detecting")
+        self.assertEqual(snapshots[3]["detections"], [])
+        self.assertFalse(persist.call_args_list[1].args[2])
 
     def test_worker_resets_confirmation_after_resolution_change(self):
         detector = MagicMock(confidence=0.45)

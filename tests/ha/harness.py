@@ -45,6 +45,7 @@ class FakeBridge:
         self.recording_content = b"synthetic-video"
         self.recording_ranges: list[tuple[str | None, str | None]] = []
         self.recording_durations: list[str | None] = []
+        self.recording_overlays: list[str | None] = []
         self.recording_offsets: list[str | None] = []
         self.port = _free_port()
         self._runner: web.AppRunner | None = None
@@ -108,6 +109,7 @@ class FakeBridge:
             return web.Response(status=404)
         self.recording_ranges.append((request.headers.get("Range"), request.headers.get("If-Range")))
         self.recording_durations.append(request.query.get("duration"))
+        self.recording_overlays.append(request.query.get("overlay"))
         headers = {
             "Content-Disposition": 'attachment; filename="recording.mp4"',
             "Accept-Ranges": "bytes",

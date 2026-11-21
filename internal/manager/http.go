@@ -356,7 +356,7 @@ func (manager *Manager) handleRecordingMetadata(w http.ResponseWriter, r *http.R
 	if !end.After(segment.Start) {
 		end = time.Now()
 	}
-	events := manager.aiMetadata.between(camera.StreamName, segment.Start, end)
+	events := manager.recordingOverlaySamples(camera.StreamName, segment.Start, end)
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
@@ -428,6 +428,11 @@ func (manager *Manager) handleRecordingDownload(w http.ResponseWriter, r *http.R
 		writeAPIError(w, http.StatusNotFound, "recording not found")
 		return
 	}
+	overlay := r.URL.Query().Get("overlay") == "1"
+	if overlay && manager.aiMetadata == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "AI metadata storage is not configured")
+		return
+	}
 	if raw := r.URL.Query().Get("duration"); raw != "" {
 		duration, err := strconv.ParseFloat(raw, 64)
 		if err != nil || math.IsNaN(duration) || math.IsInf(duration, 0) ||
@@ -436,6 +441,25 @@ func (manager *Manager) handleRecordingDownload(w http.ResponseWriter, r *http.R
 			return
 		}
 		segment.Duration = duration
+	}
+	if overlay {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeAPIError(w, http.StatusMethodNotAllowed, "annotated export requires GET")
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			writeAPIError(w, http.StatusBadRequest, "annotated export requires a full download")
+			return
+		}
+		select {
+		case manager.recordings.overlaySlot <- struct{}{}:
+			defer func() { <-manager.recordings.overlaySlot }()
+		default:
+			w.Header().Set("Retry-After", "5")
+			writeAPIError(w, http.StatusServiceUnavailable, "an annotated export is already in progress")
+			return
+		}
 	}
 	select {
 	case manager.recordings.playbackSlots <- struct{}{}:
@@ -477,11 +501,37 @@ func (manager *Manager) handleRecordingDownload(w http.ResponseWriter, r *http.R
 		writeAPIError(w, http.StatusBadGateway, "recording exceeds playback size limit")
 		return
 	}
+	etag := fmt.Sprintf(`"%s-%.9f"`, segment.ID, segment.Duration)
+	if overlay {
+		rendered, overlayETag, err := manager.renderRecordingOverlay(ctx, file, segment, camera.StreamName)
+		if err != nil {
+			slog.Warn("Unable to render recording overlay", "error", err)
+			writeAPIError(w, http.StatusBadGateway, "unable to render recording overlay")
+			return
+		}
+		defer os.Remove(rendered.Name())
+		defer rendered.Close()
+		info, err := rendered.Stat()
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "unable to read annotated export size")
+			return
+		}
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		file = rendered
+		etag = overlayETag
+	}
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Content-Disposition",
 		fmt.Sprintf(`attachment; filename="netvue-%s-%s.mp4"`,
 			camera.StreamName, segment.Start.UTC().Format("20060102T150405Z")))
-	w.Header().Set("ETag", fmt.Sprintf(`"%s-%.9f"`, segment.ID, segment.Duration))
+	w.Header().Set("ETag", etag)
+	if overlay {
+		w.Header().Set("Accept-Ranges", "none")
+		if _, err := io.Copy(w, file); err != nil {
+			slog.Debug("Unable to send annotated export", "error", err)
+		}
+		return
+	}
 	http.ServeContent(w, r, "", time.Time{}, file)
 }
 

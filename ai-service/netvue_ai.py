@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from aiohttp import web
+from onnxruntime.capi.onnxruntime_pybind11_state import Fail, InvalidArgument, RuntimeException
 
 COCO_NAMES = {
     0: "person", 14: "bird", 15: "cat", 16: "dog",
@@ -83,10 +84,9 @@ class IoUTracker:
 
     def update(self, detections: Iterable[Detection]) -> list[Track]:
         self.age += 1
-        detections = list(detections)
         unmatched_tracks = set(self.tracks)
         matched: list[Track] = []
-        for detection in detections:
+        for detection in sorted(detections, key=lambda candidate: -candidate.confidence):
             best_id = 0
             best_iou = 0.20
             for track_id in tuple(unmatched_tracks):
@@ -113,12 +113,16 @@ class IoUTracker:
             self.last_seen[track.track_id] = self.age
             if track.confirmed_frames >= self.confirmation_frames:
                 matched.append(track)
-
         for track_id in unmatched_tracks:
-            if self.age - self.last_seen.get(track_id, 0) > 5:
-                self.tracks.pop(track_id, None)
-                self.last_seen.pop(track_id, None)
+            if self.age - self.last_seen[track_id] > 5:
+                del self.tracks[track_id], self.last_seen[track_id]
         return matched
+
+    def visible(self) -> list[Track]:
+        return [
+            track for track in self.tracks.values()
+            if track.confirmed_frames >= self.confirmation_frames
+        ]
 
 
 class YoloDetector:
@@ -242,6 +246,7 @@ class CameraWorker:
         self.interval = 1.0 / max(1.0, fps)
         self._active_interval = max(self.interval, QUIET_INFERENCE_INTERVAL)
         self._last_detection_at: float | None = None
+        self._metadata_has_boxes = False
         self.tracker = IoUTracker(confirmation)
         self.events: list[dict] = []
         self.event_cursor = 0
@@ -300,6 +305,8 @@ class CameraWorker:
                     self.status["inference_fps"] = round(1 / interval, 3)
             self._last_inference_started_at = started_at
             if error is not None:
+                self.status["state"] = "inference_error"
+                self.status["detections"] = []
                 self.status["error_count"] += 1
                 self.status["inference_errors"] += 1
                 self.status["last_error"] = error[:200]
@@ -355,8 +362,8 @@ class CameraWorker:
 
     def persist_metadata(self, timestamp: float, frame_size: tuple[int, int],
                          tracks: Iterable[Track]) -> None:
-        tracks = list(tracks)
-        if not tracks:
+        tracks = list(tracks)[:32]
+        if not tracks and not self._metadata_has_boxes:
             return
         host = self.stream_name
         if host.startswith("netvue_"):
@@ -372,31 +379,32 @@ class CameraWorker:
             }
             for track in tracks
         ]
-        for track in tracks:
-            event = {
-                "id": f"{int(timestamp * 1000)}-{self.stream_name}-{track.track_id}",
-                "timestamp": timestamp,
-                "stream_name": self.stream_name,
-                "event": "object_detected",
-                "category": track.label,
-                "confidence": round(track.confidence, 3),
-                "track_id": track.track_id,
-                "frame_width": frame_size[1],
-                "frame_height": frame_size[0],
-                "boxes": boxes,
-            }
-            try:
-                request = urllib.request.Request(
-                    f"http://127.0.0.1:8765/api/v1/cameras/{host}/ai/metadata",
-                    data=json.dumps(event).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(request, timeout=1.0) as response:
-                    if response.status not in (200, 201):
-                        raise OSError(f"bridge returned HTTP {response.status}")
-            except (OSError, urllib.error.URLError, TimeoutError) as exc:
-                _LOGGER.debug("Cannot persist AI metadata for %s: %s", self.stream_name, exc)
+        track = tracks[0] if tracks else None
+        event = {
+            "id": f"{int(timestamp * 1000)}-{self.stream_name}-{track.track_id if track else 0}",
+            "timestamp": timestamp,
+            "stream_name": self.stream_name,
+            "event": "object_detected" if track else "object_cleared",
+            "category": track.label if track else "",
+            "confidence": round(track.confidence, 3) if track else 0,
+            "track_id": track.track_id if track else 0,
+            "frame_width": frame_size[1],
+            "frame_height": frame_size[0],
+            "boxes": boxes,
+        }
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:8765/api/v1/cameras/{host}/ai/metadata",
+                data=json.dumps(event).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=1.0) as response:
+                if response.status not in (200, 201):
+                    raise OSError(f"bridge returned HTTP {response.status}")
+            self._metadata_has_boxes = bool(boxes)
+        except OSError as exc:
+            _LOGGER.debug("Cannot persist AI metadata for %s: %s", self.stream_name, exc)
 
     def run(self) -> None:
         url = f"rtsp://127.0.0.1:8554/{self.stream_name}"
@@ -438,17 +446,22 @@ class CameraWorker:
                     inference_started = time.perf_counter()
                     try:
                         detections = self.detector.detect(frame, self.confidence)
-                    except (RuntimeError, cv2.error, ValueError) as exc:
+                    except (RuntimeError, cv2.error, ValueError, Fail, InvalidArgument, RuntimeException) as exc:
                         self._update_sampling_interval(now, False)
                         self._record_inference(
                             now, (time.perf_counter() - inference_started) * 1000,
                             False, str(exc),
                         )
+                        next_id = self.tracker.next_id
+                        self.tracker = IoUTracker(self.tracker.confirmation_frames)
+                        self.tracker.next_id = next_id
+                        self.persist_metadata(time.time(), frame_size, ())
                         _LOGGER.warning("Inference failed for %s: %s", self.stream_name, exc)
                         continue
                     latency_ms = (time.perf_counter() - inference_started) * 1000
                     self._update_sampling_interval(now, bool(detections))
                     confirmed = self.tracker.update(detections)
+                    visible = self.tracker.visible()
                     self._record_inference(now, latency_ms, bool(confirmed))
                     latest = [
                         {
@@ -464,13 +477,14 @@ class CameraWorker:
                             "frame_width": frame_size[1],
                             "frame_height": frame_size[0],
                         }
-                        for item in confirmed
+                        for item in visible
                     ]
+                    timestamp = time.time()
                     with self._lock:
                         self.status["state"] = "detecting"
                         self.status["detections"] = latest
-                        self.status["last_frame_at"] = time.time()
-                    self.persist_metadata(time.time(), frame_size, confirmed)
+                        self.status["last_frame_at"] = timestamp
+                    self.persist_metadata(timestamp, frame_size, visible)
                     for track in confirmed:
                         zones_hit = [
                             name for name, rect in self.zones.items()
@@ -510,7 +524,7 @@ class CameraWorker:
 class AiService:
     def __init__(self) -> None:
         model = os.environ.get("NETVUE_AI_MODEL", "/app/yolov8n.onnx")
-        confidence = float(os.environ.get("NETVUE_AI_CONFIDENCE", "0.45"))
+        confidence = float(os.environ.get("NETVUE_AI_CONFIDENCE", "0.38"))
         fps = float(os.environ.get("NETVUE_AI_FPS", "3"))
         confirmation = int(os.environ.get("NETVUE_AI_CONFIRMATION_FRAMES", "3"))
         _LOGGER.info("Loading YOLOv8n model with ONNX Runtime CPU")

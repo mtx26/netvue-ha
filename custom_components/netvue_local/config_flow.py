@@ -13,7 +13,7 @@ from .bridge_api import BridgeError, async_discover_cameras, async_stop_camera
 from .const import (
     CONF_AI_CONFIDENCE, CONF_AI_CONFIRMATION_FRAMES, CONF_AI_ENABLED,
     CONF_AI_FPS, CONF_AI_ZONES, CONF_HOST, CONF_STREAM_NAME,
-    CONF_STREAM_URL, DEFAULT_NAME, DOMAIN,
+    CONF_STREAM_URL, DEFAULT_AI_CONFIDENCE, DEFAULT_NAME, DOMAIN,
 )
 from .rtsp import (
     stream_name_for_host, stream_url_from_name, validate_host,
@@ -85,7 +85,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_HOST): vol.In(self._discovered_hosts),
                 vol.Required("manual", default=False): bool,
                 vol.Required(CONF_AI_ENABLED, default=True): bool,
-                vol.Required(CONF_AI_CONFIDENCE, default=0.45):
+                vol.Required(CONF_AI_CONFIDENCE, default=DEFAULT_AI_CONFIDENCE):
                     vol.All(vol.Coerce(float), vol.Range(min=0.1, max=0.95)),
                 vol.Required(CONF_AI_FPS, default=3):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
@@ -130,7 +130,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_STREAM_NAME: stream_name,
                 CONF_STREAM_URL: url,
                 CONF_AI_ENABLED: user_input.get(CONF_AI_ENABLED, True),
-                CONF_AI_CONFIDENCE: float(user_input.get(CONF_AI_CONFIDENCE, 0.45)),
+                CONF_AI_CONFIDENCE: float(user_input.get(CONF_AI_CONFIDENCE, DEFAULT_AI_CONFIDENCE)),
                 CONF_AI_FPS: float(user_input.get(CONF_AI_FPS, 3)),
                 CONF_AI_CONFIRMATION_FRAMES: user_input.get(
                     CONF_AI_CONFIRMATION_FRAMES, 3
@@ -151,7 +151,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
                 vol.Required(CONF_HOST, default=""): str,
                 vol.Required(CONF_AI_ENABLED, default=True): bool,
-                vol.Required(CONF_AI_CONFIDENCE, default=0.45):
+                vol.Required(CONF_AI_CONFIDENCE, default=DEFAULT_AI_CONFIDENCE):
                     vol.All(vol.Coerce(float), vol.Range(min=0.1, max=0.95)),
                 vol.Required(CONF_AI_FPS, default=3):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
@@ -170,7 +170,7 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
             CONF_AI_ENABLED, entry.data.get(CONF_AI_ENABLED, True)
         )
         default_ai_confidence = entry.options.get(
-            CONF_AI_CONFIDENCE, entry.data.get(CONF_AI_CONFIDENCE, 0.45)
+            CONF_AI_CONFIDENCE, entry.data.get(CONF_AI_CONFIDENCE, DEFAULT_AI_CONFIDENCE)
         )
         default_ai_fps = entry.options.get(
             CONF_AI_FPS, entry.data.get(CONF_AI_FPS, 3)

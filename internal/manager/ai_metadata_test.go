@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -143,6 +144,10 @@ func TestAIMetadataEndpointPersistsAndAssociatesEventsWithRecording(t *testing.T
 	if ingest.Code != http.StatusCreated {
 		t.Fatalf("ingest status = %d, body %s", ingest.Code, ingest.Body)
 	}
+	before := testAIMetadata("before", "camera", float64(segmentStartTime.Unix()-1))
+	if _, err := store.add(before); err != nil {
+		t.Fatal(err)
+	}
 
 	segments, err := manager.recordings.list("camera", time.Time{}, time.Time{})
 	if err != nil || len(segments) != 1 {
@@ -163,8 +168,20 @@ func TestAIMetadataEndpointPersistsAndAssociatesEventsWithRecording(t *testing.T
 	if err := json.Unmarshal(query.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Events) != 1 || response.Events[0].Boxes[0].X1 != event.Boxes[0].X1 {
+	if len(response.Events) != 2 || response.Events[0].ID != before.ID ||
+		response.Events[1].Boxes[0].X1 != event.Boxes[0].X1 {
 		t.Fatalf("recording metadata response = %+v", response.Events)
+	}
+	unbounded := httptest.NewRecorder()
+	handler.ServeHTTP(unbounded, httptest.NewRequest(
+		http.MethodGet, "/api/v1/cameras/192.168.10.2/ai/metadata", nil,
+	))
+	if err := json.Unmarshal(unbounded.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if unbounded.Code != http.StatusOK || len(response.Events) != 1 ||
+		response.Events[0].ID != event.ID {
+		t.Fatalf("metadata without a range = %d, %+v", unbounded.Code, response.Events)
 	}
 
 	rangeStart := segmentStartTime.Add(4 * time.Second).Format(time.RFC3339)
@@ -184,6 +201,16 @@ func TestAIMetadataEndpointPersistsAndAssociatesEventsWithRecording(t *testing.T
 	if len(response.Events) != 1 || response.Events[0].TrackID != event.TrackID {
 		t.Fatalf("range metadata response = %+v", response.Events)
 	}
+	clear := []byte(`{"id":"clear","timestamp":` +
+		strconv.FormatInt(segmentStartTime.Add(6*time.Second).Unix(), 10) +
+		`,"event":"object_cleared","frame_width":640,"frame_height":480,"boxes":[]}`)
+	clearResult := httptest.NewRecorder()
+	handler.ServeHTTP(clearResult, httptest.NewRequest(
+		http.MethodPost, "/api/v1/cameras/192.168.10.2/ai/metadata", bytes.NewReader(clear),
+	))
+	if clearResult.Code != http.StatusCreated {
+		t.Fatalf("clear ingest status = %d, body %s", clearResult.Code, clearResult.Body)
+	}
 }
 
 func testAIMetadata(id, stream string, timestamp float64) AIDetectionMetadata {
@@ -199,5 +226,38 @@ func testAIMetadata(id, stream string, timestamp float64) AIDetectionMetadata {
 		Boxes: []AIDetectionBox{{
 			X1: 10, Y1: 20, X2: 100, Y2: 200,
 		}},
+	}
+}
+
+func TestAIMetadataClearPersistsAndRejectsDetections(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newAIMetadataStoreWithLimits(dir, 10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear := AIDetectionMetadata{
+		ID: "clear", StreamName: "camera", Timestamp: float64(time.Now().Unix()),
+		Event: "object_cleared", FrameWidth: 640, FrameHeight: 480,
+		Boxes: []AIDetectionBox{},
+	}
+	if stored, err := store.add(clear); err != nil || !stored {
+		t.Fatalf("add clear = %t, %v", stored, err)
+	}
+	recovered, err := newAIMetadataStoreWithLimits(dir, 10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := recovered.between("camera", time.Time{}, time.Time{})
+	if len(events) != 1 || events[0].Event != "object_cleared" || len(events[0].Boxes) != 0 {
+		t.Fatalf("recovered events = %+v", events)
+	}
+	clear.TrackID = 1
+	if err := validateAIMetadata(clear); err == nil {
+		t.Fatal("clear event with a track accepted")
+	}
+	clear.TrackID = 0
+	clear.Event = "object_detected"
+	if err := validateAIMetadata(clear); err == nil {
+		t.Fatal("empty detection accepted")
 	}
 }

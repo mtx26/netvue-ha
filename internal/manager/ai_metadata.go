@@ -308,9 +308,19 @@ func validateAIMetadata(event AIDetectionMetadata) error {
 		event.Timestamp > float64(math.MaxInt64)/float64(time.Second) {
 		return errors.New("AI metadata has an invalid timestamp")
 	}
-	if event.TrackID < 1 || event.FrameWidth < 1 || event.FrameHeight < 1 ||
+	if event.FrameWidth < 1 || event.FrameHeight < 1 ||
 		event.FrameWidth > 32768 || event.FrameHeight > 32768 {
-		return errors.New("AI metadata has invalid frame dimensions or track id")
+		return errors.New("AI metadata has invalid frame dimensions")
+	}
+	if event.Event == "object_cleared" {
+		if len(event.Boxes) != 0 || event.TrackID != 0 || event.Category != "" ||
+			event.Confidence != 0 {
+			return errors.New("AI clear metadata must not contain a detection")
+		}
+		return nil
+	}
+	if event.TrackID < 1 {
+		return errors.New("AI metadata has invalid track id")
 	}
 	if len(event.Boxes) == 0 || len(event.Boxes) > maxAIMetadataBoxes {
 		return errors.New("AI metadata must contain a bounded set of boxes")

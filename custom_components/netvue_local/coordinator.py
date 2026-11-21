@@ -27,7 +27,7 @@ from .bridge_api import (
 from .const import (
     CONF_AI_CONFIDENCE, CONF_AI_CONFIRMATION_FRAMES, CONF_AI_ENABLED,
     CONF_AI_FPS, CONF_AI_ZONES, CONF_STREAM_NAME, CONF_STREAM_URL,
-    DOMAIN, UPDATE_INTERVAL,
+    DEFAULT_AI_CONFIDENCE, DOMAIN, UPDATE_INTERVAL,
 )
 from .rtsp import async_probe_stream
 
@@ -134,7 +134,7 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
                     enabled=ai_enabled,
                     confidence=self._entry.options.get(
                         CONF_AI_CONFIDENCE,
-                        self._entry.data.get(CONF_AI_CONFIDENCE, 0.45),
+                        self._entry.data.get(CONF_AI_CONFIDENCE, DEFAULT_AI_CONFIDENCE),
                     ),
                     fps=self._entry.options.get(
                         CONF_AI_FPS, self._entry.data.get(CONF_AI_FPS, 3)

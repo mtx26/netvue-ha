@@ -83,7 +83,7 @@ class ConfigFlowTests(HassTestCase):
             "host": HOST, "stream_name": STREAM_NAME,
             "stream_url": f"rtsp://127.0.0.1:8554/{STREAM_NAME}",
             "ai_enabled": True,
-            "ai_confidence": 0.45,
+            "ai_confidence": 0.38,
             "ai_fps": 3.0,
             "ai_confirmation_frames": 3,
             "ai_zones": {},
@@ -391,9 +391,11 @@ class EntityTests(HassTestCase):
                     {"category": "person", "confidence": 0.9},
                     {"category": "dog", "confidence": 0.8},
                     {"category": "person", "confidence": 0.85},
-                ], "Personne, Chien"),
+                ], "Personne ×2, Chien"),
+                (True, "detecting", [{"category": "car"}, {"category": "car"}], "Voiture ×2"),
                 (False, "detecting", [{"category": "person"}], "IA désactivée"),
                 (True, "reconnecting", [{"category": "person"}], "Reconnexion du flux"),
+                (True, "inference_error", [], "Erreur de détection IA"),
                 (True, "detecting", [{"category": "future"}], "Objet non identifié"),
             ]
             for enabled, state, objects, expected in cases:
