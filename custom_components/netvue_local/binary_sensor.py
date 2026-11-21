@@ -5,7 +5,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .coordinator import NetvueCoordinator, NetvueEntity
+from .coordinator import NetvueCoordinator, NetvueEntity, NetvueLiveDetectionEntity
 
 
 async def async_setup_entry(
@@ -48,9 +48,10 @@ class NetvueCameraUnavailableSensor(NetvueEntity, BinarySensorEntity):
         return not data.rtsp_available if data is not None else None
 
 
-class NetvueDetectionSensor(NetvueEntity, BinarySensorEntity):
+class NetvueDetectionSensor(NetvueLiveDetectionEntity, BinarySensorEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "ai_detection"
+    _unrecorded_attributes = frozenset({"detections", "last_frame_at", "metrics"})
 
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         super().__init__(coordinator)
@@ -58,26 +59,24 @@ class NetvueDetectionSensor(NetvueEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        data = self.coordinator.data
-        return super().available and data is not None and data.detection is not None
+        return super().available and self.coordinator.data is not None
 
     @property
     def is_on(self) -> bool:
-        data = self.coordinator.data
-        if not data or not data.detection:
-            return False
-        return data.detection.enabled and bool(data.detection.detections)
+        detection = self.coordinator.data
+        return bool(detection and detection.enabled and detection.state == "detecting"
+                    and detection.detections)
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        data = self.coordinator.data
-        if not data or not data.detection:
+        detection = self.coordinator.data
+        if detection is None:
             return {}
         return {
-            "state": data.detection.state,
-            "enabled": data.detection.enabled,
-            "detections": data.detection.detections,
-            "last_frame_at": data.detection.last_frame_at,
-            "last_event_at": data.detection.last_event_at,
-            "metrics": data.detection.metrics or {},
+            "state": detection.state,
+            "enabled": detection.enabled,
+            "detections": detection.detections,
+            "last_frame_at": detection.last_frame_at,
+            "last_event_at": detection.last_event_at,
+            "metrics": detection.metrics or {},
         }

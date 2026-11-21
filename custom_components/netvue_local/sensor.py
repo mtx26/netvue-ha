@@ -8,7 +8,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.translation import async_get_translations
 
 from .const import DOMAIN
-from .coordinator import CameraData, NetvueCoordinator, NetvueEntity
+from .coordinator import CameraData, NetvueCoordinator, NetvueEntity, NetvueLiveDetectionEntity
 
 
 _DIAGNOSTIC_OPTIONS = [
@@ -45,10 +45,11 @@ async def async_setup_entry(
     ])
 
 
-class NetvueDetectedObjectsSensor(NetvueEntity, SensorEntity):
+class NetvueDetectedObjectsSensor(NetvueLiveDetectionEntity, SensorEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "detected_objects"
     _attr_icon = "mdi:shape"
+    _unrecorded_attributes = frozenset({"detections"})
 
     def __init__(
         self, entry: ConfigEntry, coordinator: NetvueCoordinator, labels: dict[str, str]
@@ -59,15 +60,13 @@ class NetvueDetectedObjectsSensor(NetvueEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        data = self.coordinator.data
-        return super().available and data is not None and data.detection is not None
+        return super().available and self.coordinator.data is not None
 
     @property
     def native_value(self) -> str | None:
-        data = self.coordinator.data
-        if data is None or data.detection is None:
+        detection = self.coordinator.data
+        if detection is None:
             return None
-        detection = data.detection
         if not detection.enabled:
             return self._labels["disabled"]
         if detection.state != "detecting":
@@ -85,10 +84,10 @@ class NetvueDetectedObjectsSensor(NetvueEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        data = self.coordinator.data
-        if data is None or data.detection is None:
+        detection = self.coordinator.data
+        if detection is None:
             return {}
-        return {"detections": data.detection.detections, "enabled": data.detection.enabled}
+        return {"detections": detection.detections, "enabled": detection.enabled}
 
 
 class NetvueSessionSensor(NetvueEntity, SensorEntity):

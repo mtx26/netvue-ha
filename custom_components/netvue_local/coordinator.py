@@ -9,7 +9,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity, DataUpdateCoordinator, UpdateFailed,
+)
 
 from .bridge_api import (
     BridgeError,
@@ -41,6 +43,21 @@ class CameraData(NamedTuple):
     ai_error: str | None = None
 
 
+class NetvueLiveDetectionCoordinator(DataUpdateCoordinator[DetectionStatus]):
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, stream_name: str) -> None:
+        super().__init__(
+            hass, _LOGGER, name=f"{DOMAIN} detection {stream_name}", config_entry=entry,
+            update_interval=timedelta(seconds=2), always_update=False,
+        )
+        self.stream_name = stream_name
+
+    async def _async_update_data(self) -> DetectionStatus:
+        try:
+            return await async_get_detection_status(self.hass, self.stream_name)
+        except BridgeError as exc:
+            raise UpdateFailed(str(exc)) from exc
+
+
 class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
     def __init__(
         self, hass: HomeAssistant, entry: ConfigEntry, host: str, name: str
@@ -49,6 +66,7 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
                          update_interval=timedelta(seconds=UPDATE_INTERVAL))
         self.url = entry.options.get(CONF_STREAM_URL, entry.data[CONF_STREAM_URL])
         self.camera = ManagedCamera(hass, host, name)
+        self.live_detection = NetvueLiveDetectionCoordinator(hass, entry, name)
         self._entry = entry
         self._device_metadata: dict[str, str] = {}
         self._last_detection_event_ids: deque[str] = deque(maxlen=200)
@@ -179,3 +197,13 @@ class NetvueEntity(CoordinatorEntity[NetvueCoordinator]):
     @property
     def device_info(self) -> DeviceInfo:
         return self.coordinator.device_info
+
+
+class NetvueLiveDetectionEntity(CoordinatorEntity[NetvueLiveDetectionCoordinator]):
+    def __init__(self, coordinator: NetvueCoordinator) -> None:
+        super().__init__(coordinator.live_detection)
+        self._camera_coordinator = coordinator
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return self._camera_coordinator.device_info

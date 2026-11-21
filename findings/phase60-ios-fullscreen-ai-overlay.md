@@ -59,3 +59,22 @@ et les boites de detection IA live/historiques sans perturber WebRTC.
 - Verifier un ancien appareil dont le niveau H.264 ou l audio AAC 8 kHz pourrait
   etre limite.
 - Valider l alignement live/replay sur camera reelle avec plusieurs objets.
+
+## Suivi 0.2.31 — détections brèves sur Garage
+
+- En production sur `0.2.30`, Home Assistant avait enregistré les six événements
+  `zone_entered` signalés. Le capteur Garage avait également reçu une boîte de
+  voiture à 17:49:16, puis repassé à `off` au relevé suivant. Les événements ne
+  représentent pas la présence courante.
+- Une capture de 75 secondes depuis le conteneur Home Assistant a observé
+  50 instantanés avec des boîtes `car` (1920 × 1080) et 96 sans objet. Des
+  relevés HA espacés de 30 secondes sont tombés sur des instantanés vides
+  malgré des boîtes avant et après. La cause des intermittences de l'inférence
+  elle-même n'est pas établie.
+- Les deux entités d'objets lisent désormais le statut IA toutes les deux
+  secondes, sans accélérer la supervision vidéo ni le bus d'événements. Les
+  boîtes disparaissent au premier relevé vide ou après six secondes sans image
+  fraîche. La lecture par sondage peut encore manquer une détection très brève.
+- Le pont de production renvoyait des boîtes historiques en HTTP 200 sur une
+  plage de dix minutes. L'alignement à l'écran, en direct et en replay, reste
+  à vérifier dans le tableau de bord après déploiement de `0.2.31`.

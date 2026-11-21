@@ -14,7 +14,7 @@ const ERROR_TOAST_MS = 4000;
 const HISTORY_FOLLOW_POLL_MS = 5000;
 const HISTORY_FOLLOW_BUFFER_MS = 10000;
 const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const DETECTION_TTL_MS = 35000;
+const DETECTION_TTL_MS = 6000;
 const ENTITY_RE = /^camera\.[a-z0-9_]+$/;
 const DETECTION_LABELS_FR = {
   person: "Personne", bird: "Oiseau", cat: "Chat", dog: "Chien",

@@ -19,32 +19,13 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | Reconnexion réelle | Vérifier la reprise après une panne sur caméra réelle ; la stabilité réelle 24 h est suivie séparément |
-| 🧪 | Multi-caméra réelle | Sessions indépendantes testées en synthétique ; valider plusieurs caméras simultanément en conditions réelles |
-| 🧪 | Parcours Home Assistant réel | Valider le parcours complet avec le code actuel, de l'entrée HA jusqu'à l'aperçu caméra ; l'interface et l'aperçu ne sont pas vérifiés avec la version actuelle |
 | 🧪 | Métadonnées LAN | Série, firmware, capacités, SSID et niveau de signal exposés et testés hors ligne ; présence réelle des champs et compatibilité d'autres modèles à vérifier |
-| 💡 | Suivi d'IP par numéro de série | En production, une caméra derrière un répéteur a changé d'IP (DHCP) et le pont réessayait indéfiniment l'ancienne ; retrouver la caméra par découverte LAN et numéro de série ([phase 40](../findings/phase40-transcodage-webrtc-partage.md)) |
 | 💡 | Informations appareil supplémentaires | Étudier modèle, version matérielle, MAC, IP Wi-Fi/Ethernet, propriétaire et état cloud ; sources et faisabilité locale à vérifier, sans dépendance cloud obligatoire |
-| 🧪 | Stabilité réelle 24 h/24 | Sessions réelles bornées d'environ 10 à 13 min observées sur l'ancien pont ([phases 11](../findings/phase11-recovery.md), [15](../findings/phase15-real-stability.md)) ; aucune endurance de 24 h ni validation équivalente du code Go actuel |
-| 🔄 | Refonte architecturale | Migration et limites suivies dans [refactor-progress.md](./refactor-progress.md) ; E2E média et parcours HA conteneurisé synthétiques réussis, refonte incomplète |
-
 ## 2. Audio
-
-| État | Fonctionnalité | Objectif |
-|---|---|---|
-| 💡 | Signification de `samplesize` | L'analyse statique est faite ; l'unité de ce champ reste inconnue ([spécification LAN](./netvue-lan-client-spec.md)) |
-| 🧪 | Continuité RTSP audio/vidéo | Les essais réels ont montré des interruptions au changement de format ; confirmer la continuité A/V et résoudre les avertissements DTS ([phases 39](../findings/phase39-talkback.md), [45](../findings/phase45-validation-reelle-talkback.md)) |
-| 🧪 | Restitution acoustique du talkback Go | Un retour audio a été mesuré, sans preuve de son audible ; confirmer la restitution du haut-parleur par une écoute ou mesure indépendante ([phase 45](../findings/phase45-validation-reelle-talkback.md)) |
-| 🧪 | Microphone Home Assistant | Lecteur unique `netvue-camera-card` (push-to-talk momentané, half-duplex, sans renégociation) et correction du bourrage RTP validés hors ligne ; CI complète après la phase 54 réussie ([run](https://github.com/mtx26/netvue-ha/actions/runs/44823857272)). Restitution réelle à valider ([phase 54](../findings/phase54-lecteur-unifie-push-to-talk.md), [phase 45](../findings/phase45-validation-reelle-talkback.md)) |
-
 ## 3. Enregistrement
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| ⬜ | Mesures de capacité | Débit, stockage et ressources |
-| 🧪 | Enregistrement manuel et continu | Contrôle Go/HA, fMP4 MediaMTX et réglages persistants implémentés ; validation réelle nécessaire |
-| 🧪 | Rétention | Rétention temporelle, limite globale et volume persistant configurés ; validation synthétique nécessaire |
-| 🧪 | Historique | Chronologie limitée à 24 h, lecture MP4, Range, reprise de segment et navigation testés hors ligne ; lecture iPhone/Safari réelle à confirmer |
 | 💡 | Conservation sélective | Permettre de garder certains enregistrements au-delà de la rétention automatique ; conception à définir |
 | 🧪 | Exportation | Téléchargement MP4 authentifié avec taille connue, limité à 1 Gio par export ; validation réelle nécessaire |
 | ⬜ | Captures | Enregistrer des images |
@@ -56,22 +37,18 @@ fiable, performante, modulaire et simple à installer.
 | 💡 | Détection de mouvement | Comparer Netvue, Go et Frigate |
 | ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
 | 🧪 | Zones de détection | Une zone rectangulaire via la roue dentée de chaque carte ; toute l'image par défaut et bouton pour la resélectionner ; tests hors ligne, validation réelle nécessaire |
-| 🧪 | Notifications HA | `netvue_local_event` transporte timestamp, confiance et zone ; test de payload et anti-doublon passés, intégration HA en production non rechargée ([phase 59](../findings/phase59-detection-accuracy-performance.md)) |
+| 🧪 | Notifications HA | Six événements voiture confirmés dans l'historique HA du Garage ; une automatisation de notification réelle reste à valider |
 | 🧪 | Statistiques | Latence, FPS, ratio d'images positives, images ignorées et erreurs par caméra dans l'API IA ; exposition HA implémentée, recharge réelle à valider ([phase 59](../findings/phase59-detection-accuracy-performance.md)) |
-| 🧪 | Détection d'objets | YOLOv8n COCO CPU avec boîtes réelles, letterbox/NMS corrigés, cadence adaptative et métadonnées historiques bornées ; classes COCO seulement, colis non pris en charge, collecte/alignement réel à confirmer ([phases 59](../findings/phase59-detection-accuracy-performance.md), [60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |
+| 🧪 | Détection d'objets | Boîtes voiture confirmées dans HA et dans le pont historique ; rafraîchissement live indépendant en `0.2.31`, à valider sur le tableau de bord réel. Classes COCO seulement, colis non pris en charge ([phase 60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |
 
 ## 5. Expérience utilisateur
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 🧪 | WebRTC | Un essai réel a rencontré une offre navigateur incompatible avec le profil H.264 du flux ; adaptation testée hors ligne, lecture WebRTC réelle non confirmée. Un FFmpeg d'adaptation par caméra, partagé entre spectateurs (phase 40) : 9 transcodeurs simultanés avaient saturé la limite de 0,5 CPU en production. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
-| 🧪 | Micro à distance sans VPN | Cloudflare TURN facultatif par installation, configuration ICE limitée aux caméras Netvue en mode WebRTC natif ; négociation via relais local testée, Cloudflare et restitution du micro hors LAN à valider |
-| 🧪 | Carte caméra Lovelace | Lecteur WebRTC/live, historique MP4, plein écran natif/CSS/WebKit, timeline et overlays IA implémentés hors ligne ; validation iPhone/Safari réelle à confirmer ([phase 60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |
-| 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras, navigation plein écran, regroupement état/diagnostic, découverte automatique des entités et éditeurs visuels ; affichage réel à confirmer |
-| 🧪 | Miniature caméra HA | Image complète proportionnelle dans le badge 80 × 80 ; proxy et formats synthétiques testés, affichage réel à confirmer ([phase 46](../findings/phase46-miniature-ha.md)) |
-| 🧪 | Configuration HA réelle | Vérifier dans l'interface installée le parcours découverte/saisie IPv4, la création de l'entrée et l'affichage des entités |
-| 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |
 | ⬜ | Dashboard | Centraliser les informations |
+| 💡 | Refaire le readme | Mettre à jour le fichier README avec les informations actuelles sur le projet et les fonctionnalités implémentées |
+| 💡 | Mettre à jour la documentation | Refaire tous les fichiers de documentation pour refléter les informations actuelles sur le projet et les fonctionnalités implémentées |
+| 💡 | Vérification du changement d'heure | S'assurer que le système gère correctement les changements d'heure et que les événements et statistiques sont correctement horodatés |
 
 ## Règles de suivi
 

@@ -16,11 +16,13 @@ from homeassistant.components import camera
 from homeassistant.components.camera.webrtc import DATA_WEBRTC_PROVIDERS
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_COMPONENT_LOADED
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_track_state_change_event
 
 import custom_components.netvue_local as netvue_local
 from custom_components.netvue_local import camera as camera_platform
@@ -397,13 +399,48 @@ class EntityTests(HassTestCase):
             for enabled, state, objects, expected in cases:
                 with self.subTest(expected=expected):
                     status.return_value = DetectionStatus(enabled, state, objects, None, None)
-                    await self.refresh(entry)
+                    await entry.runtime_data.live_detection.async_refresh()
                     self.assertEqual(self.state(entry, "sensor", "detected_objects").state,
                                      expected)
             status.side_effect = BridgeError("AI unavailable")
-            await self.refresh(entry)
+            await entry.runtime_data.live_detection.async_refresh()
             self.assertEqual(self.state(entry, "sensor", "detected_objects").state,
                              "unavailable")
+
+    async def test_live_poll_delivers_vehicle_box_then_clears_without_camera_refresh(self):
+        empty = DetectionStatus(True, "detecting", [], 100.0, None)
+        car = {
+            "category": "car", "confidence": 0.61, "track_id": 42,
+            "frame_width": 1920, "frame_height": 1080,
+            "box": {"x1": 300, "y1": 350, "x2": 760, "y2": 710},
+        }
+        with patch(
+            "custom_components.netvue_local.coordinator.async_get_detection_status",
+            new=AsyncMock(return_value=empty),
+        ) as status:
+            entry = await self.create_entry()
+            ai_entity = self.entity_id(entry, "binary_sensor", "ai_detection")
+            changes = asyncio.Queue()
+
+            @callback
+            def collect(event):
+                changes.put_nowait(event.data["new_state"])
+
+            unsubscribe = async_track_state_change_event(self.hass, [ai_entity], collect)
+            try:
+                with patch.object(entry.runtime_data.camera, "async_reconcile",
+                                  wraps=entry.runtime_data.camera.async_reconcile) as reconcile:
+                    status.return_value = DetectionStatus(True, "detecting", [car], 102.0, None)
+                    present = await asyncio.wait_for(changes.get(), timeout=6)
+                    self.assertEqual(present.state, "on")
+                    self.assertEqual(present.attributes["detections"], [car])
+                    status.return_value = empty._replace(last_frame_at=104.0)
+                    cleared = await asyncio.wait_for(changes.get(), timeout=6)
+                    self.assertEqual(cleared.state, "off")
+                    self.assertEqual(cleared.attributes["detections"], [])
+                    reconcile.assert_not_awaited()
+            finally:
+                unsubscribe()
 
     async def test_entities_device_and_initial_states(self):
         entry = await self.create_entry(name="Salon")

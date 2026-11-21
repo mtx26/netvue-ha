@@ -483,6 +483,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except BridgeError as exc:
         raise ConfigEntryNotReady("Netvue Bridge session manager is unavailable") from exc
     await coordinator.async_refresh()
+    if coordinator.data is not None and coordinator.data.detection is not None:
+        coordinator.live_detection.async_set_updated_data(coordinator.data.detection)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
