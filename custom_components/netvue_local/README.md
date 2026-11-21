@@ -103,8 +103,8 @@ le mode continu se règle avec l'interrupteur de la caméra dans Home Assistant.
 Sinon, le bouton permet de démarrer ou d'arrêter l'enregistrement manuel.
 L'icône d'historique ouvre une chronologie dans la carte. Sur la vidéo, les
 commandes permettent de revenir au **DIRECT**, de sauter de 15 secondes,
-de reculer de 10 minutes ou d'une heure, de choisir une date et de télécharger
-le segment. Le voyant
+de reculer de 10 minutes ou d'une heure, de choisir une date, de télécharger
+le segment et d'afficher toute la carte en plein écran avec la chronologie. Le voyant
 REC n'est affiché que sur le direct. La frise indique en vert les périodes
 enregistrées et affiche l'heure du curseur. Elle couvre au maximum 24 heures,
 coupures comprises ; une date plus ancienne déplace cette fenêtre sans effacer
@@ -121,8 +121,7 @@ Le voyant reflète l'état rapporté par le pont et ne confirme pas à lui seul
 que les fichiers ont été écrits correctement. L'export est préparé sur le
 volume des enregistrements avant lecture : il peut nécessiter du temps et jusqu'à
 1 Gio d'espace temporaire par demande, avec deux préparations simultanées au
-maximum. Les miniatures utilisent FFmpeg et peuvent être indisponibles pour une
-partie trop récente ou illisible. Le parcours réel reste à valider.
+maximum. Le parcours réel reste à valider.
 
 La version 0.2.2 corrige le plantage `Illegal invocation` du lecteur. La
 version 0.2.3 ajoute le plein écran et deux cartes Lovelace complémentaires.

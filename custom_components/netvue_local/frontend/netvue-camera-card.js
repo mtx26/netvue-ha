@@ -69,6 +69,7 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 .history-player { position: relative; }
 .history-player[hidden] { display: none; }
 .history-player video { display: block; }
+.history-player video::-webkit-media-controls-fullscreen-button { display: none; }
 .history-actions { position: absolute; top: 4px; right: 4px; z-index: 2; display: flex;
   justify-content: flex-end; align-items: center; width: min(338px, calc(100% - 8px));
   border-radius: 24px; background: rgba(0,0,0,.75); line-height: 1.4; }

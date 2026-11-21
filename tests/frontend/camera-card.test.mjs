@@ -483,6 +483,7 @@ test("history overlay exposes jumps, date, download and a clear return to live",
   assert.deepEqual(actions.children, [
     card._historyLiveButton, card._historyHourButton, card._historyTenButton,
     card._historyBackButton, card._historyForwardButton, card._historyDatePicker, card._historyDownload,
+    card._historyFullscreenButton,
   ]);
   assert.equal(card._historyLiveButton.textContent, "LIVE");
   assert.equal(card._historyLiveButton.getAttribute("aria-label"), "Back to live");
@@ -899,6 +900,36 @@ test("wall fullscreen switches existing cameras, releases talk and restores the 
   assert.deepEqual(wall._cards, [entry, garage, garden]);
   garage._ptt = null;
   for (const card of wall._cards) card.disconnectedCallback();
+  wall.disconnectedCallback();
+});
+
+test("history fullscreen in a camera wall keeps the active timeline visible", async () => {
+  const WallCard = customElements.get("netvue-camera-wall-card");
+  const wall = new WallCard();
+  wall.setConfig({ entities: ["camera.entry", "camera.garage"] });
+  wall.connectedCallback();
+  wall._grid.requestFullscreen = async () => {
+    document.enterFullscreen(wall.shadowRoot, wall._grid, wall);
+  };
+  const card = wall._cards[1];
+  card.connectedCallback();
+  card.hass = {
+    states: { "camera.garage": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi() { return { recordings: [] }; },
+    async callWS() {},
+  };
+  await card._openHistory();
+  card._historyFullscreenButton.dispatch("click");
+  await Promise.resolve();
+  assert.equal(wall.shadowRoot.fullscreenElement, wall._grid);
+  assert.equal(card.getAttribute("wall-active"), "");
+  assert.equal(card._historyPanel.hidden, false);
+  assert.equal(card._historyFullscreenButton.getAttribute("aria-label"), "Exit full screen");
+  card._historyFullscreenButton.dispatch("click");
+  await Promise.resolve();
+  assert.equal(document.fullscreenElement, null);
+  assert.equal(card._history, true);
+  card.disconnectedCallback();
   wall.disconnectedCallback();
 });
 
