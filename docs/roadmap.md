@@ -44,7 +44,7 @@ fiable, performante, modulaire et simple à installer.
 | ⬜ | Mesures de capacité | Débit, stockage et ressources |
 | 🧪 | Enregistrement manuel et continu | Contrôle Go/HA, fMP4 MediaMTX et réglages persistants implémentés ; validation réelle nécessaire |
 | 🧪 | Rétention | Rétention temporelle, limite globale et volume persistant configurés ; validation synthétique nécessaire |
-| 🧪 | Historique | Chronologie limitée à 24 h par fenêtre, segment en cours et navigation testés hors ligne ; avance dans le lecteur signalée défaillante en conditions réelles, à diagnostiquer |
+| 🧪 | Historique | Chronologie limitée à 24 h, lecture MP4, Range, reprise de segment et navigation testés hors ligne ; lecture iPhone/Safari réelle à confirmer |
 | 💡 | Conservation sélective | Permettre de garder certains enregistrements au-delà de la rétention automatique ; conception à définir |
 | 🧪 | Exportation | Téléchargement MP4 authentifié avec taille connue, limité à 1 Gio par export ; validation réelle nécessaire |
 | ⬜ | Captures | Enregistrer des images |
@@ -56,9 +56,9 @@ fiable, performante, modulaire et simple à installer.
 | 💡 | Détection de mouvement | Comparer Netvue, Go et Frigate |
 | ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
 | 🧪 | Zones de détection | Une zone rectangulaire via la roue dentée de chaque carte ; toute l'image par défaut et bouton pour la resélectionner ; tests hors ligne, validation réelle nécessaire |
-| 🧪 | Notifications HA | Événements `netvue_local_event` et capteur/switch IA ; validation réelle nécessaire |
-| ⬜ | Statistiques | Suivre événements et disponibilité |
-| 🧪 | Détection d'objets | YOLOv8n COCO CPU pour personnes, animaux, véhicules ; accélération AMD et colis non validés |
+| 🧪 | Notifications HA | `netvue_local_event` transporte timestamp, confiance et zone ; test de payload et anti-doublon passés, intégration HA en production non rechargée ([phase 59](../findings/phase59-detection-accuracy-performance.md)) |
+| 🧪 | Statistiques | Latence, FPS, ratio d'images positives, images ignorées et erreurs par caméra dans l'API IA ; exposition HA implémentée, recharge réelle à valider ([phase 59](../findings/phase59-detection-accuracy-performance.md)) |
+| 🧪 | Détection d'objets | YOLOv8n COCO CPU avec boîtes réelles, letterbox/NMS corrigés, cadence adaptative et métadonnées historiques bornées ; classes COCO seulement, colis non pris en charge, collecte/alignement réel à confirmer ([phases 59](../findings/phase59-detection-accuracy-performance.md), [60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |
 
 ## 5. Expérience utilisateur
 
@@ -66,7 +66,7 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 🧪 | WebRTC | Un essai réel a rencontré une offre navigateur incompatible avec le profil H.264 du flux ; adaptation testée hors ligne, lecture WebRTC réelle non confirmée. Un FFmpeg d'adaptation par caméra, partagé entre spectateurs (phase 40) : 9 transcodeurs simultanés avaient saturé la limite de 0,5 CPU en production. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
 | 🧪 | Micro à distance sans VPN | Cloudflare TURN facultatif par installation, configuration ICE limitée aux caméras Netvue en mode WebRTC natif ; négociation via relais local testée, Cloudflare et restitution du micro hors LAN à valider |
-| 🧪 | Carte caméra Lovelace | Lecteur WebRTC, audio, push-to-talk, plein écran et éditeur visuel ; affichage réel à confirmer |
+| 🧪 | Carte caméra Lovelace | Lecteur WebRTC/live, historique MP4, plein écran natif/CSS/WebKit, timeline et overlays IA implémentés hors ligne ; validation iPhone/Safari réelle à confirmer ([phase 60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |
 | 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras, navigation plein écran, regroupement état/diagnostic, découverte automatique des entités et éditeurs visuels ; affichage réel à confirmer |
 | 🧪 | Miniature caméra HA | Image complète proportionnelle dans le badge 80 × 80 ; proxy et formats synthétiques testés, affichage réel à confirmer ([phase 46](../findings/phase46-miniature-ha.md)) |
 | 🧪 | Configuration HA réelle | Vérifier dans l'interface installée le parcours découverte/saisie IPv4, la création de l'entrée et l'affichage des entités |

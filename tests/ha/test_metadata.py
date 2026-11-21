@@ -84,7 +84,8 @@ class MetadataTests(HassTestCase):
                             "connection_port"):
                     self.assertNotIn(key, attributes)
                 self.assertEqual(self.entity_ids(entry), ids)
-                self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "healthy")
+                self.assertEqual(self.state(entry, "sensor", "diagnostic").state,
+                                 "ai_unavailable")
 
     async def test_refresh_updates_firmware_and_recovers_metadata_without_stream_restart(self):
         # A legacy response first; metadata can appear after the entity is already live.

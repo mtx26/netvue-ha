@@ -117,6 +117,7 @@
         "state": {
           "healthy": "Operating normally",
           "stream_unavailable": "Video stream unavailable",
+          "ai_unavailable": "AI service unavailable",
           "bridge_unavailable": "Netvue manager unavailable",
           "authentication_failed": "Authentication rejected",
           "connection_failed": "Unable to connect to camera",

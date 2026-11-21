@@ -37,6 +37,12 @@ func (manager *Manager) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cameras/{host}/recording/stop", manager.handleRecordingStop)
 	mux.HandleFunc("PUT /api/v1/cameras/{host}/recording/continuous", manager.handleRecordingContinuous)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings", manager.handleRecordingsList)
+	mux.HandleFunc("POST /api/v1/cameras/{host}/ai/metadata", manager.handleAIMetadataIngest)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/ai/metadata", manager.handleAIMetadataRange)
+	mux.HandleFunc(
+		"GET /api/v1/cameras/{host}/recordings/{id}/metadata",
+		manager.handleRecordingMetadata,
+	)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings/{id}/download", manager.handleRecordingDownload)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings/{id}/thumbnail", manager.handleRecordingThumbnail)
 	mux.HandleFunc("DELETE /api/v1/cameras/{host}/recordings/{id}", manager.handleRecordingDelete)
@@ -271,6 +277,141 @@ func (manager *Manager) handleRecordingsList(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"recordings": segments})
+}
+
+func (manager *Manager) handleAIMetadataIngest(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	if manager.aiMetadata == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "AI metadata storage is not configured")
+		return
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAIMetadataLineBytes))
+	decoder.DisallowUnknownFields()
+	var event AIDetectionMetadata
+	if err := decoder.Decode(&event); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid AI metadata")
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, "request must contain one JSON object")
+		return
+	}
+	if event.StreamName != "" && event.StreamName != camera.StreamName {
+		writeAPIError(w, http.StatusBadRequest, "AI metadata stream does not match camera")
+		return
+	}
+	event.StreamName = camera.StreamName
+	if err := validateAIMetadata(event); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	stored, err := manager.aiMetadata.add(event)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "unable to persist AI metadata")
+		return
+	}
+	status := http.StatusCreated
+	if !stored {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]bool{"stored": stored})
+}
+
+func (manager *Manager) handleAIMetadataRange(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	start, end, valid := parseMetadataRange(r)
+	if !valid {
+		writeAPIError(w, http.StatusBadRequest, "invalid metadata time range")
+		return
+	}
+	manager.writeMetadataForRange(w, camera.StreamName, start, end)
+}
+
+func (manager *Manager) handleRecordingMetadata(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	if manager.aiMetadata == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "AI metadata storage is not configured")
+		return
+	}
+	segment, found, err := manager.recordings.findSegment(camera.StreamName, r.PathValue("id"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !found {
+		writeAPIError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	end := segment.End
+	if !end.After(segment.Start) {
+		end = time.Now()
+	}
+	events := manager.aiMetadata.between(camera.StreamName, segment.Start, end)
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (manager *Manager) writeMetadataForRange(
+	w http.ResponseWriter,
+	streamName string,
+	start, end time.Time,
+) {
+	if manager.aiMetadata == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "AI metadata storage is not configured")
+		return
+	}
+	events := manager.aiMetadata.between(streamName, start, end)
+	segments, err := manager.recordings.list(streamName, time.Time{}, time.Time{})
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	matching := make([]AIDetectionMetadata, 0, len(events))
+	for _, event := range events {
+		eventTime := timestampNanos(event.Timestamp)
+		for _, segment := range segments {
+			segmentEnd := segment.End
+			if !segmentEnd.After(segment.Start) {
+				segmentEnd = time.Now()
+			}
+			if eventTime >= segment.Start.UnixNano() && eventTime < segmentEnd.UnixNano() {
+				matching = append(matching, event)
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": matching})
+}
+
+func parseMetadataRange(r *http.Request) (time.Time, time.Time, bool) {
+	var start, end time.Time
+	if value := r.URL.Query().Get("start"); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+		start = parsed
+	}
+	if value := r.URL.Query().Get("end"); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+		end = parsed
+	}
+	if !end.IsZero() && !start.IsZero() && end.Before(start) {
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
 }
 
 func (manager *Manager) handleRecordingDownload(w http.ResponseWriter, r *http.Request) {

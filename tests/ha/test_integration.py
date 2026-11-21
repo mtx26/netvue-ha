@@ -321,6 +321,56 @@ class OptionsFlowTests(HassTestCase):
 
 
 class EntityTests(HassTestCase):
+    async def test_detection_metrics_and_event_identity_are_exposed(self):
+        metrics = {
+            "inference_latency_ms": 32.5,
+            "frames_skipped": 90,
+            "detection_rate": 0.2,
+        }
+        status = DetectionStatus(True, "detecting", [], None, None, metrics)
+        with (
+            patch("custom_components.netvue_local.coordinator.async_set_detection_config",
+                  new_callable=AsyncMock),
+            patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                  new=AsyncMock(return_value=status)),
+        ):
+            entry = await self.create_entry(name="Salon")
+
+        sensor = self.state(entry, "binary_sensor", "ai_detection")
+        self.assertEqual(sensor.attributes["metrics"], metrics)
+        event = {
+            "id": "event-1",
+            "timestamp": 1_800_000_000.0,
+            "event": "zone_entered",
+            "category": "person",
+            "confidence": 0.91,
+            "zone": "entrance",
+            "entry_id": "untrusted",
+            "camera": "untrusted",
+            "host": "untrusted",
+        }
+        fired = []
+        unsubscribe = self.hass.bus.async_listen(
+            f"{DOMAIN}_event", lambda received: fired.append(received.data)
+        )
+        event_status = DetectionStatus(True, "detecting", [], None, 1_800_000_000.0)
+        try:
+            with patch(
+                "custom_components.netvue_local.coordinator.async_get_detection_events",
+                new=AsyncMock(return_value=[event, event]),
+            ):
+                await entry.runtime_data._async_fire_new_detection_events(event_status)
+                await entry.runtime_data._async_fire_new_detection_events(event_status)
+        finally:
+            unsubscribe()
+
+        self.assertEqual(len(fired), 1)
+        self.assertEqual(fired[0]["entry_id"], entry.entry_id)
+        self.assertEqual(fired[0]["camera"], "Salon")
+        self.assertEqual(fired[0]["host"], HOST)
+        self.assertEqual(fired[0]["zone"], "entrance")
+        self.assertEqual(fired[0]["confidence"], 0.91)
+
     async def test_detected_objects_are_named_and_distinguish_ai_status(self):
         self.hass.config.language = "fr"
         with (
@@ -373,7 +423,7 @@ class EntityTests(HassTestCase):
         self.assertEqual(self.state(entry, "binary_sensor", "rtsp").state, "on")
         self.assertEqual(self.state(entry, "binary_sensor", "unavailable").state, "off")
         self.assertEqual(self.state(entry, "sensor", "session").state, "supervising")
-        self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "healthy")
+        self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "ai_unavailable")
         # Restart is only offered for a stopped or failed session.
         self.assertEqual(self.state(entry, "button", "restart").state, "unavailable")
         self.assertEqual(self.state(entry, "sensor", "recording").state, "inactive")
@@ -418,7 +468,7 @@ class EntityTests(HassTestCase):
         self.rtsp_available = True
         await self.refresh(entry)
         self.assertNotEqual(self.state(entry, "camera").state, "unavailable")
-        self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "healthy")
+        self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "ai_unavailable")
 
     async def test_bridge_outage_does_not_hide_a_live_rtsp_stream(self):
         entry = await self.create_entry()
@@ -433,7 +483,7 @@ class EntityTests(HassTestCase):
         await self.bridge.start()
         await self.refresh(entry)
         self.assertEqual(self.state(entry, "sensor", "session").state, "supervising")
-        self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "healthy")
+        self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "ai_unavailable")
 
     async def test_failed_session_is_diagnosed_not_restarted_and_button_restarts_it(self):
         entry = await self.create_entry()

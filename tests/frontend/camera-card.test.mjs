@@ -126,6 +126,10 @@ class FakeDocument {
     return new FakeElement(tagName);
   }
 
+  createElementNS(namespace, tagName) {
+    return this.createElement(tagName);
+  }
+
   addEventListener(type, callback) {
     this.listeners.set(type, [...(this.listeners.get(type) || []), callback]);
   }
@@ -134,9 +138,9 @@ class FakeDocument {
     this.listeners.set(type, (this.listeners.get(type) || []).filter((item) => item !== callback));
   }
 
-  dispatch(type) {
+  dispatch(type, event = {}) {
     for (const callback of this.listeners.get(type) || []) {
-      callback();
+      callback(event);
     }
   }
 
@@ -802,15 +806,137 @@ test("the full-screen button enters and exits across shadow DOM retargeting", as
   card.disconnectedCallback();
 });
 
-test("the full-screen button is disabled when the browser lacks support", () => {
+test("the full-screen button uses CSS when the browser lacks native support", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
-  card._build();
+  card.connectedCallback();
 
   const button = findByClass(card.shadowRoot, "fullscreen");
   assert.ok(button);
-  assert.equal(button.disabled, true);
-  assert.equal(card._historyFullscreenButton.disabled, true);
+  assert.equal(button.disabled, false);
+  assert.equal(card._historyFullscreenButton.disabled, false);
+  card._video.srcObject = { id: "stream" };
+  await card._toggleFullscreen();
+  assert.equal(card.hasAttribute("css-fullscreen"), true);
+  assert.equal(card._wrap.hasAttribute("data-fullscreen"), true);
+  assert.deepEqual(card._video.srcObject, { id: "stream" });
+  document.dispatch("keydown", { key: "Escape", preventDefault() {} });
+  assert.equal(card.hasAttribute("css-fullscreen"), false);
+  card.disconnectedCallback();
+});
+
+test("webkit fullscreen and rejected requests preserve replay position", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card.connectedCallback();
+  card._history = true;
+  card._historyVideo.currentTime = 42;
+  card._historyVideo.src = "recording";
+  card._wrap.webkitRequestFullscreen = () => {
+    document.webkitFullscreenElement = card;
+    document.dispatch("webkitfullscreenchange");
+  };
+  document.webkitExitFullscreen = () => {
+    document.webkitFullscreenElement = null;
+    document.dispatch("webkitfullscreenchange");
+  };
+  await card._toggleFullscreen();
+  assert.equal(card._historyFullscreenButton.getAttribute("aria-pressed"), "true");
+  await card._toggleFullscreen();
+  assert.equal(card._historyFullscreenButton.getAttribute("aria-pressed"), "false");
+  card._wrap.requestFullscreen = async () => { throw new Error("not allowed"); };
+  await card._toggleFullscreen();
+  assert.equal(card.hasAttribute("css-fullscreen"), true);
+  await card._toggleFullscreen();
+  assert.equal(card._historyVideo.currentTime, 42);
+  assert.equal(card._historyVideo.src, "recording");
+  assert.equal(card._history, true);
+  delete document.webkitExitFullscreen;
+  delete document.webkitFullscreenElement;
+  card.disconnectedCallback();
+});
+
+test("live detection overlay uses only fresh detections from the camera device", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100000 });
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card.connectedCallback();
+  const detection = {
+    state: "on",
+    attributes: {
+      state: "detecting", enabled: true, last_frame_at: 100,
+      detections: [
+        { category: "person", confidence: 0.87, frame_width: 640, frame_height: 360,
+          box: { x1: 40, y1: 50, x2: 180, y2: 260 } },
+        { category: "dog", confidence: 0.9, frame_width: 640, frame_height: 360,
+          box: { x1: 300, y1: 70, x2: 430, y2: 290 } },
+      ],
+    },
+  };
+  card.hass = {
+    entities: {
+      "camera.test": { entity_id: "camera.test", device_id: "device1" },
+      "binary_sensor.other": { entity_id: "binary_sensor.other", device_id: "device2", translation_key: "ai_detection" },
+      "binary_sensor.test": { entity_id: "binary_sensor.test", device_id: "device1", translation_key: "ai_detection" },
+    },
+    states: {
+      "camera.test": { state: "unavailable", attributes: {} },
+      "binary_sensor.other": { state: "on", attributes: { ...detection.attributes, detections: [{ category: "cat" }] } },
+      "binary_sensor.test": detection,
+    },
+    language: "fr",
+  };
+  card._view = { state: "live" };
+  card._render();
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
+  assert.deepEqual(
+    card._detectionOverlay.children.filter((item) => item.tagName === "text").map((item) => item.textContent),
+    ["Personne 87 %", "Chien 90 %"],
+  );
+  card._detectionButton.dispatch("click");
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
+  assert.equal(card._detectionButton.getAttribute("aria-pressed"), "false");
+  card._history = true;
+  card._render();
+  card._history = false;
+  card._render();
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
+  card._detectionButton.dispatch("click");
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
+  card._history = true;
+  card._render();
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
+  assert.equal(card._detectionButton.getAttribute("aria-pressed"), "true");
+  card._history = false;
+  card._render();
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
+  t.mock.timers.tick(35000);
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
+  detection.attributes.last_frame_at = 135;
+  card._render();
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
+  detection.state = "unavailable";
+  card._render();
+  assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
+  card.disconnectedCallback();
+});
+
+test("CSS fullscreen from a wall keeps the active video and hides unavailable wall navigation", async () => {
+  const WallCard = customElements.get("netvue-camera-wall-card");
+  const wall = new WallCard();
+  wall.setConfig({ entities: ["camera.entry", "camera.garage"] });
+  wall.connectedCallback();
+  const card = wall._cards[1];
+  card.connectedCallback();
+  card._video.srcObject = { id: "stream" };
+  await card._toggleFullscreen();
+  assert.equal(card.hasAttribute("css-fullscreen"), true);
+  assert.equal(card._nextButton.hidden, true);
+  assert.deepEqual(card._video.srcObject, { id: "stream" });
+  await card._toggleFullscreen();
+  assert.equal(card.hasAttribute("css-fullscreen"), false);
+  card.disconnectedCallback();
+  wall.disconnectedCallback();
 });
 
 test("history fullscreen includes the timeline and exits without closing history", async () => {

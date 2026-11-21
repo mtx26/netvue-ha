@@ -73,6 +73,7 @@ type Manager struct {
 	closeComplete chan struct{}
 	wg            sync.WaitGroup
 	recordings    *recordingManager
+	aiMetadata    *aiMetadataStore
 }
 
 func New(ctx context.Context, source string) (*Manager, error) {
@@ -129,6 +130,14 @@ func newManager(
 		closeComplete: make(chan struct{}),
 	}
 	manager.recordings = newRecordingManager(managerCtx)
+	metadata, metadataErr := newAIMetadataStore(manager.recordings.dir)
+	if metadataErr != nil {
+		slog.Error("Unable to load AI metadata history", "error", metadataErr)
+	}
+	manager.aiMetadata = metadata
+	if metadata != nil {
+		metadata.prune(time.Now())
+	}
 	return manager, nil
 }
 

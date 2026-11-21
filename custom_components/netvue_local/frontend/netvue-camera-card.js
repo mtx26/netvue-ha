@@ -14,22 +14,32 @@ const ERROR_TOAST_MS = 4000;
 const HISTORY_FOLLOW_POLL_MS = 5000;
 const HISTORY_FOLLOW_BUFFER_MS = 10000;
 const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DETECTION_TTL_MS = 35000;
 const ENTITY_RE = /^camera\.[a-z0-9_]+$/;
+const DETECTION_LABELS_FR = {
+  person: "Personne", bird: "Oiseau", cat: "Chat", dog: "Chien",
+  car: "Voiture", bus: "Bus", truck: "Camion", bicycle: "Vélo", motorcycle: "Moto",
+};
 
 const STYLE = `
 :host { display: block; }
+:host([css-fullscreen]) { position: fixed; inset: 0; z-index: 2147483647; width: 100vw; height: 100vh; height: 100dvh; }
 ha-card { overflow: hidden; position: relative; }
 .wrap { position: relative; container-type: inline-size; background: #000; line-height: 0; }
 video { width: 100%; max-height: 80vh; background: #000; }
-.wrap:fullscreen, :host([wall-active]) .wrap {
+.wrap[data-fullscreen], :host([wall-active]) .wrap {
   width: 100vw; height: 100vh; height: 100dvh; display: flex; align-items: center; justify-content: center;
 }
-.wrap:fullscreen video, :host([wall-active]) video {
+.wrap[data-fullscreen] video, :host([wall-active]) video {
   width: 100%; height: 100%; max-height: 100vh; max-height: 100dvh; object-fit: contain;
 }
 .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 12px; color: #fff; background: rgba(0,0,0,.55); line-height: 1.4; }
 .overlay[hidden], .toast[hidden], button[hidden] { display: none; }
+.detections { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.detections[hidden] { display: none; }
+.detections rect { fill: none; stroke: #00d4ff; stroke-width: 4; vector-effect: non-scaling-stroke; }
+.detections text { fill: white; font: bold 16px sans-serif; paint-order: stroke; stroke: black; stroke-width: 4px; stroke-linejoin: round; }
 .bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 4px;
   padding: 8px; background: linear-gradient(transparent, rgba(0,0,0,.6)); line-height: 1.4; }
 .status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -94,14 +104,14 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
   border: 1px solid #888; border-radius: 4px; color: #fff; background: #111; color-scheme: dark; font: inherit; }
 .history-panel { position: relative; margin: 8px; padding: 12px; border-radius: 8px;
   background: rgba(0,0,0,.9); color: #fff; line-height: 1.4; }
-.wrap:fullscreen[data-history], :host([wall-active]) .wrap[data-history] { flex-direction: column; }
-.wrap:fullscreen[data-history] .history-player, :host([wall-active]) .wrap[data-history] .history-player {
+.wrap[data-fullscreen][data-history], :host([wall-active]) .wrap[data-history] { flex-direction: column; }
+.wrap[data-fullscreen][data-history] .history-player, :host([wall-active]) .wrap[data-history] .history-player {
   flex: 1 1 0; min-height: 0; width: 100%;
 }
-.wrap:fullscreen[data-history] .history-player video, :host([wall-active]) .history-player video {
+.wrap[data-fullscreen][data-history] .history-player video, :host([wall-active]) .history-player video {
   width: 100%; height: 100%;
 }
-.wrap:fullscreen[data-history] .history-panel, :host([wall-active]) .wrap[data-history] .history-panel {
+.wrap[data-fullscreen][data-history] .history-panel, :host([wall-active]) .wrap[data-history] .history-panel {
   flex: 0 0 auto; width: calc(100% - 32px);
 }
 .history-panel[hidden], video[hidden] { display: none; }
@@ -191,6 +201,7 @@ const ICONS = {
   exitFullscreen: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3M21 8h-5V3M21 16h-5v5M3 16h5v5"/></svg>',
   record: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/></svg>',
   history: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>',
+  detections: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5"/><circle cx="12" cy="12" r="3"/></svg>',
   backHour: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 7M4 5v5h5"/><text x="8" y="15">1h</text></svg>',
   backMinutes: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 7M4 5v5h5"/><text x="6" y="15" style="font-size:7px">10m</text></svg>',
   backFifteen: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 7M4 5v5h5"/><text x="8" y="15">15</text></svg>',
@@ -239,10 +250,21 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyScrubbing = false;
     this._historyFollowTimer = null;
     this._historyFollowPending = false;
+    this._detectionTimer = null;
+    this._showDetections = true;
+    this._historyDetections = [];
+    this._cssFullscreen = false;
     this._onRelease = () => this._releasePtt();
     this._onVisibility = () => this._visibilityChanged();
     this._onWindowPointer = (event) => this._pointerEnded(event);
     this._onFullscreenChange = () => this._render();
+    this._onKeyDown = (event) => {
+      if (event.key === "Escape" && this._cssFullscreen) {
+        event.preventDefault();
+        this._cssFullscreen = false;
+        this._render();
+      }
+    };
   }
 
   setConfig(config) {
@@ -291,6 +313,8 @@ export class NetvueCameraCard extends HTMLElement {
     window.addEventListener("pointercancel", this._onWindowPointer);
     document.addEventListener("visibilitychange", this._onVisibility);
     document.addEventListener("fullscreenchange", this._onFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", this._onFullscreenChange);
+    document.addEventListener("keydown", this._onKeyDown);
     this._sync();
   }
 
@@ -304,10 +328,15 @@ export class NetvueCameraCard extends HTMLElement {
     window.removeEventListener("pointercancel", this._onWindowPointer);
     document.removeEventListener("visibilitychange", this._onVisibility);
     document.removeEventListener("fullscreenchange", this._onFullscreenChange);
+    document.removeEventListener("webkitfullscreenchange", this._onFullscreenChange);
+    document.removeEventListener("keydown", this._onKeyDown);
     this._clearTimer("_hiddenTimer");
     this._clearTimer("_toastTimer");
+    this._cssFullscreen = false;
+    this.removeAttribute("css-fullscreen");
     this._paused = false;
     this._closeHistory(false);
+    this._clearTimer("_detectionTimer");
     this._stopSession();
     this._video.srcObject = null;
   }
@@ -430,29 +459,55 @@ export class NetvueCameraCard extends HTMLElement {
   }
 
   async _toggleFullscreen() {
+    if (this._cssFullscreen) {
+      this._cssFullscreen = false;
+      this._render();
+      return;
+    }
     try {
       if (this._isFullscreen()) {
-        await document.exitFullscreen();
-      } else if (this._wall) {
+        const webkit = this._nativeFullscreen("webkitFullscreenElement")
+          && !this._nativeFullscreen("fullscreenElement");
+        const exit = webkit
+          ? document.webkitExitFullscreen || document.exitFullscreen
+          : document.exitFullscreen || document.webkitExitFullscreen;
+        if (!exit) throw new Error("Fullscreen exit unavailable");
+        await exit.call(document);
+      } else if (this._wall && typeof this._wall._grid.requestFullscreen === "function"
+          && typeof document.exitFullscreen === "function") {
         await this._wall._openFullscreen(this);
       } else {
-        await this._wrap.requestFullscreen();
+        const request = this._wrap.requestFullscreen || this._wrap.webkitRequestFullscreen;
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (request && exit) {
+          await request.call(this._wrap);
+        } else {
+          this._cssFullscreen = true;
+          this._render();
+        }
       }
     } catch {
-      this._showFullscreenError();
+      if (this._isFullscreen()) {
+        this._showFullscreenError();
+      } else {
+        if (this._wall) this._wall._activeCard = null;
+        this._cssFullscreen = true;
+        this._render();
+      }
     }
   }
 
-  _fullscreenSupported() {
-    const target = this._wall ? this._wall._grid : this._wrap;
-    return typeof target.requestFullscreen === "function"
-      && typeof document.exitFullscreen === "function";
+  _isFullscreen() {
+    return this._cssFullscreen
+      || (this._wall && this._wall._isFullscreen() && this._wall._activeCard === this)
+      || this._nativeFullscreen("fullscreenElement")
+      || this._nativeFullscreen("webkitFullscreenElement");
   }
 
-  _isFullscreen() {
-    return this._wall
-      ? this._wall._isFullscreen() && this._wall._activeCard === this
-      : this.shadowRoot.fullscreenElement === this._wrap;
+  _nativeFullscreen(property) {
+    return this.shadowRoot[property] === this._wrap
+      || this._wall?.shadowRoot?.[property] === this
+      || document[property] === this;
   }
 
   _showMicError(code) {
@@ -541,6 +596,12 @@ export class NetvueCameraCard extends HTMLElement {
     this._wrap = wrap;
     const video = (this._video = el("video", { playsinline: "", autoplay: "" }, wrap));
     video.muted = true;
+    this._detectionOverlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    this._detectionOverlay.setAttribute("class", "detections");
+    this._detectionOverlay.setAttribute("viewBox", "0 0 640 360");
+    this._detectionOverlay.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    this._detectionOverlay.setAttribute("aria-hidden", "true");
+    wrap.appendChild(this._detectionOverlay);
     this._historyPlayer = el("div", { class: "history-player", hidden: "" }, wrap);
     this._historyVideo = el("video", {
       playsinline: "", controls: "", controlslist: "nofullscreen", hidden: "",
@@ -621,6 +682,11 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.addEventListener("click", () => this._openHistory());
     this._settingsButton = el("button", { type: "button", class: "settings" }, bar);
     this._settingsButton.addEventListener("click", () => this._openSettings());
+    this._detectionButton = el("button", { type: "button", class: "detection-toggle" }, bar);
+    this._detectionButton.addEventListener("click", () => {
+      this._showDetections = !this._showDetections;
+      this._render();
+    });
     this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
     this._bindPtt(this._pttButton);
     const volumeControl = el("div", { class: "volume-control" }, bar);
@@ -733,6 +799,66 @@ export class NetvueCameraCard extends HTMLElement {
   _entryId() {
     const state = this._entityState();
     return state?.attributes?.netvue_entry_id || null;
+  }
+
+  _renderDetections() {
+    this._clearTimer("_detectionTimer");
+    while (this._detectionOverlay.firstChild) {
+      this._detectionOverlay.removeChild(this._detectionOverlay.firstChild);
+    }
+    this._detectionOverlay.setAttribute("hidden", "");
+    if (!this._showDetections || this._history || !this._config || this._view.state !== "live") return;
+    const registry = this._hass?.entities || {};
+    const device = registry[this._config.entity]?.device_id;
+    if (!device) return;
+    const entity = Object.values(registry).find((item) =>
+      item.device_id === device && item.translation_key === "ai_detection"
+      && item.entity_id?.startsWith("binary_sensor."),
+    );
+    const state = entity && this._hass.states[entity.entity_id];
+    const attributes = state?.attributes;
+    const timestamp = attributes?.last_frame_at;
+    const remaining = timestamp * 1000 + DETECTION_TTL_MS - Date.now();
+    if (state?.state !== "on" || !attributes.enabled || attributes.state !== "detecting"
+        || typeof timestamp !== "number" || !Number.isFinite(remaining)
+        || remaining <= 0 || remaining > DETECTION_TTL_MS
+        || !Array.isArray(attributes.detections)) return;
+    for (const detection of attributes.detections.slice(0, 12)) {
+      if (typeof detection?.category !== "string") continue;
+      const confidence = detection.confidence;
+      const score = typeof confidence === "number" && Number.isFinite(confidence)
+        && confidence >= 0 && confidence <= 1 ? ` ${Math.round(confidence * 100)} %` : "";
+      const label = Object.prototype.hasOwnProperty.call(DETECTION_LABELS_FR, detection.category)
+        ? DETECTION_LABELS_FR[detection.category] : "Objet non identifié";
+      const box = detection.box;
+      const frameWidth = detection.frame_width;
+      const frameHeight = detection.frame_height;
+      if (box && Number.isFinite(frameWidth) && Number.isFinite(frameHeight)
+          && frameWidth > 0 && frameHeight > 0) {
+        this._detectionOverlay.setAttribute("viewBox", `0 0 ${frameWidth} ${frameHeight}`);
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", String(box.x1));
+        rect.setAttribute("y", String(box.y1));
+        rect.setAttribute("width", String(Math.max(0, box.x2 - box.x1)));
+        rect.setAttribute("height", String(Math.max(0, box.y2 - box.y1)));
+        rect.setAttribute("class", "detection-box");
+        this._detectionOverlay.appendChild(rect);
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("x", String(Math.max(0, box.x1)));
+        text.setAttribute("y", String(Math.max(0, box.y1 - 4)));
+        text.setAttribute("class", "detection-label");
+        text.textContent = `${label}${score}`;
+        this._detectionOverlay.appendChild(text);
+      }
+    }
+    const visible = this._detectionOverlay.children.length > 0;
+    this._detectionOverlay.toggleAttribute("hidden", !visible);
+    if (visible) {
+      this._detectionTimer = setTimeout(() => {
+        this._detectionTimer = null;
+        this._renderDetections();
+      }, remaining);
+    }
   }
 
   _openSettings() {
@@ -988,6 +1114,19 @@ export class NetvueCameraCard extends HTMLElement {
       this._historyVideo.volume = this._volume;
       this._historyDownload.href = media.path;
       this._historyDownload.hidden = false;
+      this._historyDetections = [];
+      if (this._hass?.callApi) {
+        this._hass.callApi("GET", `netvue_local/recordings/${encodeURIComponent(entryId)}/${segment.id}/metadata`)
+          .then((metadata) => {
+            if (!this._history || generation !== this._historyGeneration) return;
+            this._historyDetections = Array.isArray(metadata?.events) ? metadata.events : [];
+            this._renderHistoryDetections();
+          })
+          .catch(() => {
+            this._historyDetections = [];
+            this._renderHistoryDetections();
+          });
+      }
       this._historyVideo.load();
     } catch {
       if (this._history && generation === this._historyGeneration) {
@@ -1024,6 +1163,60 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyRange.value = String(this._historyCursor);
     this._renderHistoryPosition(Number(this._historyRange.value));
     this._historyDate.value = localDateTime(this._historyCursor);
+    this._renderHistoryDetections();
+  }
+
+  _renderHistoryDetections() {
+    if (!this._showDetections || !this._history || !Array.isArray(this._historyDetections)) {
+      this._detectionOverlay.setAttribute("hidden", "");
+      while (this._detectionOverlay.firstChild) {
+        this._detectionOverlay.removeChild(this._detectionOverlay.firstChild);
+      }
+      return;
+    }
+    while (this._detectionOverlay.firstChild) {
+      this._detectionOverlay.removeChild(this._detectionOverlay.firstChild);
+    }
+    if (!this._historySegment || !Number.isFinite(this._historyVideo.currentTime)) {
+      this._detectionOverlay.setAttribute("hidden", "");
+      return;
+    }
+    const absoluteSeconds = (this._historySegment.start / 1000)
+      + this._historyVideo.currentTime;
+    const event = this._historyDetections
+      .slice()
+      .sort((a, b) => Math.abs(a.timestamp - absoluteSeconds) - Math.abs(b.timestamp - absoluteSeconds))
+      .find((candidate) => {
+        return candidate.timestamp >= absoluteSeconds - 2
+          && candidate.timestamp <= absoluteSeconds + 2;
+      });
+    if (!event || !Array.isArray(event.boxes) || event.boxes.length === 0
+        || !Number.isFinite(event.frame_width) || !Number.isFinite(event.frame_height)) {
+      this._detectionOverlay.setAttribute("hidden", "");
+      return;
+    }
+    this._detectionOverlay.setAttribute("viewBox", `0 0 ${event.frame_width} ${event.frame_height}`);
+    for (const box of event.boxes.slice(0, 32)) {
+      if (!["x1", "y1", "x2", "y2"].every((key) => Number.isFinite(box[key]))) continue;
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", String(box.x1));
+      rect.setAttribute("y", String(box.y1));
+      rect.setAttribute("width", String(Math.max(0, box.x2 - box.x1)));
+      rect.setAttribute("height", String(Math.max(0, box.y2 - box.y1)));
+      rect.setAttribute("class", "detection-box");
+      this._detectionOverlay.appendChild(rect);
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", String(Math.max(0, box.x1)));
+      text.setAttribute("y", String(Math.max(0, box.y1 - 4)));
+      text.setAttribute("class", "detection-label");
+      const category = typeof box.category === "string" ? box.category : event.category;
+      const label = Object.prototype.hasOwnProperty.call(DETECTION_LABELS_FR, category)
+        ? DETECTION_LABELS_FR[category] : "Objet non identifié";
+      const confidence = typeof box.confidence === "number" ? box.confidence : event.confidence;
+      text.textContent = `${label}${typeof confidence === "number" ? ` ${Math.round(confidence * 100)} %` : ""}`;
+      this._detectionOverlay.appendChild(text);
+    }
+    this._detectionOverlay.toggleAttribute("hidden", this._detectionOverlay.children.length === 0);
   }
 
   async _historyEnded() {
@@ -1137,7 +1330,11 @@ export class NetvueCameraCard extends HTMLElement {
     this._volumeRange.value = String(this._muted ? 0 : this._volume);
     this._volumeRange.setAttribute("aria-label", t("volume"));
     const fullscreen = this._isFullscreen();
-    const navigation = fullscreen && this._wall && this._wall._cards.length > 1;
+    this.toggleAttribute("css-fullscreen", this._cssFullscreen);
+    this._wrap.toggleAttribute("data-fullscreen", Boolean(fullscreen));
+    this._renderDetections();
+    const navigation = fullscreen && this._wall && this._wall._isFullscreen()
+      && this._wall._cards.length > 1;
     this._previousButton.hidden = !navigation;
     this._nextButton.hidden = !navigation;
     this._previousButton.setAttribute("aria-label", t("previousCamera"));
@@ -1145,14 +1342,19 @@ export class NetvueCameraCard extends HTMLElement {
     this._previousButton.title = t("previousCamera");
     this._nextButton.title = t("nextCamera");
     const fullscreenLabel = fullscreen ? t("exitFullscreen") : t("fullscreen");
-    const fullscreenSupported = this._fullscreenSupported();
     for (const button of [this._fullscreenButton, this._historyFullscreenButton]) {
       setIcon(button, fullscreen ? ICONS.exitFullscreen : ICONS.fullscreen);
-      button.disabled = !fullscreenSupported;
-      button.setAttribute("aria-label", fullscreenSupported ? fullscreenLabel : t("fullscreenUnsupported"));
+      button.disabled = false;
+      button.setAttribute("aria-label", fullscreenLabel);
       button.setAttribute("aria-pressed", String(fullscreen));
       button.title = button.getAttribute("aria-label");
     }
+    setIcon(this._detectionButton, ICONS.detections);
+    const detectionLabel = (this._hass?.locale?.language || this._hass?.language || "").startsWith("fr")
+      ? "Afficher les détections en direct" : "Show live detections";
+    this._detectionButton.setAttribute("aria-label", detectionLabel);
+    this._detectionButton.setAttribute("aria-pressed", String(this._showDetections));
+    this._detectionButton.title = detectionLabel;
     setIcon(this._pttButton, ICONS.mic);
     const available = state === "live" && ptt.ready;
     this._pttButton.disabled = !available && !ptt.pressed;

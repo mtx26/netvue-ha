@@ -53,6 +53,7 @@ class DetectionStatus(NamedTuple):
     detections: list[dict]
     last_frame_at: float | None
     last_event_at: float | None
+    metrics: dict[str, int | float | str | None] | None = None
 
 
 AI_API_URL = "http://127.0.0.1:8766/api/v1"
@@ -72,12 +73,23 @@ def _detection_status(data) -> DetectionStatus:
         raise BridgeError("AI service returned invalid detection status")
     last_frame = data.get("last_frame_at")
     last_event = data.get("last_event_at")
+    metrics = data.get("metrics")
+    if metrics is not None and (
+        not isinstance(metrics, dict)
+        or not all(
+            isinstance(key, str)
+            and (value is None or type(value) in (int, float, str))
+            for key, value in metrics.items()
+        )
+    ):
+        raise BridgeError("AI service returned invalid detection metrics")
     return DetectionStatus(
         data["enabled"],
         data["state"],
         detections,
         last_frame if type(last_frame) in (int, float) else None,
         last_event if type(last_event) in (int, float) else None,
+        metrics,
     )
 
 

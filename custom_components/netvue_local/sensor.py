@@ -14,6 +14,7 @@ from .coordinator import CameraData, NetvueCoordinator, NetvueEntity
 _DIAGNOSTIC_OPTIONS = [
     "healthy",
     "stream_unavailable",
+    "ai_unavailable",
     "bridge_unavailable",
     "authentication_failed",
     "connection_failed",
@@ -161,6 +162,8 @@ class NetvueDiagnosticSensor(NetvueEntity, SensorEntity):
             attributes["details"] = data.manager_error
         elif data.session and data.session.error:
             attributes["details"] = data.session.error
+        elif data.ai_error:
+            attributes["details"] = data.ai_error
         return attributes
 
 
@@ -191,6 +194,8 @@ def _diagnostic_state(data: CameraData) -> str:
         return "session_failed"
     if not data.rtsp_available:
         return "stream_unavailable"
+    if data.ai_error:
+        return "ai_unavailable"
     return "healthy"
 
 

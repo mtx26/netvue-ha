@@ -79,4 +79,5 @@ class NetvueDetectionSensor(NetvueEntity, BinarySensorEntity):
             "detections": data.detection.detections,
             "last_frame_at": data.detection.last_frame_at,
             "last_event_at": data.detection.last_event_at,
+            "metrics": data.detection.metrics or {},
         }

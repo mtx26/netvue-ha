@@ -469,6 +469,9 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         cases = [
             (CameraData(None, False, "Cannot reach the local bridge manager"),
              "bridge_unavailable"),
+            (CameraData(SessionStatus("supervising", None), True,
+                        ai_error="Cannot reach the local AI service"),
+             "ai_unavailable"),
             (CameraData(SessionStatus("failed", "Camera authentication rejected [authentication]"),
                         False), "authentication_failed"),
             (CameraData(SessionStatus("failed", "Connection error [camera connection]"),
@@ -489,6 +492,9 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
                 coordinator.data = data
                 self.assertEqual(_diagnostic_state(data), expected)
                 self.assertEqual(diagnostic.native_value, expected)
+        coordinator.data = cases[1][0]
+        self.assertEqual(diagnostic.extra_state_attributes["details"],
+                         "Cannot reach the local AI service")
 
         coordinator.data = CameraData(
             SessionStatus("failed", "Camera authentication rejected [authentication]"), False

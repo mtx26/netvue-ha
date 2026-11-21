@@ -7,7 +7,16 @@ from unittest.mock import MagicMock, patch
 import av
 import numpy as np
 
-from netvue_ai import AiService, CameraWorker, IoUTracker, Detection, iou, point_in_zone, video_frames
+from netvue_ai import (
+    AiService,
+    CameraWorker,
+    Detection,
+    IoUTracker,
+    YoloDetector,
+    iou,
+    point_in_zone,
+    video_frames,
+)
 
 
 class AiUnitTest(unittest.TestCase):
@@ -29,6 +38,31 @@ class AiUnitTest(unittest.TestCase):
         self.assertEqual(len(logs.output), 1)
         self.assertIn("category=dog confidence=0.90", logs.output[0])
         self.assertEqual(len(worker.events), 1)
+
+    def test_event_cooldown_suppresses_new_tracks_but_not_other_zones(self):
+        worker = CameraWorker("test", {}, MagicMock(confidence=0.45), fps=1, confirmation=2)
+        with (
+            patch("netvue_ai.time.time", return_value=100),
+            self.assertLogs("netvue_ai", level="INFO") as logs,
+        ):
+            worker.emit("zone_entered", "car", 0.9, 1, "entrance")
+            worker.emit("zone_entered", "car", 0.9, 2, "entrance")
+            worker.emit("zone_entered", "car", 0.9, 3, "garden")
+        self.assertEqual(len(worker.events), 2)
+        self.assertEqual(len(logs.output), 2)
+
+    def test_idle_sampling_stays_periodic_and_speeds_up_after_a_detection(self):
+        worker = CameraWorker("test", {}, MagicMock(confidence=0.45), fps=3, confirmation=2)
+        quiet_interval = worker._active_interval
+
+        worker._update_sampling_interval(10, False)
+        self.assertEqual(worker._active_interval, quiet_interval)
+        worker._update_sampling_interval(11, True)
+        self.assertEqual(worker._active_interval, worker.interval)
+        worker._update_sampling_interval(12.9, False)
+        self.assertEqual(worker._active_interval, worker.interval)
+        worker._update_sampling_interval(13.1, False)
+        self.assertEqual(worker._active_interval, quiet_interval)
 
     def test_discovery_failure_is_logged(self):
         with (
@@ -52,6 +86,27 @@ class AiUnitTest(unittest.TestCase):
 
     def test_iou_rejects_different_object_position(self):
         self.assertLess(iou((0, 0, 10, 10), (100, 100, 110, 110)), 0.01)
+
+    def test_yolo_uses_letterbox_coordinates_and_suppresses_duplicate_boxes(self):
+        output = np.zeros((1, 84, 2), dtype=np.float32)
+        output[0, :4, 0] = [320, 320, 100, 100]
+        output[0, :4, 1] = [322, 320, 100, 100]
+        output[0, 4 + 2, 0] = 0.9
+        output[0, 4 + 2, 1] = 0.8
+        detector = YoloDetector.__new__(YoloDetector)
+        detector.input_name = "images"
+        detector.input_size = 640
+        detector.confidence = 0.45
+        detector.session = MagicMock()
+        detector.session.run.return_value = [output]
+
+        detections = detector.detect(np.zeros((480, 1280, 3), dtype=np.uint8))
+
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0].label, "car")
+        self.assertEqual(detections[0].box, (540.0, 140.0, 740.0, 340.0))
+        tensor = detector.session.run.call_args.args[1]["images"][0]
+        self.assertTrue(np.all(tensor[:, :200, :] == 114 / 255))
 
     def test_zone_uses_normalized_coordinates(self):
         rect = [0.0, 0.5, 0.5, 1.0]
@@ -97,6 +152,41 @@ class AiUnitTest(unittest.TestCase):
             options={"rtsp_transport": "tcp"}, timeout=(5.0, 5.0),
         )
 
+    def test_worker_counts_skipped_frames_and_recovers_from_inference_error(self):
+        detector = MagicMock(confidence=0.45)
+        worker = CameraWorker("test", {}, detector, fps=1, confirmation=2)
+        results = [RuntimeError("inference failed"), []]
+
+        def frames():
+            for _ in range(3):
+                yield av.VideoFrame(64, 48)
+
+        def detect(_frame, _confidence):
+            if detector.detect.call_count == 2:
+                worker.running = False
+            result = results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        detector.detect.side_effect = detect
+        with (
+            patch("netvue_ai.video_frames", side_effect=lambda _url: frames()),
+            patch("netvue_ai.time.monotonic", side_effect=[1.0, 1.1, 2.0]),
+            patch("netvue_ai.time.sleep"),
+            self.assertLogs("netvue_ai", level="WARNING") as logs,
+        ):
+            worker.run()
+
+        metrics = worker.snapshot()
+        self.assertEqual(metrics["frames_decoded"], 3)
+        self.assertEqual(metrics["frames_skipped"], 1)
+        self.assertEqual(metrics["inference_count"], 2)
+        self.assertEqual(metrics["inference_errors"], 1)
+        self.assertEqual(metrics["error_count"], 1)
+        self.assertEqual(metrics["inference_fps"], 1.0)
+        self.assertIn("Inference failed for test", logs.output[0])
+
     def test_worker_resets_confirmation_after_resolution_change(self):
         detector = MagicMock(confidence=0.45)
         worker = CameraWorker("test", {}, detector, fps=1, confirmation=2)
@@ -128,6 +218,12 @@ class AiUnitTest(unittest.TestCase):
         self.assertEqual([args[0].shape[:2] for args, _ in detector.detect.call_args_list],
                          dimensions)
         self.assertEqual(len(worker.events), 1)
+        metrics = worker.snapshot()
+        self.assertEqual(metrics["frames_decoded"], 3)
+        self.assertEqual(metrics["frames_skipped"], 0)
+        self.assertEqual(metrics["inference_count"], 3)
+        self.assertEqual(metrics["positive_inference_count"], 1)
+        self.assertGreater(metrics["inference_latency_ms"], 0)
         self.assertEqual(closed, [True])
         self.assertTrue(any("Video ready for test: 128x96" in line for line in logs.output))
         self.assertTrue(any("category=person" in line for line in logs.output))

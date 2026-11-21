@@ -117,6 +117,7 @@
         "state": {
           "healthy": "Fonctionnement normal",
           "stream_unavailable": "Flux vidéo indisponible",
+          "ai_unavailable": "Service IA indisponible",
           "bridge_unavailable": "Gestionnaire Netvue indisponible",
           "authentication_failed": "Authentification refusée",
           "connection_failed": "Connexion à la caméra impossible",

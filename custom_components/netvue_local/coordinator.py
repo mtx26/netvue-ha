@@ -1,5 +1,6 @@
 """Monitor RTSP availability without contacting the camera."""
 
+from collections import deque
 from datetime import timedelta
 import logging
 from typing import NamedTuple
@@ -50,7 +51,7 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
         self.camera = ManagedCamera(hass, host, name)
         self._entry = entry
         self._device_metadata: dict[str, str] = {}
-        self._last_detection_event_ids: set[str] = set()
+        self._last_detection_event_ids: deque[str] = deque(maxlen=200)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -160,14 +161,14 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
             event_id = event.get("id") if isinstance(event, dict) else None
             if not isinstance(event_id, str) or event_id in self._last_detection_event_ids:
                 continue
-            self._last_detection_event_ids.add(event_id)
+            self._last_detection_event_ids.append(event_id)
             self.hass.bus.async_fire(
                 f"{DOMAIN}_event",
                 {
+                    **event,
                     "entry_id": self._entry.entry_id,
                     "camera": self._entry.title,
                     "host": self.camera.host,
-                    **event,
                 },
             )
 

@@ -185,6 +185,32 @@ class NetvueRecordingDeleteView(HomeAssistantView):
             )
 
 
+class NetvueRecordingMetadataView(HomeAssistantView):
+    url = "/api/netvue_local/recordings/{entry_id}/{recording_id}/metadata"
+    name = "api:netvue_local:recording_metadata"
+    requires_auth = True
+
+    async def get(self, request, entry_id, recording_id):
+        hass = request.app["hass"]
+        entry = _recording_entry(hass, entry_id)
+        if entry is None:
+            return web.json_response({"error": "camera not found"}, status=404)
+        host = entry.runtime_data.camera.host
+        session = async_get_clientsession(hass)
+        try:
+            async with session.get(
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
+                f"{quote(recording_id, safe='')}/metadata",
+                timeout=5,
+            ) as response:
+                data = await response.json()
+                return web.json_response(data, status=response.status)
+        except (ClientError, TimeoutError, ValueError):
+            return web.json_response(
+                {"error": "recording metadata unavailable"}, status=502
+            )
+
+
 class NetvueRecordingPlaybackView(HomeAssistantView):
     url = "/api/netvue_local/playback/{entry_id}/{recording_id}"
     name = "api:netvue_local:recording_playback"
@@ -402,6 +428,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.http.register_view(NetvueDetectionConfigView())
     hass.http.register_view(NetvueRecordingListView())
     hass.http.register_view(NetvueRecordingDeleteView())
+    hass.http.register_view(NetvueRecordingMetadataView())
     hass.http.register_view(NetvueRecordingPlaybackView())
     hass.http.register_view(NetvueRecordingThumbnailView())
     if not hass.data.get(_STATIC_PATH_KEY):

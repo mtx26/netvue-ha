@@ -28,6 +28,10 @@ COCO_NAMES = {
 TRACKED_CLASSES = set(COCO_NAMES)
 ZONE_NAMES = {"entrance", "doorstep", "garden", "driveway"}
 _LOGGER = logging.getLogger(__name__)
+NMS_IOU_THRESHOLD = 0.45
+EVENT_COOLDOWN_SECONDS = 30
+QUIET_INFERENCE_INTERVAL = 1.0
+DETECTION_GRACE_PERIOD = 2.0
 
 
 def video_frames(url: str) -> Iterator[av.VideoFrame]:
@@ -132,8 +136,19 @@ class YoloDetector:
     def detect(self, frame: np.ndarray, confidence: float | None = None) -> list[Detection]:
         height, width = frame.shape[:2]
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(rgb, (self.input_size, self.input_size))
-        tensor = resized.transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
+        scale = min(self.input_size / width, self.input_size / height)
+        resized_width = max(1, int(round(width * scale)))
+        resized_height = max(1, int(round(height * scale)))
+        pad_x = (self.input_size - resized_width) // 2
+        pad_y = (self.input_size - resized_height) // 2
+        resized = cv2.resize(rgb, (resized_width, resized_height))
+        letterboxed = np.full(
+            (self.input_size, self.input_size, 3), 114, dtype=np.uint8
+        )
+        letterboxed[
+            pad_y:pad_y + resized_height, pad_x:pad_x + resized_width
+        ] = resized
+        tensor = letterboxed.transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
         output = self.session.run(None, {self.input_name: tensor})[0]
         predictions = np.asarray(output).squeeze()
         if predictions.ndim == 1:
@@ -141,23 +156,53 @@ class YoloDetector:
         if predictions.shape[0] == 84:
             predictions = predictions.T
 
+        if predictions.ndim != 2 or predictions.shape[1] < 6:
+            return []
+        class_scores = predictions[:, 4:]
+        class_ids = class_scores.argmax(axis=1)
+        scores = class_scores[np.arange(len(class_scores)), class_ids]
+        threshold = self.confidence if confidence is None else confidence
+        selected = (
+            np.isin(class_ids, tuple(TRACKED_CLASSES))
+            & (scores >= threshold)
+            & np.isfinite(scores)
+            & np.isfinite(predictions[:, :4]).all(axis=1)
+        )
+        if not selected.any():
+            return []
+
+        selected_class_ids = class_ids[selected]
+        selected_scores = scores[selected]
+        centers = predictions[selected, :2]
+        sizes = predictions[selected, 2:4]
+        x1 = np.clip((centers[:, 0] - sizes[:, 0] / 2 - pad_x) / scale, 0, width)
+        y1 = np.clip((centers[:, 1] - sizes[:, 1] / 2 - pad_y) / scale, 0, height)
+        x2 = np.clip((centers[:, 0] + sizes[:, 0] / 2 - pad_x) / scale, 0, width)
+        y2 = np.clip((centers[:, 1] + sizes[:, 1] / 2 - pad_y) / scale, 0, height)
+        valid = (x2 > x1) & (y2 > y1)
         detections: list[Detection] = []
-        for row in predictions:
-            if len(row) < 6:
-                continue
-            class_id = int(row[4:].argmax())
-            score = float(row[4:][class_id])
-            threshold = self.confidence if confidence is None else confidence
-            if class_id not in TRACKED_CLASSES or score < threshold:
-                continue
-            cx, cy, bw, bh = (float(value) for value in row[:4])
-            box = (
-                max(0.0, cx - bw / 2) / self.input_size * width,
-                max(0.0, cy - bh / 2) / self.input_size * height,
-                min(float(width), cx + bw / 2) / self.input_size * width,
-                min(float(height), cy + bh / 2) / self.input_size * height,
+        for class_id in np.unique(selected_class_ids[valid]):
+            class_indices = np.flatnonzero((selected_class_ids == class_id) & valid)
+            nms_boxes = [
+                [float(x1[index]), float(y1[index]),
+                 float(x2[index] - x1[index]), float(y2[index] - y1[index])]
+                for index in class_indices
+            ]
+            keep = cv2.dnn.NMSBoxes(
+                nms_boxes, selected_scores[class_indices].tolist(),
+                threshold, NMS_IOU_THRESHOLD,
             )
-            detections.append(Detection(class_id, COCO_NAMES[class_id], score, box))
+            for index in np.asarray(keep).reshape(-1):
+                candidate = class_indices[int(index)]
+                detections.append(Detection(
+                    int(class_id),
+                    COCO_NAMES[int(class_id)],
+                    float(selected_scores[candidate]),
+                    (
+                        float(x1[candidate]), float(y1[candidate]),
+                        float(x2[candidate]), float(y2[candidate]),
+                    ),
+                ))
         return detections
 
 
@@ -195,6 +240,8 @@ class CameraWorker:
         self.zones = zones
         self.detector = detector
         self.interval = 1.0 / max(1.0, fps)
+        self._active_interval = max(self.interval, QUIET_INFERENCE_INTERVAL)
+        self._last_detection_at: float | None = None
         self.tracker = IoUTracker(confirmation)
         self.events: list[dict] = []
         self.event_cursor = 0
@@ -211,6 +258,19 @@ class CameraWorker:
         self.confidence = detector.confidence
         self._cooldowns: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._last_inference_started_at: float | None = None
+        self.status.update({
+            "inference_latency_ms": None,
+            "inference_fps": 0.0,
+            "detection_rate": 0.0,
+            "frames_decoded": 0,
+            "frames_skipped": 0,
+            "inference_count": 0,
+            "positive_inference_count": 0,
+            "error_count": 0,
+            "inference_errors": 0,
+            "last_error": None,
+        })
 
     def set_enabled(self, enabled: bool) -> None:
         with self._lock:
@@ -223,11 +283,54 @@ class CameraWorker:
         with self._lock:
             return dict(self.status)
 
+    def _record_inference(self, started_at: float, latency_ms: float,
+                          has_detections: bool, error: str | None = None) -> None:
+        with self._lock:
+            self.status["inference_count"] += 1
+            if has_detections:
+                self.status["positive_inference_count"] = (
+                    self.status.get("positive_inference_count", 0) + 1
+                )
+            count = self.status["inference_count"]
+            positive_count = self.status.get("positive_inference_count", 0)
+            self.status["inference_latency_ms"] = round(latency_ms, 2)
+            if self._last_inference_started_at is not None:
+                interval = started_at - self._last_inference_started_at
+                if interval > 0:
+                    self.status["inference_fps"] = round(1 / interval, 3)
+            self._last_inference_started_at = started_at
+            if error is not None:
+                self.status["error_count"] += 1
+                self.status["inference_errors"] += 1
+                self.status["last_error"] = error[:200]
+            else:
+                self.status["last_error"] = None
+            successful_count = count - self.status["inference_errors"]
+            self.status["detection_rate"] = round(
+                positive_count / successful_count, 3
+            ) if successful_count else 0.0
+
+    def _record_error(self, error: Exception) -> None:
+        with self._lock:
+            self.status["error_count"] += 1
+            self.status["last_error"] = str(error)[:200]
+
+    def _update_sampling_interval(self, now: float, has_detections: bool) -> None:
+        if has_detections:
+            self._last_detection_at = now
+        active = (
+            self._last_detection_at is not None
+            and now - self._last_detection_at <= DETECTION_GRACE_PERIOD
+        )
+        self._active_interval = (
+            self.interval if active else max(self.interval, QUIET_INFERENCE_INTERVAL)
+        )
+
     def emit(self, event_type: str, label: str, confidence: float,
              track_id: int, zone: str | None = None) -> None:
         now = time.time()
-        key = f"{track_id}:{label}:{zone or 'camera'}"
-        if now - self._cooldowns.get(key, 0) < 15:
+        key = f"{event_type}:{label}:{zone or 'camera'}"
+        if now - self._cooldowns.get(key, 0) < EVENT_COOLDOWN_SECONDS:
             return
         self._cooldowns[key] = now
         event = {
@@ -250,6 +353,51 @@ class CameraWorker:
             event_type, self.stream_name, label, confidence, zone or "whole_image",
         )
 
+    def persist_metadata(self, timestamp: float, frame_size: tuple[int, int],
+                         tracks: Iterable[Track]) -> None:
+        tracks = list(tracks)
+        if not tracks:
+            return
+        host = self.stream_name
+        if host.startswith("netvue_"):
+            host = host[len("netvue_"):].replace("_", ".")
+        boxes = [
+            {
+                "x1": round(track.box[0], 2),
+                "y1": round(track.box[1], 2),
+                "x2": round(track.box[2], 2),
+                "y2": round(track.box[3], 2),
+                "category": track.label,
+                "confidence": round(track.confidence, 3),
+            }
+            for track in tracks
+        ]
+        for track in tracks:
+            event = {
+                "id": f"{int(timestamp * 1000)}-{self.stream_name}-{track.track_id}",
+                "timestamp": timestamp,
+                "stream_name": self.stream_name,
+                "event": "object_detected",
+                "category": track.label,
+                "confidence": round(track.confidence, 3),
+                "track_id": track.track_id,
+                "frame_width": frame_size[1],
+                "frame_height": frame_size[0],
+                "boxes": boxes,
+            }
+            try:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:8765/api/v1/cameras/{host}/ai/metadata",
+                    data=json.dumps(event).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=1.0) as response:
+                    if response.status not in (200, 201):
+                        raise OSError(f"bridge returned HTTP {response.status}")
+            except (OSError, urllib.error.URLError, TimeoutError) as exc:
+                _LOGGER.debug("Cannot persist AI metadata for %s: %s", self.stream_name, exc)
+
     def run(self) -> None:
         url = f"rtsp://127.0.0.1:8554/{self.stream_name}"
         while self.running:
@@ -271,7 +419,11 @@ class CameraWorker:
                     except StopIteration:
                         break
                     now = time.monotonic()
-                    if now - last_inference < self.interval:
+                    with self._lock:
+                        self.status["frames_decoded"] += 1
+                    if now - last_inference < self._active_interval:
+                        with self._lock:
+                            self.status["frames_skipped"] += 1
                         continue
                     last_inference = now
                     frame = decoded.to_ndarray(format="bgr24")
@@ -283,16 +435,42 @@ class CameraWorker:
                         self.tracker = IoUTracker(self.tracker.confirmation_frames)
                         self.tracker.next_id = next_id
                         frame_size = new_size
-                    detections = self.detector.detect(frame, self.confidence)
+                    inference_started = time.perf_counter()
+                    try:
+                        detections = self.detector.detect(frame, self.confidence)
+                    except (RuntimeError, cv2.error, ValueError) as exc:
+                        self._update_sampling_interval(now, False)
+                        self._record_inference(
+                            now, (time.perf_counter() - inference_started) * 1000,
+                            False, str(exc),
+                        )
+                        _LOGGER.warning("Inference failed for %s: %s", self.stream_name, exc)
+                        continue
+                    latency_ms = (time.perf_counter() - inference_started) * 1000
+                    self._update_sampling_interval(now, bool(detections))
                     confirmed = self.tracker.update(detections)
+                    self._record_inference(now, latency_ms, bool(confirmed))
                     latest = [
-                        {"category": item.label, "confidence": round(item.confidence, 3)}
+                        {
+                            "category": item.label,
+                            "confidence": round(item.confidence, 3),
+                            "track_id": item.track_id,
+                            "box": {
+                                "x1": round(item.box[0], 2),
+                                "y1": round(item.box[1], 2),
+                                "x2": round(item.box[2], 2),
+                                "y2": round(item.box[3], 2),
+                            },
+                            "frame_width": frame_size[1],
+                            "frame_height": frame_size[0],
+                        }
                         for item in confirmed
                     ]
                     with self._lock:
                         self.status["state"] = "detecting"
                         self.status["detections"] = latest
                         self.status["last_frame_at"] = time.time()
+                    self.persist_metadata(time.time(), frame_size, confirmed)
                     for track in confirmed:
                         zones_hit = [
                             name for name, rect in self.zones.items()
@@ -309,6 +487,7 @@ class CameraWorker:
                             self.emit("object_detected", track.label, track.confidence,
                                       track.track_id)
             except av.FFmpegError as exc:
+                self._record_error(exc)
                 _LOGGER.warning("Video decoding failed for %s: %s", self.stream_name, exc)
             finally:
                 capture.close()
@@ -397,6 +576,9 @@ class AiService:
                     worker.set_enabled(config["enabled"])
                     worker.zones = config["zones"]
                     worker.interval = 1.0 / config["fps"]
+                    worker._active_interval = max(
+                        worker.interval, QUIET_INFERENCE_INTERVAL
+                    )
                     worker.tracker.confirmation_frames = config["confirmation_frames"]
                     worker.confidence = config["confidence"]
                 worker.start()
@@ -493,6 +675,9 @@ async def main() -> None:
                 worker.set_enabled(enabled)
                 worker.zones = clean_zones
                 worker.interval = 1.0 / float(fps)
+                worker._active_interval = max(
+                    worker.interval, QUIET_INFERENCE_INTERVAL
+                )
                 worker.tracker.confirmation_frames = confirmation
                 worker.confidence = float(confidence)
         if changed:
