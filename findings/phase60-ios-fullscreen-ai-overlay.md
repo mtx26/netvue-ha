@@ -49,6 +49,10 @@ et les boites de detection IA live/historiques sans perturber WebRTC.
 
 ## Limites restantes
 
+- Si le bouton overlay manque après la mise à jour, installer Netvue Local
+  `0.2.30` et redémarrer Home Assistant. Le module de la carte change d'URL
+  pour éviter de réutiliser celui de `0.2.29`.
+
 - Verifier sur iPhone Safari et Home Assistant iOS que la lecture demarre apres
   geste utilisateur, que la reprise/seek conserve la position et que le Range
   est accepte.
