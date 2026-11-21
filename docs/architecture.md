@@ -100,6 +100,10 @@ possède un lecteur vidéo, un suivi IoU borné et une file d'événements limit
 L'inférence démarre à 3 images/s par caméra, avec une limite globale de
 ressources Docker configurable.
 
+Le lecteur IA utilise PyAV/FFmpeg en RTSP TCP, avec des délais d'ouverture et
+de lecture de 5 s. La conversion BGR respecte les dimensions de chaque image ;
+le suivi est réinitialisé lors d'un changement de résolution.
+
 Le détecteur COCO couvre les personnes, chats, chiens, oiseaux et véhicules
 courants. Il ne déclare pas les colis tant qu'une classe ou un modèle fiable
 n'est pas validé. Les zones sont définies en coordonnées normalisées. Les

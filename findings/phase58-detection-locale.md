@@ -31,10 +31,18 @@ existants, puis exposer son état et ses événements dans Home Assistant.
   La roue dentée de chaque carte caméra ouvre le dessin des zones ; l'interface
   reste à valider dans Home Assistant réel.
 - Roadmap et architecture mises à jour.
+- Correction du lecteur IA : remplacement de `cv2.VideoCapture` par PyAV.
+  Un H.264 synthétique 360p → 1080p → 360p reproduit avec OpenCV 4.12
+  les erreurs `Slice parameters 0, 1080 are invalid` et des dimensions
+  incorrectes. PyAV restitue les neuf images avec les dimensions attendues.
+  Cela explique une cause reproductible du journal fourni, sans confirmer
+  le changement de résolution sur la caméra réelle.
 
 ## Tests
 
 - Tests unitaires du suivi IoU et des zones.
+- Régression synthétique multi-résolution, pixels, fermeture du lecteur et
+  remise à zéro de la confirmation du suivi lors d'un changement de taille.
 - Test de configuration Portainer du conteneur IA.
 - Tests Go/Python à relancer après les changements.
 - Suite HA exécutée dans un conteneur isolé : 106 tests et 63 sous-tests

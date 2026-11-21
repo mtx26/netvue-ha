@@ -1,6 +1,13 @@
 import unittest
+import tempfile
+from fractions import Fraction
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from netvue_ai import IoUTracker, Detection, iou, point_in_zone
+import av
+import numpy as np
+
+from netvue_ai import CameraWorker, IoUTracker, Detection, iou, point_in_zone, video_frames
 
 
 class AiUnitTest(unittest.TestCase):
@@ -21,6 +28,77 @@ class AiUnitTest(unittest.TestCase):
         rect = [0.0, 0.5, 0.5, 1.0]
         self.assertTrue(point_in_zone((100, 300, 200, 500), rect, (500, 1000)))
         self.assertFalse(point_in_zone((600, 300, 700, 500), rect, (500, 1000)))
+
+    def test_video_resolution_changes_preserve_dimensions_and_pixels(self):
+        sizes = [(640, 360), (1920, 1080), (640, 360)]
+        encoded = []
+        for width, height in sizes:
+            codec = av.CodecContext.create("libx264", "w")
+            codec.width, codec.height = width, height
+            codec.pix_fmt = "yuv420p"
+            codec.time_base = Fraction(1, 5)
+            for _ in range(3):
+                frame = av.VideoFrame.from_ndarray(
+                    np.full((height, width, 3), 80, dtype=np.uint8), format="bgr24"
+                )
+                encoded.extend(bytes(packet) for packet in codec.encode(frame))
+            encoded.extend(bytes(packet) for packet in codec.encode(None))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "changing.h264"
+            path.write_bytes(b"".join(encoded))
+            frames = [frame.to_ndarray(format="bgr24") for frame in video_frames(str(path))]
+        self.assertEqual(
+            [frame.shape[:2] for frame in frames],
+            [(height, width) for width, height in sizes for _ in range(3)],
+        )
+        for frame in frames:
+            self.assertLess(abs(float(frame.mean()) - 80), 3)
+
+    def test_video_reader_closes_container_when_stopped(self):
+        container = MagicMock()
+        container.__enter__.return_value = container
+        container.decode.return_value = iter([av.VideoFrame(64, 48)])
+        with patch("netvue_ai.av.open", return_value=container) as open_video:
+            reader = video_frames("rtsp://127.0.0.1:8554/test")
+            next(reader)
+            reader.close()
+        container.__exit__.assert_called_once()
+        open_video.assert_called_once_with(
+            "rtsp://127.0.0.1:8554/test",
+            options={"rtsp_transport": "tcp"}, timeout=(5.0, 5.0),
+        )
+
+    def test_worker_resets_confirmation_after_resolution_change(self):
+        detector = MagicMock(confidence=0.45)
+        worker = CameraWorker("test", {}, detector, fps=1, confirmation=2)
+        dimensions = [(48, 64), (96, 128), (96, 128)]
+        closed = []
+
+        def frames():
+            try:
+                for height, width in dimensions:
+                    yield av.VideoFrame.from_ndarray(
+                        np.zeros((height, width, 3), dtype=np.uint8), format="bgr24"
+                    )
+            finally:
+                closed.append(True)
+
+        def detect(_frame, _confidence):
+            if detector.detect.call_count == 3:
+                worker.running = False
+            return [Detection(0, "person", 0.9, (10, 10, 20, 20))]
+
+        detector.detect.side_effect = detect
+        with (
+            patch("netvue_ai.video_frames", side_effect=lambda _url: frames()),
+            patch("netvue_ai.time.monotonic", side_effect=[1.0, 2.0, 3.0]),
+            patch("netvue_ai.time.sleep"),
+        ):
+            worker.run()
+        self.assertEqual([args[0].shape[:2] for args, _ in detector.detect.call_args_list],
+                         dimensions)
+        self.assertEqual(len(worker.events), 1)
+        self.assertEqual(closed, [True])
 
 
 if __name__ == "__main__":

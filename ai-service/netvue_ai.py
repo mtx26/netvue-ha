@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import threading
@@ -12,7 +13,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Iterable
+from collections.abc import Iterator
 
+import av
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -24,6 +27,12 @@ COCO_NAMES = {
 }
 TRACKED_CLASSES = set(COCO_NAMES)
 ZONE_NAMES = {"entrance", "doorstep", "garden", "driveway"}
+_LOGGER = logging.getLogger(__name__)
+
+
+def video_frames(url: str) -> Iterator[av.VideoFrame]:
+    with av.open(url, options={"rtsp_transport": "tcp"}, timeout=(5.0, 5.0)) as container:
+        yield from container.decode(video=0)
 
 
 @dataclass
@@ -242,57 +251,61 @@ class CameraWorker:
             if not enabled:
                 time.sleep(0.5)
                 continue
-            capture = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-            capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
-            capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
-            if not capture.isOpened():
-                with self._lock:
-                    self.status["state"] = "stream_unavailable"
-                capture.release()
-                time.sleep(2)
-                continue
-            with self._lock:
-                self.status["state"] = "detecting"
+            capture = video_frames(url)
             last_inference = 0.0
-            while self.running:
-                with self._lock:
-                    if not self.status["enabled"]:
+            frame_size = None
+            try:
+                while self.running:
+                    with self._lock:
+                        if not self.status["enabled"]:
+                            break
+                    try:
+                        decoded = next(capture)
+                    except StopIteration:
                         break
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                now = time.monotonic()
-                if now - last_inference < self.interval:
-                    continue
-                last_inference = now
-                detections = self.detector.detect(frame, self.confidence)
-                confirmed = self.tracker.update(detections)
-                frame_size = (frame.shape[0], frame.shape[1])
-                latest = [
-                    {"category": item.label, "confidence": round(item.confidence, 3)}
-                    for item in confirmed
-                ]
-                with self._lock:
-                    self.status["detections"] = latest
-                    self.status["last_frame_at"] = time.time()
-                for track in confirmed:
-                    zones_hit = [
-                        name for name, rect in self.zones.items()
-                        if point_in_zone(track.box, rect, frame_size)
+                    now = time.monotonic()
+                    if now - last_inference < self.interval:
+                        continue
+                    last_inference = now
+                    frame = decoded.to_ndarray(format="bgr24")
+                    new_size = frame.shape[:2]
+                    if new_size != frame_size:
+                        next_id = self.tracker.next_id
+                        self.tracker = IoUTracker(self.tracker.confirmation_frames)
+                        self.tracker.next_id = next_id
+                        frame_size = new_size
+                    detections = self.detector.detect(frame, self.confidence)
+                    confirmed = self.tracker.update(detections)
+                    latest = [
+                        {"category": item.label, "confidence": round(item.confidence, 3)}
+                        for item in confirmed
                     ]
-                    if zones_hit:
-                        for zone in zones_hit:
-                            before = track.zone_hits.get(zone, 0)
-                            track.zone_hits[zone] = before + 1
-                            if track.zone_hits[zone] == 3:
-                                self.emit("zone_entered", track.label, track.confidence,
-                                          track.track_id, zone)
-                    else:
-                        self.emit("object_detected", track.label, track.confidence,
-                                  track.track_id)
-            capture.release()
+                    with self._lock:
+                        self.status["state"] = "detecting"
+                        self.status["detections"] = latest
+                        self.status["last_frame_at"] = time.time()
+                    for track in confirmed:
+                        zones_hit = [
+                            name for name, rect in self.zones.items()
+                            if point_in_zone(track.box, rect, frame_size)
+                        ]
+                        if zones_hit:
+                            for zone in zones_hit:
+                                before = track.zone_hits.get(zone, 0)
+                                track.zone_hits[zone] = before + 1
+                                if track.zone_hits[zone] == 3:
+                                    self.emit("zone_entered", track.label, track.confidence,
+                                              track.track_id, zone)
+                        else:
+                            self.emit("object_detected", track.label, track.confidence,
+                                      track.track_id)
+            except av.FFmpegError as exc:
+                _LOGGER.warning("Video decoding failed for %s: %s", self.stream_name, exc)
+            finally:
+                capture.close()
             with self._lock:
                 self.status["state"] = "reconnecting"
+                self.status["detections"] = []
             time.sleep(1)
 
     def start(self) -> None:
