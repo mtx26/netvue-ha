@@ -123,3 +123,6 @@ et les boites de detection IA live/historiques sans perturber WebRTC.
 - Le pont accepte un seul export annoté à la fois et exige un téléchargement
   complet pour ne pas réencoder à chaque requête partielle. Le MP4 original
   conserve la reprise HTTP. La charge sur un long segment reste à mesurer.
+- Libass a besoin d'une police même pour les rectangles ASS vectoriels.
+  Le pont embarque DejaVu Sans ; le test d'intégration utilise la même
+  police dans son conteneur Home Assistant.

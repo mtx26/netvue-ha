@@ -144,6 +144,7 @@ jobs:
       - name: Prepare binaries and pinned HA image
         run: |
           chmod +x bin/*
+          sudo apt-get install -y --no-install-recommends fonts-dejavu-core
           docker pull "$HA_IMAGE"
 
       - name: Go integration tests (no skips allowed)
@@ -152,6 +153,7 @@ jobs:
           for bin in netvue-manager.test netvue.test netvue-e2e.test; do
             docker run --rm --network none \
               --mount "type=bind,source=$GITHUB_WORKSPACE/bin,target=/ci,readonly" \
+              --mount "type=bind,source=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf,target=/usr/share/fonts/netvue/DejaVuSans.ttf,readonly" \
               --env NETVUE_REQUIRE_INTEGRATION=1 \
               --env NETVUE_TEST_GO_BRIDGE=/ci/netvue-bridge \
               --env NETVUE_TEST_MEDIAMTX=/ci/mediamtx \
