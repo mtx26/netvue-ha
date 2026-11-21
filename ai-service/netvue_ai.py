@@ -33,6 +33,8 @@ NMS_IOU_THRESHOLD = 0.45
 EVENT_COOLDOWN_SECONDS = 30
 QUIET_INFERENCE_INTERVAL = 1.0
 DETECTION_GRACE_PERIOD = 2.0
+PRE_EVENT_SECONDS = 120
+POST_EVENT_SECONDS = 300
 
 
 def video_frames(url: str) -> Iterator[av.VideoFrame]:
@@ -60,6 +62,39 @@ class Track:
     def __post_init__(self) -> None:
         if self.zone_hits is None:
             self.zone_hits = {}
+
+
+class EventStore:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.events: list[dict] = []
+        self._lock = threading.Lock()
+        self.load()
+
+    def load(self) -> None:
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, list):
+                self.events = [item for item in data[-1000:] if isinstance(item, dict)]
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            self.events = []
+
+    def save(self) -> None:
+        temporary = f"{self.path}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(self.events[-1000:], handle, ensure_ascii=False, sort_keys=True)
+        os.replace(temporary, self.path)
+
+    def add(self, event: dict) -> bool:
+        event_id = event.get("id")
+        with self._lock:
+            if any(item.get("id") == event_id for item in self.events):
+                return False
+            self.events.append(event)
+            del self.events[:-1000]
+            self.save()
+        return True
 
 
 def iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
@@ -259,11 +294,16 @@ class CameraWorker:
             "detections": [],
             "last_frame_at": None,
             "last_event_at": None,
+            "package_states": [],
         }
         self.confidence = detector.confidence
         self._cooldowns: dict[str, float] = {}
         self._lock = threading.Lock()
         self._last_inference_started_at: float | None = None
+        self.rules: list[dict] = []
+        self.event_store: EventStore | None = None
+        self.active_lifecycle: dict[tuple[str, int], dict] = {}
+        self.package_states: dict[int, dict] = {}
         self.status.update({
             "inference_latency_ms": None,
             "inference_fps": 0.0,
@@ -332,6 +372,183 @@ class CameraWorker:
         self._active_interval = (
             self.interval if active else max(self.interval, QUIET_INFERENCE_INTERVAL)
         )
+
+    @staticmethod
+    def _rule_matches_time(rule: dict, timestamp: float) -> bool:
+        local = time.localtime(timestamp)
+        weekdays = rule.get("days", [])
+        if weekdays and str(local.tm_wday) not in [str(day) for day in weekdays]:
+            return False
+        start = str(rule.get("start", "00:00"))
+        end = str(rule.get("end", "23:59"))
+        now_clock = f"{local.tm_hour:02d}:{local.tm_min:02d}"
+        if start <= end:
+            return start <= now_clock <= end
+        return now_clock >= start or now_clock <= end
+
+    def _matching_rules(self, track: Track, zone: str | None, timestamp: float) -> list[dict]:
+        matches = []
+        for rule in self.rules:
+            if not rule.get("enabled", True):
+                continue
+            if rule.get("category") not in ("", "*", track.label):
+                continue
+            if rule.get("zone") and rule.get("zone") != zone:
+                continue
+            confidence = rule.get("confidence")
+            if type(confidence) in (int, float) and track.confidence < float(confidence):
+                continue
+            if self._rule_matches_time(rule, timestamp):
+                matches.append(rule)
+        return matches
+
+    def _persist_lifecycle_event(self, event_type: str, track: Track,
+                                 zone: str | None, timestamp: float,
+                                 rule: dict | None = None) -> dict:
+        event = {
+            "id": f"{int(timestamp * 1000)}-{self.stream_name}-{track.track_id}-{event_type}",
+            "timestamp": timestamp,
+            "stream_name": self.stream_name,
+            "event": event_type,
+            "category": track.label,
+            "confidence": round(track.confidence, 3),
+            "track_id": track.track_id,
+            "zone": zone,
+            "state": event_type,
+            "rule": rule.get("name") if isinstance(rule, dict) else None,
+            "protected_recording_id": None,
+            "notification_status": "pending",
+        }
+        if self.event_store is not None:
+            self.event_store.add(event)
+        self.events.append(event)
+        del self.events[:-1000]
+        return event
+
+    def _protect_lifecycle_range(self, start: float, end: float,
+                                 track: Track, zone: str | None,
+                                 rule: dict | None = None) -> None:
+        protected_start = start - PRE_EVENT_SECONDS
+        protected_end = end + POST_EVENT_SECONDS
+        host = self.stream_name
+        if host.startswith("netvue_"):
+            host = host[len("netvue_"):].replace("_", ".")
+        try:
+            payload = json.dumps({
+                "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(protected_start)),
+                "end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(protected_end)),
+                "title": f"{track.label} - {zone or 'whole image'}",
+                "category": track.label,
+                "protection": "automatic",
+            }).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:8765/api/v1/cameras/{host}/protected",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            recording_id = data.get("id") if isinstance(data, dict) else None
+            if isinstance(recording_id, str):
+                _LOGGER.info("Protected automatic recording %s for %s", recording_id, self.stream_name)
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            _LOGGER.warning("Cannot protect AI event for %s: %s", self.stream_name, exc)
+
+    def update_package_state(self, visible: Iterable[Track],
+                             timestamp: float, frame_size: tuple[int, int]) -> None:
+        packages = [track for track in visible if track.label in ("package", "parcel", "box")]
+        seen: set[int] = set()
+        for track in packages:
+            seen.add(track.track_id)
+            zone = next((
+                name for name, rect in self.zones.items()
+                if point_in_zone(track.box, rect, frame_size)
+            ), None)
+            state = self.package_states.get(track.track_id)
+            if state is None:
+                state = {
+                    "track_id": track.track_id, "state": "candidate",
+                    "first_seen": timestamp, "last_seen": timestamp,
+                    "zone": zone, "confidence": track.confidence,
+                }
+                self.package_states[track.track_id] = state
+                continue
+            state["last_seen"] = timestamp
+            state["confidence"] = max(float(state["confidence"]), track.confidence)
+            state["zone"] = zone
+            if state["state"] == "candidate" and timestamp - state["first_seen"] >= 3:
+                state["state"] = "present"
+                event = self._persist_lifecycle_event(
+                    "package_deposited", track, zone, timestamp
+                )
+                event["package_state"] = "deposited"
+        for track_id, state in list(self.package_states.items()):
+            if track_id in seen:
+                continue
+            if state["state"] in ("present", "candidate") and timestamp - state["last_seen"] >= 5:
+                state["state"] = "disappeared"
+                track = Track(
+                    track_id=track_id, label="package",
+                    box=(0, 0, 0, 0), confidence=float(state["confidence"]),
+                )
+                event = self._persist_lifecycle_event(
+                    "package_disappeared", track, state["zone"], timestamp
+                )
+                event["package_state"] = "disappeared"
+                del self.package_states[track_id]
+        with self._lock:
+            self.status["package_states"] = list(self.package_states.values())
+
+    def update_lifecycle(self, visible: Iterable[Track],
+                         timestamp: float, frame_size: tuple[int, int]) -> None:
+        height, width = frame_size
+        seen: set[tuple[str, int]] = set()
+        for track in visible:
+            zone = next((
+                name for name, rect in self.zones.items()
+                if point_in_zone(track.box, rect, frame_size)
+            ), None)
+            key = (track.label, track.track_id)
+            seen.add(key)
+            active = self.active_lifecycle.get(key)
+            if active is None:
+                matches = self._matching_rules(track, zone, timestamp)
+                if track.confirmed_frames < self.tracker.confirmation_frames:
+                    continue
+                active = {
+                    "start": timestamp, "last_seen": timestamp, "zone": zone,
+                    "track": track, "rule": matches[0] if matches else None,
+                    "confirmed": bool(matches),
+                }
+                self.active_lifecycle[key] = active
+                if active["confirmed"]:
+                    self._persist_lifecycle_event("event_confirmed", track, zone, timestamp, active["rule"])
+                    self._persist_lifecycle_event("event_active", track, zone, timestamp, active["rule"])
+            else:
+                active["last_seen"] = timestamp
+                active["track"] = track
+                if not active["confirmed"]:
+                    matches = self._matching_rules(track, zone, timestamp)
+                    if matches:
+                        active["confirmed"] = True
+                        active["rule"] = matches[0]
+                        active["zone"] = zone
+                        self._persist_lifecycle_event("event_confirmed", track, zone, timestamp, active["rule"])
+
+        grace = max(DETECTION_GRACE_PERIOD, 3.0)
+        for key, active in list(self.active_lifecycle.items()):
+            if key in seen and timestamp - active["last_seen"] <= grace:
+                continue
+            if timestamp - active["last_seen"] <= grace:
+                continue
+            if active["confirmed"]:
+                track = active["track"]
+                zone = active["zone"]
+                self._persist_lifecycle_event("event_ended", track, zone, timestamp, active["rule"])
+                if active["rule"] is not None:
+                    self._protect_lifecycle_range(active["start"], timestamp, track, zone, active["rule"])
+            del self.active_lifecycle[key]
 
     def emit(self, event_type: str, label: str, confidence: float,
              track_id: int, zone: str | None = None) -> None:
@@ -485,6 +702,8 @@ class CameraWorker:
                         self.status["detections"] = latest
                         self.status["last_frame_at"] = timestamp
                     self.persist_metadata(timestamp, frame_size, visible)
+                    self.update_lifecycle(visible, timestamp, frame_size)
+                    self.update_package_state(visible, timestamp, frame_size)
                     for track in confirmed:
                         zones_hit = [
                             name for name, rect in self.zones.items()
@@ -539,6 +758,10 @@ class AiService:
         os.makedirs(self.config_dir, exist_ok=True)
         self.config_path = os.path.join(self.config_dir, "netvue-ai-config.json")
         self.configs = self._load_configs()
+        self.events_path = os.path.join(self.config_dir, "netvue-ai-events.json")
+        self.event_store = EventStore(self.events_path)
+        self.rules_path = os.path.join(self.config_dir, "netvue-ai-rules.json")
+        self.rules = self._load_rules()
         self._lock = threading.Lock()
         self.stop_event = threading.Event()
 
@@ -559,6 +782,20 @@ class AiService:
         with open(temporary, "w", encoding="utf-8") as handle:
             json.dump(self.configs, handle, ensure_ascii=False, sort_keys=True)
         os.replace(temporary, self.config_path)
+
+    def _load_rules(self) -> dict[str, list[dict]]:
+        try:
+            with open(self.rules_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_rules(self) -> None:
+        temporary = f"{self.rules_path}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(self.rules, handle, ensure_ascii=False, sort_keys=True)
+        os.replace(temporary, self.rules_path)
 
     def discover_stream_names(self) -> list[str]:
         configured = os.environ.get("NETVUE_AI_STREAM_NAMES", "").strip()
@@ -584,6 +821,20 @@ class AiService:
                     name, self.zones.get(name, {}), self.detector,
                     self.fps, self.confirmation,
                 )
+                worker.event_store = self.event_store
+                worker.rules = self.rules.get(name, [])
+                for event in reversed(self.event_store.events):
+                    if event.get("stream_name") == name and event.get("package_state") == "disappeared":
+                        break
+                    if event.get("stream_name") == name and event.get("package_state") == "deposited":
+                        worker.package_states[event.get("track_id", 0)] = {
+                            "track_id": event.get("track_id", 0),
+                            "state": "present",
+                            "first_seen": event.get("timestamp"),
+                            "last_seen": event.get("timestamp"),
+                            "zone": event.get("zone"),
+                            "confidence": event.get("confidence", 0),
+                        }
                 self.workers[name] = worker
                 config = self.configs.get(name)
                 if config:
@@ -711,13 +962,77 @@ async def main() -> None:
         name = request.match_info["stream_name"]
         with service._lock:
             worker = service.workers.get(name)
-        if worker is None:
-            return web.json_response({"events": []})
         since = request.query.get("since")
-        events = worker.events
+        events = list(service.event_store.events)
+        if worker is not None:
+            events = [event for event in events if event.get("stream_name") == name]
+            events.extend([
+                event for event in worker.events
+                if event not in events
+            ])
         if since:
             events = [event for event in events if event["id"] > since]
         return web.json_response({"events": events[-200:]})
+
+    async def get_rules(request):
+        name = request.match_info["stream_name"]
+        with service._lock:
+            rules = service.rules.get(name, [])
+        return web.json_response({"rules": rules})
+
+    async def set_rules(request):
+        name = request.match_info["stream_name"]
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "invalid request"}, status=400)
+        rules = body.get("rules")
+        if not isinstance(rules, list) or len(rules) > 100:
+            return web.json_response({"error": "invalid rules"}, status=400)
+        clean = []
+        supported = {0, 14, 15, 16, 2, 5, 7, 1, 3}
+        category_names = {value for key, value in COCO_NAMES.items() if key in supported}
+        for rule in rules:
+            if not isinstance(rule, dict):
+                return web.json_response({"error": "invalid rule"}, status=400)
+            category = rule.get("category", "*")
+            zone = rule.get("zone")
+            enabled = rule.get("enabled")
+            days = rule.get("days")
+            if (category not in ("*", *category_names)
+                    or type(enabled) is not bool
+                    or not isinstance(days, list)
+                    or not all(type(day) is int and 0 <= day <= 6 for day in days)
+                    or zone not in (None, "", *ZONE_NAMES)):
+                return web.json_response({"error": "invalid rule"}, status=400)
+            start = str(rule.get("start", "00:00"))
+            end = str(rule.get("end", "23:59"))
+            try:
+                time.strptime(start, "%H:%M")
+                time.strptime(end, "%H:%M")
+            except ValueError:
+                return web.json_response({"error": "invalid schedule"}, status=400)
+            clean.append({
+                "name": str(rule.get("name", ""))[:100],
+                "enabled": enabled,
+                "category": category,
+                "zone": zone,
+                "days": days,
+                "start": start,
+                "end": end,
+                "confidence": float(rule.get("confidence", 0.38)),
+                "confirmation_frames": int(rule.get("confirmation_frames", 3)),
+                "pre_event": PRE_EVENT_SECONDS,
+                "post_event": POST_EVENT_SECONDS,
+                "notification": bool(rule.get("notification", True)),
+            })
+        with service._lock:
+            service.rules[name] = clean
+            service.save_rules()
+            worker = service.workers.get(name)
+            if worker is not None:
+                worker.rules = clean
+        return web.json_response({"rules": clean})
 
     app.router.add_get("/healthz", health)
     app.router.add_get("/api/v1/status", health)
@@ -725,6 +1040,8 @@ async def main() -> None:
     app.router.add_put("/api/v1/cameras/{stream_name}/enabled", set_enabled)
     app.router.add_put("/api/v1/cameras/{stream_name}/config", set_config)
     app.router.add_get("/api/v1/cameras/{stream_name}/events", events)
+    app.router.add_get("/api/v1/cameras/{stream_name}/rules", get_rules)
+    app.router.add_put("/api/v1/cameras/{stream_name}/rules", set_rules)
 
     async def reconciliation_loop() -> None:
         service.reconcile()

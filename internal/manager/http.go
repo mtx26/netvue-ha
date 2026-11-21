@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mtx26/netvue-ha/internal/netvue"
@@ -37,6 +38,11 @@ func (manager *Manager) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cameras/{host}/recording/stop", manager.handleRecordingStop)
 	mux.HandleFunc("PUT /api/v1/cameras/{host}/recording/continuous", manager.handleRecordingContinuous)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings", manager.handleRecordingsList)
+	mux.HandleFunc("POST /api/v1/cameras/{host}/protected", manager.handleProtectedCreate)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/protected", manager.handleProtectedList)
+	mux.HandleFunc("GET /api/v1/recordings/protected/health", manager.handleProtectedHealth)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/protected/{id}/download", manager.handleProtectedDownload)
+	mux.HandleFunc("DELETE /api/v1/cameras/{host}/protected/{id}", manager.handleProtectedDelete)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/ai/metadata", manager.handleAIMetadataIngest)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/ai/metadata", manager.handleAIMetadataRange)
 	mux.HandleFunc(
@@ -277,6 +283,140 @@ func (manager *Manager) handleRecordingsList(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"recordings": segments})
+}
+
+type protectedRecordingRequest struct {
+	Start      string `json:"start"`
+	End        string `json:"end"`
+	Title      string `json:"title"`
+	Category   string `json:"category"`
+	Protection string `json:"protection"`
+}
+
+func (manager *Manager) handleProtectedCreate(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	var request protectedRecordingRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid protected recording request")
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, "request must contain one JSON object")
+		return
+	}
+	start, err := time.Parse(time.RFC3339Nano, request.Start)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid protected recording start")
+		return
+	}
+	end, err := time.Parse(time.RFC3339Nano, request.End)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid protected recording end")
+		return
+	}
+	if !end.After(start) {
+		writeAPIError(w, http.StatusBadRequest, "invalid protected recording range")
+		return
+	}
+	protection := strings.TrimSpace(request.Protection)
+	if protection == "" {
+		protection = "manual"
+	}
+	recording, err := manager.recordings.protectRange(
+		r.Context(), camera.StreamName, camera.Host, request.Title, request.Category, protection, start, end,
+	)
+	if err != nil {
+		if len(recording.Gaps) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": err.Error(), "gaps": recording.Gaps, "recording": recording,
+			})
+			return
+		}
+		if recording.ID != "" {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "recording": recording})
+			return
+		}
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, recording)
+}
+
+func (manager *Manager) handleProtectedHealth(w http.ResponseWriter, r *http.Request) {
+	health, err := manager.recordings.protectedHealth()
+	if err == nil {
+		err = manager.recordings.checkProtectedIndex()
+		if err != nil {
+			health.Healthy = false
+		}
+	}
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"storage": health, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
+}
+
+func (manager *Manager) handleProtectedList(w http.ResponseWriter, r *http.Request) {
+	if _, ok := manager.recordingCamera(w, r); !ok {
+		return
+	}
+	recordings, err := manager.recordings.protectedRecordings()
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"protected": recordings})
+}
+
+func (manager *Manager) handleProtectedDownload(w http.ResponseWriter, r *http.Request) {
+	if _, ok := manager.recordingCamera(w, r); !ok {
+		return
+	}
+	recording, path, found, err := manager.recordings.findProtectedRecording(r.PathValue("id"))
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	if !found || recording.Status != "saved" {
+		writeAPIError(w, http.StatusNotFound, "protected recording not found")
+		return
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "protected recording file unavailable")
+		return
+	}
+	defer file.Close()
+	if _, err := file.Stat(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "unable to read protected recording")
+		return
+	}
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf(`inline; filename="netvue-protected-%s.mp4"`, recording.ID))
+	http.ServeContent(w, r, recording.Filename, recording.CreatedAt, file)
+}
+
+func (manager *Manager) handleProtectedDelete(w http.ResponseWriter, r *http.Request) {
+	if _, ok := manager.recordingCamera(w, r); !ok {
+		return
+	}
+	if err := manager.recordings.deleteProtectedRecording(r.PathValue("id")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeAPIError(w, http.StatusNotFound, "protected recording not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (manager *Manager) handleAIMetadataIngest(w http.ResponseWriter, r *http.Request) {

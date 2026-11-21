@@ -42,6 +42,7 @@ class FakeBridge:
         self.status_override: int | None = None
         self.turn_response: dict | None = None
         self.recordings: dict[str, list[dict]] = {}
+        self.protected: list[dict] = []
         self.recording_content = b"synthetic-video"
         self.recording_ranges: list[tuple[str | None, str | None]] = []
         self.recording_durations: list[str | None] = []
@@ -66,6 +67,10 @@ class FakeBridge:
         app.router.add_get(base + "/{host}/recordings", self._recordings)
         app.router.add_get(base + "/{host}/recordings/{id}/download", self._recording_download)
         app.router.add_get(base + "/{host}/recordings/{id}/thumbnail", self._recording_thumbnail)
+        app.router.add_get(base + "/{host}/protected", self._protected_list)
+        app.router.add_get("/api/v1/recordings/protected/health", self._protected_health)
+        app.router.add_delete(base + "/{host}/protected/{id}", self._protected_delete)
+        app.router.add_get(base + "/{host}/protected/{id}/download", self._protected_download)
         app.router.add_post(base + "/{host}/recording/{mode}", self._recording_mode)
         session = base + "/{host}/webrtc/{session}"
         app.router.add_route("*", session, self._webrtc)
@@ -100,6 +105,35 @@ class FakeBridge:
         if (forced := self._forced(request)) is not None:
             return forced
         return web.json_response({"recordings": self.recordings.get(request.match_info["host"], [])})
+
+    async def _protected_list(self, request):
+        return web.json_response({"protected": self.protected})
+
+    async def _protected_health(self, request):
+        return web.json_response({"healthy": True, "free_bytes": 100, "min_free_bytes": 50})
+
+    async def _protected_delete(self, request):
+        recording_id = request.match_info["id"]
+        if not any(item["id"] == recording_id for item in self.protected):
+            return web.json_response({"error": "not found"}, status=404)
+        self.protected = [item for item in self.protected if item["id"] != recording_id]
+        return web.json_response({"status": "deleted"})
+
+    async def _protected_download(self, request):
+        if not any(item["id"] == request.match_info["id"] for item in self.protected):
+            return web.Response(status=404)
+        content = self.recording_content
+        headers = {"Accept-Ranges": "bytes", "ETag": '"protected"'}
+        if request.headers.get("Range"):
+            start = request.http_range.start or 0
+            stop = min(request.http_range.stop or len(content), len(content))
+            if start >= len(content):
+                return web.Response(
+                    status=416, headers={"Content-Range": f"bytes */{len(content)}"}
+                )
+            headers["Content-Range"] = f"bytes {start}-{stop - 1}/{len(content)}"
+            return web.Response(status=206, body=content[start:stop], headers=headers)
+        return web.Response(body=content, headers=headers, content_type="video/mp4")
 
     async def _recording_download(self, request):
         if (forced := self._forced(request)) is not None:

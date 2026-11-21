@@ -14,10 +14,75 @@ from homeassistant.components.media_source import (
 )
 
 import custom_components.netvue_local as netvue_local
+from custom_components.netvue_local.bridge_api import DetectionStatus
+from custom_components.netvue_local.coordinator import NetvueCoordinator
 from harness import HOST, HassTestCase
 
 
 class MediaSourceTests(HassTestCase):
+    async def test_event_history_survives_reload_and_is_authenticated(self):
+        entry = await self.create_entry()
+        event = {"id": "event-1", "timestamp": 1_800_000_000, "category": "person"}
+        status = DetectionStatus(True, "detecting", [], None, 1_800_000_000)
+        with patch(
+            "custom_components.netvue_local.coordinator.async_get_detection_events",
+            new=AsyncMock(return_value=[event, event]),
+        ):
+            await entry.runtime_data._async_fire_new_detection_events(status)
+
+        restored = NetvueCoordinator(self.hass, entry, HOST, "restored")
+        await restored.async_load_event_history()
+        self.assertEqual(restored.event_history, [event])
+        with patch(
+            "custom_components.netvue_local.coordinator.async_get_detection_events",
+            new=AsyncMock(return_value=[event]),
+        ):
+            await restored._async_fire_new_detection_events(status)
+        self.assertEqual(restored.event_history, [event])
+
+        path = f"/api/netvue_local/events/{entry.entry_id}"
+        async with TestClient(TestServer(self.hass.http.app)) as client:
+            self.assertEqual((await client.get(path)).status, 401)
+            signed = async_sign_path(self.hass, path, timedelta(minutes=5))
+            response = await client.get(signed)
+            self.assertEqual(await response.json(), {"events": [event]})
+
+    async def test_protected_proxy_authentication_and_ranges(self):
+        entry = await self.create_entry()
+        recording_id = "a" * 32
+        self.bridge.protected = [{"id": recording_id, "camera_host": HOST}]
+        path = f"/api/netvue_local/protected/{entry.entry_id}/{recording_id}"
+        with patch.object(netvue_local, "API_URL", self.bridge.url):
+            async with TestClient(TestServer(self.hass.http.app)) as client:
+                health_path = "/api/netvue_local/protected-health"
+                self.assertEqual((await client.get(health_path)).status, 401)
+                health_url = async_sign_path(self.hass, health_path, timedelta(minutes=5))
+                health = await client.get(health_url)
+                self.assertEqual(await health.json(), {
+                    "healthy": True, "free_bytes": 100, "min_free_bytes": 50,
+                })
+                self.assertEqual((await client.get(path)).status, 401)
+                self.assertEqual((await client.delete(path)).status, 401)
+                signed = async_sign_path(self.hass, path, timedelta(minutes=5))
+                response = await client.get(signed, headers={"Range": "bytes=2-5"})
+                self.assertEqual(response.status, 206)
+                self.assertEqual(response.headers["Content-Range"], "bytes 2-5/15")
+                self.assertEqual(response.headers["Content-Disposition"], "inline")
+                self.assertEqual(await response.read(), b"nthe")
+                response = await client.get(signed, headers={"Range": "bytes=999-"})
+                self.assertEqual(response.status, 416)
+                self.assertEqual(response.headers["Content-Range"], "bytes */15")
+                response = await client.head(signed)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(int(response.headers["Content-Length"]), 15)
+                self.assertEqual(await response.read(), b"")
+                download = async_sign_path(
+                    self.hass, f"{path}?download=1", timedelta(minutes=5)
+                )
+                response = await client.get(download)
+                self.assertEqual(response.headers["Content-Disposition"], "attachment")
+                self.assertEqual(await response.read(), self.bridge.recording_content)
+
     async def test_browse_and_play_recording_through_authenticated_proxy(self):
         entry = await self.create_entry(name="Entrée")
         other = await self.create_entry(host="192.168.10.3", name="Jardin")

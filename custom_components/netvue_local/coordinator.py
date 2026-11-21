@@ -3,12 +3,14 @@
 from collections import deque
 from datetime import timedelta
 import logging
+import time
 from typing import NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity, DataUpdateCoordinator, UpdateFailed,
 )
@@ -26,7 +28,8 @@ from .bridge_api import (
 )
 from .const import (
     CONF_AI_CONFIDENCE, CONF_AI_CONFIRMATION_FRAMES, CONF_AI_ENABLED,
-    CONF_AI_FPS, CONF_AI_ZONES, CONF_STREAM_NAME, CONF_STREAM_URL,
+    CONF_AI_FPS, CONF_AI_ZONES, CONF_NOTIFY_COOLDOWN, CONF_NOTIFY_TARGETS,
+    CONF_STREAM_NAME, CONF_STREAM_URL,
     DEFAULT_AI_CONFIDENCE, DOMAIN, UPDATE_INTERVAL,
 )
 from .rtsp import async_probe_stream
@@ -69,7 +72,23 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
         self.live_detection = NetvueLiveDetectionCoordinator(hass, entry, name)
         self._entry = entry
         self._device_metadata: dict[str, str] = {}
-        self._last_detection_event_ids: deque[str] = deque(maxlen=200)
+        self._last_detection_event_ids: deque[str] = deque(maxlen=1000)
+        self._event_history: deque[dict] = deque(maxlen=1000)
+        self._event_store = Store(hass, 1, f"{DOMAIN}_events_{entry.entry_id}")
+        self._last_notification_by_key: dict[str, float] = {}
+
+    async def async_load_event_history(self) -> None:
+        stored = await self._event_store.async_load()
+        if not isinstance(stored, list):
+            return
+        for event in stored[-1000:]:
+            if isinstance(event, dict) and isinstance(event.get("id"), str):
+                self._event_history.append(event)
+                self._last_detection_event_ids.append(event["id"])
+
+    @property
+    def event_history(self) -> list[dict]:
+        return list(self._event_history)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -175,11 +194,14 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
         except BridgeError as exc:
             _LOGGER.debug("Unable to read local AI events: %s", exc)
             return
+        changed = False
         for event in events:
             event_id = event.get("id") if isinstance(event, dict) else None
             if not isinstance(event_id, str) or event_id in self._last_detection_event_ids:
                 continue
             self._last_detection_event_ids.append(event_id)
+            self._event_history.append(event)
+            changed = True
             self.hass.bus.async_fire(
                 f"{DOMAIN}_event",
                 {
@@ -189,6 +211,61 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
                     "host": self.camera.host,
                 },
             )
+            await self._async_send_detection_notification(event)
+        if changed:
+            await self._event_store.async_save(list(self._event_history))
+
+    async def _async_send_detection_notification(self, event: dict) -> None:
+        if event.get("event") not in ("event_confirmed", "package_deposited", "package_disappeared"):
+            return
+        targets = self._entry.options.get(
+            CONF_NOTIFY_TARGETS, self._entry.data.get(CONF_NOTIFY_TARGETS, [])
+        )
+        if not isinstance(targets, list) or not targets:
+            return
+        cooldown = self._entry.options.get(
+            CONF_NOTIFY_COOLDOWN, self._entry.data.get(CONF_NOTIFY_COOLDOWN, 30)
+        )
+        try:
+            cooldown = max(0, int(cooldown))
+        except (TypeError, ValueError):
+            cooldown = 30
+        key = f"{event.get('stream_name')}:{event.get('category')}:{event.get('zone')}"
+        now = time.time()
+        if now - self._last_notification_by_key.get(key, 0) < cooldown:
+            return
+        category = str(event.get("category") or "objet")
+        zone = str(event.get("zone") or "Toute l'image")
+        timestamp = time.strftime(
+            "%d/%m/%Y %H:%M:%S", time.localtime(float(event.get("timestamp", now)))
+        )
+        title = f"Netvue — {category.capitalize()} détecté"
+        message = f"{self._entry.title} · {timestamp} · Zone : {zone}"
+        for target in targets:
+            if not isinstance(target, str) or not target.strip():
+                continue
+            service = target.strip()
+            if service.startswith("notify."):
+                service = service[len("notify."):]
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service,
+                    {
+                        "title": title,
+                        "message": message,
+                        "data": {
+                            "tag": f"netvue-{event.get('id')}",
+                            "group": "netvue",
+                            "channel": "Netvue",
+                            "clickAction": "/lovelace/netvue",
+                        },
+                    },
+                    blocking=False,
+                )
+            except (KeyError, ValueError, RuntimeError) as exc:
+                _LOGGER.warning("Unable to send Netvue notification to %s: %s", service, exc)
+        self._last_notification_by_key[key] = now
 
 
 class NetvueEntity(CoordinatorEntity[NetvueCoordinator]):

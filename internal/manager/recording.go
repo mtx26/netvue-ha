@@ -3,6 +3,7 @@ package manager
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +43,34 @@ type RecordingSegment struct {
 	Format   string    `json:"format"`
 }
 
+type ProtectedRecording struct {
+	ID             string           `json:"id"`
+	StreamName     string           `json:"stream_name"`
+	CameraHost     string           `json:"camera_host,omitempty"`
+	Title          string           `json:"title,omitempty"`
+	Category       string           `json:"category,omitempty"`
+	Protection     string           `json:"protection"`
+	RequestedStart time.Time        `json:"requested_start"`
+	RequestedEnd   time.Time        `json:"requested_end"`
+	CoveredStart   time.Time        `json:"covered_start"`
+	CoveredEnd     time.Time        `json:"covered_end"`
+	CreatedAt      time.Time        `json:"created_at"`
+	Size           int64            `json:"size"`
+	Filename       string           `json:"filename"`
+	Status         string           `json:"status"`
+	Error          string           `json:"error,omitempty"`
+	Gaps           []RecordingRange `json:"gaps"`
+}
+
+type RecordingRange struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+type protectedRecordingIndex struct {
+	Recordings []ProtectedRecording `json:"recordings"`
+}
+
 type recordingState struct {
 	Manual     bool `json:"manual"`
 	Continuous bool `json:"continuous"`
@@ -60,11 +91,16 @@ type mediaMTXRecording struct {
 type recordingManager struct {
 	ctx             context.Context
 	dir             string
+	protectedDir    string
+	protectedIndex  string
 	controlURL      string
 	playbackAddress string
 	client          *http.Client
 	playbackSlots   chan struct{}
 	overlaySlot     chan struct{}
+	protectedSlot   chan struct{}
+	protectedMu     sync.Mutex
+	retentionMu     sync.RWMutex
 
 	mu     sync.RWMutex
 	states map[string]recordingState
@@ -80,6 +116,7 @@ func newRecordingManager(ctx context.Context) *recordingManager {
 		client:          &http.Client{Timeout: 5 * time.Second},
 		playbackSlots:   make(chan struct{}, 2),
 		overlaySlot:     make(chan struct{}, 1),
+		protectedSlot:   make(chan struct{}, 1),
 		states:          make(map[string]recordingState),
 	}
 	if dir == "" {
@@ -87,6 +124,7 @@ func newRecordingManager(ctx context.Context) *recordingManager {
 	}
 	if err := os.MkdirAll(dir, 0o750); err == nil {
 		manager.load()
+		manager.initProtectedStorage()
 		go manager.cleanupLoop()
 	}
 	return manager
@@ -340,6 +378,8 @@ func (manager *recordingManager) findSegment(streamName, id string) (RecordingSe
 }
 
 func (manager *recordingManager) deleteSegment(streamName, id string) error {
+	manager.retentionMu.Lock()
+	defer manager.retentionMu.Unlock()
 	segment, found, err := manager.findSegment(streamName, id)
 	if err != nil {
 		return err
@@ -365,7 +405,7 @@ func (manager *recordingManager) playbackURL(streamName string, segment Recordin
 	query := url.Values{}
 	query.Set("path", streamName)
 	query.Set("start", segment.Start.UTC().Format(time.RFC3339Nano))
-	query.Set("duration", fmt.Sprintf("%.3f", segment.Duration))
+	query.Set("duration", fmt.Sprintf("%.9f", segment.Duration))
 	query.Set("format", format)
 	return manager.playbackAddress + "/get?" + query.Encode()
 }
@@ -382,6 +422,461 @@ func (manager *recordingManager) playbackRequest(
 	client := *manager.client
 	client.Timeout = 0
 	return client.Do(request)
+}
+
+func (manager *recordingManager) initProtectedStorage() {
+	protectedDir := strings.TrimSpace(os.Getenv("NETVUE_PROTECTED_RECORDINGS_DIR"))
+	if protectedDir == "" {
+		protectedDir = filepath.Join(manager.dir, "protected")
+	}
+	if err := os.MkdirAll(protectedDir, 0o750); err != nil {
+		return
+	}
+	manager.protectedDir = protectedDir
+	manager.protectedIndex = filepath.Join(protectedDir, ".netvue-protected.json")
+	_ = manager.recoverProtectedRecordings()
+}
+
+func (manager *recordingManager) protectedEnabled() bool {
+	return manager != nil && manager.protectedDir != "" && manager.protectedIndex != ""
+}
+
+func (manager *recordingManager) protectedRecordings() ([]ProtectedRecording, error) {
+	if !manager.protectedEnabled() {
+		return nil, errors.New("protected recording storage is not configured")
+	}
+	data, err := os.ReadFile(manager.protectedIndex)
+	if errors.Is(err, os.ErrNotExist) {
+		return []ProtectedRecording{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var index protectedRecordingIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, errors.New("protected recording index is invalid")
+	}
+	sort.Slice(index.Recordings, func(i, j int) bool {
+		return index.Recordings[i].CreatedAt.After(index.Recordings[j].CreatedAt)
+	})
+	return index.Recordings, nil
+}
+
+func (manager *recordingManager) saveProtectedIndex(recordings []ProtectedRecording) error {
+	data, err := json.MarshalIndent(protectedRecordingIndex{Recordings: recordings}, "", "  ")
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(manager.protectedDir, ".netvue-protected-*.json")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, manager.protectedIndex); err != nil {
+		return err
+	}
+	return syncProtectedDirectory(manager.protectedDir)
+}
+
+func (manager *recordingManager) recoverProtectedRecordings() error {
+	recordings, err := manager.protectedRecordings()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range recordings {
+		recording := &recordings[i]
+		if recording.Status != "saving" {
+			continue
+		}
+		changed = true
+		if recording.Filename == recording.ID+".mp4" && filepath.Base(recording.Filename) == recording.Filename {
+			info, err := os.Lstat(filepath.Join(manager.protectedDir, recording.Filename))
+			if err == nil && info.Mode().IsRegular() && info.Size() == recording.Size && info.Size() > 0 {
+				recording.Status = "saved"
+				continue
+			}
+		}
+		recording.Status = "failed"
+		recording.Error = "protected recording export was interrupted"
+	}
+	if changed {
+		return manager.saveProtectedIndex(recordings)
+	}
+	return nil
+}
+
+func (manager *recordingManager) findProtectedRecording(id string) (ProtectedRecording, string, bool, error) {
+	recordings, err := manager.protectedRecordings()
+	if err != nil {
+		return ProtectedRecording{}, "", false, err
+	}
+	for _, recording := range recordings {
+		if recording.ID == id {
+			if recording.Filename == "" && recording.Status == "failed" {
+				return recording, "", true, nil
+			}
+			if recording.Filename != id+".mp4" || filepath.Base(recording.Filename) != recording.Filename {
+				return ProtectedRecording{}, "", false, errors.New("invalid protected recording filename")
+			}
+			path := filepath.Join(manager.protectedDir, recording.Filename)
+			return recording, path, true, nil
+		}
+	}
+	return ProtectedRecording{}, "", false, nil
+}
+
+func (manager *recordingManager) deleteProtectedRecording(id string) error {
+	manager.protectedMu.Lock()
+	defer manager.protectedMu.Unlock()
+	_, path, found, err := manager.findProtectedRecording(id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return os.ErrNotExist
+	}
+	recordings, err := manager.protectedRecordings()
+	if err != nil {
+		return err
+	}
+	kept := make([]ProtectedRecording, 0, len(recordings))
+	for _, candidate := range recordings {
+		if candidate.ID != id {
+			kept = append(kept, candidate)
+		}
+	}
+	if path != "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return manager.saveProtectedIndex(kept)
+}
+
+func (manager *recordingManager) protectionCoverage(
+	streamName string, start, end time.Time,
+) ([]RecordingSegment, []RecordingRange, error) {
+	segments, err := manager.list(streamName, time.Time{}, time.Time{})
+	if err != nil {
+		return nil, nil, err
+	}
+	matching := make([]RecordingSegment, 0)
+	gaps := make([]RecordingRange, 0)
+	cursor := start
+	for _, segment := range segments {
+		if !segment.End.After(segment.Start) || !segment.End.After(cursor) || !segment.Start.Before(end) {
+			continue
+		}
+		if segment.Start.After(cursor) {
+			gapEnd := segment.Start
+			if gapEnd.After(end) {
+				gapEnd = end
+			}
+			gaps = append(gaps, RecordingRange{Start: cursor, End: gapEnd})
+		}
+		matching = append(matching, segment)
+		cursor = segment.End
+		if !cursor.Before(end) {
+			cursor = end
+			break
+		}
+	}
+	if cursor.Before(end) {
+		gaps = append(gaps, RecordingRange{Start: cursor, End: end})
+	}
+	return matching, gaps, nil
+}
+
+func (manager *recordingManager) protectRange(
+	ctx context.Context,
+	streamName, cameraHost, title, category, protection string,
+	start, end time.Time,
+) (ProtectedRecording, error) {
+	if !manager.protectedEnabled() {
+		return ProtectedRecording{}, errors.New("protected recording storage is not configured")
+	}
+	if start.IsZero() || end.IsZero() || !end.After(start) {
+		return ProtectedRecording{}, errors.New("invalid protected recording range")
+	}
+	maxDuration, err := protectedMaxDuration()
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	if end.Sub(start) > maxDuration {
+		return ProtectedRecording{}, errors.New("protected recording exceeds maximum duration")
+	}
+	select {
+	case manager.protectedSlot <- struct{}{}:
+		defer func() { <-manager.protectedSlot }()
+	default:
+		return ProtectedRecording{}, errors.New("protected recording export is busy")
+	}
+	var idBytes [16]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
+		return ProtectedRecording{}, err
+	}
+	recording := ProtectedRecording{
+		ID: hex.EncodeToString(idBytes[:]), StreamName: streamName, CameraHost: cameraHost,
+		Title: strings.TrimSpace(title), Category: strings.TrimSpace(category), Protection: protection,
+		RequestedStart: start, RequestedEnd: end, CreatedAt: time.Now().UTC(),
+	}
+	result, err := manager.exportProtectedRange(ctx, recording)
+	if err == nil {
+		return result, nil
+	}
+	recording.Status = "failed"
+	recording.Error = err.Error()
+	recording.Gaps = result.Gaps
+	manager.protectedMu.Lock()
+	defer manager.protectedMu.Unlock()
+	recordings, indexErr := manager.protectedRecordings()
+	if indexErr == nil {
+		for i, existing := range recordings {
+			if existing.ID == recording.ID {
+				if existing.Status == "saving" {
+					existing.Status, existing.Error = "failed", err.Error()
+					recordings[i] = existing
+					if indexErr := manager.saveProtectedIndex(recordings); indexErr != nil {
+						return existing, errors.Join(err, indexErr)
+					}
+				}
+				return existing, err
+			}
+		}
+		indexErr = manager.saveProtectedIndex(append(recordings, recording))
+	}
+	if indexErr != nil {
+		return recording, errors.Join(err, fmt.Errorf("save failed recording status: %w", indexErr))
+	}
+	return recording, err
+}
+
+func (manager *recordingManager) exportProtectedRange(
+	ctx context.Context, recording ProtectedRecording,
+) (ProtectedRecording, error) {
+	streamName, start, end := recording.StreamName, recording.RequestedStart, recording.RequestedEnd
+	manager.retentionMu.RLock()
+	defer manager.retentionMu.RUnlock()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(manager.ctx, cancel)
+	defer stop()
+	defer cancel()
+	segments, gaps, err := manager.protectionCoverage(streamName, start, end)
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	if len(gaps) != 0 {
+		return ProtectedRecording{RequestedStart: start, RequestedEnd: end, Gaps: gaps, Status: "failed"},
+			errors.New("recording footage has gaps in the requested range")
+	}
+	if _, err := manager.protectedHealth(); err != nil {
+		return ProtectedRecording{}, err
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return ProtectedRecording{}, errors.New("protected recording encoder is unavailable")
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		return ProtectedRecording{}, errors.New("protected recording verifier is unavailable")
+	}
+	output, err := os.CreateTemp(manager.protectedDir, ".protected-*.mp4")
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	outputName := output.Name()
+	output.Close()
+	defer os.Remove(outputName)
+
+	inputParts := make([]string, 0, len(segments))
+	playlist, err := os.CreateTemp(manager.protectedDir, ".protected-concat-*.txt")
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	playlistName := playlist.Name()
+	defer os.Remove(playlistName)
+	defer playlist.Close()
+
+	cursor := start
+	var layout []protectedStream
+	for index, segment := range segments {
+		overlapStart := cursor
+		if segment.Start.After(overlapStart) {
+			overlapStart = segment.Start
+		}
+		overlapEnd := end
+		if segment.End.Before(overlapEnd) {
+			overlapEnd = segment.End
+		}
+		if !overlapEnd.After(overlapStart) {
+			continue
+		}
+		cursor = overlapEnd
+		part, err := os.CreateTemp(manager.protectedDir, ".protected-part-*.mp4")
+		if err != nil {
+			return ProtectedRecording{}, err
+		}
+		partName := part.Name()
+		part.Close()
+		defer os.Remove(partName)
+		inputParts = append(inputParts, partName)
+
+		offset := overlapStart.Sub(segment.Start).Seconds()
+		duration := overlapEnd.Sub(overlapStart).Seconds()
+		source := manager.playbackURL(streamName, segment, "fmp4")
+		if err := checkProtectedTimestamps(ctx, ffprobe, source); err != nil {
+			return ProtectedRecording{}, fmt.Errorf("verify recording segment %d timestamps: %w", index+1, err)
+		}
+		if _, err := manager.protectedHealth(); err != nil {
+			return ProtectedRecording{}, err
+		}
+		err = manager.runProtectedFFmpeg(ctx, ffmpeg,
+			"-hide_banner", "-loglevel", "error", "-y",
+			"-i", source,
+			"-ss", fmt.Sprintf("%.9f", max(offset, 0)),
+			"-t", fmt.Sprintf("%.9f", duration),
+			"-map", "0:v:0", "-map", "0:a:0?",
+			"-c:v", "libx264", "-threads", "1", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+			"-c:a", "aac", partName)
+		if err != nil {
+			return ProtectedRecording{}, fmt.Errorf("protect recording segment %d: %w", index+1, err)
+		}
+		streams, err := probeProtectedStreams(ctx, ffprobe, partName)
+		if err != nil {
+			return ProtectedRecording{}, fmt.Errorf("verify recording segment %d: %w", index+1, err)
+		}
+		if layout == nil {
+			layout = streams
+		} else if !reflect.DeepEqual(layout, streams) {
+			return ProtectedRecording{}, errors.New("recording segment formats differ")
+		}
+	}
+	if len(inputParts) == 0 {
+		return ProtectedRecording{}, errors.New("no overlapping recording footage is available")
+	}
+	for _, partName := range inputParts {
+		if _, err := fmt.Fprintf(playlist, "file '%s'\n", strings.ReplaceAll(filepath.ToSlash(partName), "'", "'\\''")); err != nil {
+			return ProtectedRecording{}, err
+		}
+	}
+	if err := playlist.Sync(); err != nil {
+		return ProtectedRecording{}, err
+	}
+	playlist.Close()
+
+	if _, err := manager.protectedHealth(); err != nil {
+		return ProtectedRecording{}, err
+	}
+	err = manager.runProtectedFFmpeg(ctx, ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-f", "concat", "-safe", "0", "-i", playlistName,
+		"-map", "0:v?", "-map", "0:a?", "-c", "copy", outputName)
+	if err != nil {
+		return ProtectedRecording{}, fmt.Errorf("create protected recording: %w", err)
+	}
+	if err := manager.runProtectedFFmpeg(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-xerror",
+		"-i", outputName, "-map", "0:v:0", "-map", "0:a:0?", "-f", "null", "-"); err != nil {
+		return ProtectedRecording{}, fmt.Errorf("verify protected recording: %w", err)
+	}
+	info, err := os.Stat(outputName)
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	if info.Size() == 0 {
+		return ProtectedRecording{}, errors.New("protected recording is empty")
+	}
+	file, err := os.OpenFile(outputName, os.O_RDWR, 0)
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	err = file.Sync()
+	closeErr := file.Close()
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	if closeErr != nil {
+		return ProtectedRecording{}, closeErr
+	}
+	if _, err := manager.protectedHealth(); err != nil {
+		return ProtectedRecording{}, err
+	}
+	filename := recording.ID + ".mp4"
+	finalName := filepath.Join(manager.protectedDir, filename)
+	recording.CoveredStart, recording.CoveredEnd = start, end
+	recording.Size, recording.Filename, recording.Status, recording.Gaps = info.Size(), filename, "saving", gaps
+	manager.protectedMu.Lock()
+	defer manager.protectedMu.Unlock()
+	recordings, err := manager.protectedRecordings()
+	if err != nil {
+		return ProtectedRecording{}, err
+	}
+	recordings = append(recordings, recording)
+	if err := manager.saveProtectedIndex(recordings); err != nil {
+		return ProtectedRecording{}, err
+	}
+	if err := os.Link(outputName, finalName); err != nil {
+		return ProtectedRecording{}, err
+	}
+	if err := syncProtectedDirectory(manager.protectedDir); err != nil {
+		return ProtectedRecording{}, err
+	}
+	recording.Status = "saved"
+	recordings[len(recordings)-1] = recording
+	if err := manager.saveProtectedIndex(recordings); err != nil {
+		return ProtectedRecording{}, err
+	}
+	return recording, nil
+}
+
+func (manager *recordingManager) runProtectedFFmpeg(ctx context.Context, ffmpeg string, args ...string) error {
+	if _, err := manager.protectedHealth(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	var output bytes.Buffer
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				return fmt.Errorf("%w: %s", err, strings.TrimSpace(output.String()))
+			}
+			_, err = manager.protectedHealth()
+			return err
+		case <-ctx.Done():
+			cancel()
+			<-done
+			return ctx.Err()
+		case <-ticker.C:
+			if _, err := manager.protectedHealth(); err != nil {
+				cancel()
+				<-done
+				return err
+			}
+		}
+	}
 }
 
 func (manager *recordingManager) cleanupLoop() {
@@ -402,11 +897,31 @@ func (manager *recordingManager) cleanup() {
 	if !manager.enabled() {
 		return
 	}
+	manager.retentionMu.Lock()
+	defer manager.retentionMu.Unlock()
+	protectedInfo, err := os.Stat(manager.protectedDir)
+	if err != nil {
+		return
+	}
+	root, err := filepath.Abs(manager.dir)
+	if err != nil {
+		return
+	}
+	for path := root; ; path = filepath.Dir(path) {
+		info, err := os.Stat(path)
+		if err != nil || os.SameFile(info, protectedInfo) {
+			return
+		}
+		if filepath.Dir(path) == path {
+			break
+		}
+	}
 	retentionText := strings.TrimSpace(os.Getenv("NETVUE_RECORDING_RETENTION"))
 	retention, err := time.ParseDuration(retentionText)
 	if err != nil || retention <= 0 {
 		retention = 7 * 24 * time.Hour
 	}
+
 	cutoff := time.Now().Add(-retention)
 	var files []string
 	var total int64
@@ -415,6 +930,10 @@ func (manager *recordingManager) cleanup() {
 			return nil
 		}
 		if entry.IsDir() {
+			info, err := os.Stat(path)
+			if err != nil || os.SameFile(info, protectedInfo) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if filepath.Base(path) == ".netvue-recordings.json" {

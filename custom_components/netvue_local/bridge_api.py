@@ -113,6 +113,43 @@ async def async_get_detection_status(hass: HomeAssistant, stream_name: str) -> D
         raise BridgeError("Cannot reach the local AI service") from exc
 
 
+async def async_get_detection_rules(hass: HomeAssistant, stream_name: str) -> list[dict]:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.get(
+                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/rules"
+            ) as response:
+                if response.status == 404:
+                    return []
+                if response.status != 200:
+                    raise BridgeError(f"AI service returned HTTP {response.status}")
+                data = await response.json()
+                rules = data.get("rules") if isinstance(data, dict) else None
+                return rules if isinstance(rules, list) else []
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot reach the local AI service") from exc
+
+
+async def async_set_detection_rules(
+    hass: HomeAssistant, stream_name: str, rules: list[dict]
+) -> list[dict]:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.put(
+                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/rules",
+                json={"rules": rules},
+            ) as response:
+                if response.status != 200:
+                    raise BridgeError(f"AI service returned HTTP {response.status}")
+                data = await response.json()
+                result = data.get("rules") if isinstance(data, dict) else None
+                return result if isinstance(result, list) else []
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot reach the local AI service") from exc
+
+
 async def async_set_detection_enabled(
     hass: HomeAssistant, stream_name: str, enabled: bool
 ) -> DetectionStatus:

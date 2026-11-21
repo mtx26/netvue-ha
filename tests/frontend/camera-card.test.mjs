@@ -188,6 +188,7 @@ globalThis.window = {
 };
 
 const { NetvueCameraCard } = await import("../../custom_components/netvue_local/frontend/netvue-camera-card.js");
+const { mergeIntervals, intervalAt } = await import("../../custom_components/netvue_local/frontend/recording-timeline.js");
 
 function findByClass(node, className) {
   if (node.getAttribute("class") === className) {
@@ -402,6 +403,85 @@ test("volume control adjusts sound and restores it after muting", () => {
   card._muteButton.dispatch("click");
   assert.equal(card._video.volume, 0.35);
   assert.equal(card._volumeRange.value, "0.35");
+});
+
+test("timeline merges overlaps and finds protected intervals independently", () => {
+  const merged = mergeIntervals([
+    { start: 100, end: 300 },
+    { start: 250, end: 500 },
+    { start: 700, end: 800 },
+  ]);
+  assert.deepEqual(merged.map(({ start, end }) => [start, end]), [[100, 500], [700, 800]]);
+  assert.equal(intervalAt([{ id: "protected", start: 100, end: 500 }], 499)?.id, "protected");
+  assert.equal(intervalAt([{ id: "protected", start: 100, end: 500 }], 500), null);
+});
+
+test("selecting a date without recordings keeps an exact empty window", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi() { return { recordings: [], protected: [] }; },
+    async callWS(message) { return { path: message.path }; },
+  };
+  await card._openHistory();
+  assert.equal(card._historyRange.disabled, false);
+  assert.equal(card._historyMessage.textContent, "No playable recording yet.");
+  const selected = new Date(2026, 10, 21, 14, 30, 0).getTime();
+  await card._positionHistoryDate(selected);
+  const dayStart = new Date(2026, 10, 21, 0, 0, 0, 0).getTime();
+  const dayEnd = new Date(2026, 10, 22, 0, 0, 0, 0).getTime() - 1;
+  assert.equal(Number(card._historyRange.min), dayStart);
+  assert.equal(Number(card._historyRange.max), dayEnd);
+  assert.equal(card._historyCursor, selected);
+  assert.equal(card._historyMessage.textContent, "No recording at this time.");
+  assert.equal(card._historyVideo.getAttribute("src"), null);
+
+  card._historyRange.value = String(selected + 3600000);
+  card._historyRange.dispatch("input");
+  card._historyRange.dispatch("change");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(card._historyCursor, selected + 3600000);
+});
+
+test("protected-only footage remains playable and appears after temporary expiry", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const start = Date.parse("2026-11-20T12:00:00Z");
+  const signed = [];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi(method, path) {
+      if (path === "netvue_local/recordings/entry1") return { recordings: [] };
+      if (path === "netvue_local/protected/entry1") {
+        return { protected: [{
+          id: "b".repeat(32), status: "saved",
+          covered_start: new Date(start).toISOString(),
+          covered_end: new Date(start + 600000).toISOString(),
+        }] };
+      }
+      return { recordings: [] };
+    },
+    async callWS(message) {
+      signed.push(message.path);
+      return { path: `/signed${message.path}` };
+    },
+  };
+  await card._openHistory();
+  assert.equal(card._historySegment.id, "b".repeat(32));
+  assert.ok(signed.includes(`/api/netvue_local/protected/entry1/${"b".repeat(32)}`));
+  assert.equal(card._historyRail.children.length, 1);
+  assert.equal(card._historyRail.children[0].getAttribute("class"), "history-protected");
+
+  await card._historySeek(start - 60000);
+  assert.equal(card._historySegment, null);
+  assert.equal(card._historyMessage.textContent, "No recording at this time.");
+  assert.equal(card._historyDownload.hidden, true);
+
+  await card._historySeek(start + 300000);
+  assert.equal(card._historySegment.id, "b".repeat(32));
 });
 
 test("timeline seeks across recordings, reports gaps and follows a growing segment", async () => {
@@ -635,11 +715,9 @@ test("timeline graduations follow the available recording bounds across days", a
   assert.equal(card._historyTickLabels[0].date.textContent, "");
   recordings.splice(0);
   await card._refreshHistory("entry1", card._historyGeneration);
-  assert.equal(card._historyTicks.hidden, true);
-  assert.equal(card._historyRange.disabled, true);
+  assert.equal(card._historyTicks.hidden, false);
+  assert.equal(card._historyRange.disabled, false);
   assert.equal(card._historyRail.children.length, 0);
-  assert.equal(card._historyCursorMarker.hidden, true);
-  assert.equal(card._historyPosition.hidden, true);
   card._closeHistory(false);
 });
 

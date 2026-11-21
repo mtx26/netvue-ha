@@ -184,6 +184,24 @@ Afficher plusieurs flux simultanément augmente
 l'utilisation du réseau et des ressources ; limiter la liste aux caméras à
 surveiller en même temps.
 
+### Bibliothèque `netvue-protected-card`
+
+Ajouter la carte suivante au tableau de bord pour consulter les vidéos
+protégées de toutes les caméras Netvue configurées :
+
+```yaml
+type: custom:netvue-protected-card
+```
+
+La bibliothèque permet de filtrer par caméra, date locale, catégorie et
+origine, de lire ou télécharger une vidéo et de confirmer sa suppression.
+Elle affiche aussi l'espace libre du stockage protégé et son état.
+L'historique IA conserve les 1 000 derniers événements reçus par caméra dans
+Home Assistant. Les événements manqués pendant une interruption ne peuvent
+être récupérés que s'ils figurent encore dans le tampon du service IA.
+Les prévisualisations utilisent le lecteur vidéo du navigateur : l'affichage
+de la première image dépend de sa prise en charge du MP4.
+
 ### Synthèse d'état `netvue-camera-status-card`
 
 La synthèse regroupe la disponibilité, la session et, facultativement, le

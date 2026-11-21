@@ -4,9 +4,10 @@ import { createSignalling } from "./signalling.js";
 import { NetvueSession } from "./session.js";
 import { KEYBOARD, PressOwner } from "./press-owner.js";
 import { pttErrorKey, translator } from "./i18n.js";
-import { localDateTime, recordingSegments, segmentAt } from "./recording-timeline.js";
+import { localDateTime, recordingSegments, segmentAt, mergeIntervals, intervalAt } from "./recording-timeline.js";
 import "./netvue-camera-wall-card.js";
 import "./netvue-camera-status-card.js";
+import "./netvue-protected-card.js";
 import "./card-editors.js";
 
 const HIDDEN_PAUSE_MS = 60000;
@@ -124,6 +125,7 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 .history-rail { position: absolute; top: 10px; left: 10px; right: 10px; height: 8px;
   border-radius: 4px; background: #303438; overflow: hidden; pointer-events: none; }
 .history-available { position: absolute; top: 0; height: 100%; background: #299b6b; }
+.history-protected { position: absolute; top: 0; height: 100%; background: #9b59b6; z-index: 1; }
 .history-cursor { position: absolute; z-index: 2; top: 0; bottom: 0; left: 10px; right: 10px;
   pointer-events: none; }
 .history-cursor[hidden] { display: none; }
@@ -133,6 +135,7 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 .history-cursor::after { top: 2px; width: 12px; height: 12px; border-radius: 50%; }
 .history-panel input[type="range"] { position: relative; z-index: 1; display: block; box-sizing: border-box;
   width: 100%; height: 28px; margin: 0; padding: 0; cursor: pointer;
+  touch-action: pan-x;
   appearance: none; -webkit-appearance: none; background: transparent; }
 .history-panel input[type="range"]::-webkit-slider-runnable-track { height: 8px; background: transparent; }
 .history-panel input[type="range"]::-moz-range-track { height: 8px; background: transparent; }
@@ -249,6 +252,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._history = false;
     this._historyGeneration = 0;
     this._historySegments = [];
+    this._historyProtected = [];
     this._historySegment = null;
     this._historyCursor = null;
     this._historyScrubbing = false;
@@ -668,9 +672,14 @@ export class NetvueCameraCard extends HTMLElement {
       const time = new Date(this._historyDate.value).getTime();
       if (Number.isFinite(time)) {
         this._historyDatePicker.open = false;
-        this._historySeek(time);
+        this._positionHistoryDate(time);
       }
     });
+    const historyProtectLabel = el("label", {}, historyDateContent);
+    el("span", {}, historyProtectLabel).textContent = "Fin";
+    this._historyProtectEnd = el("input", { type: "datetime-local", step: "1" }, historyProtectLabel);
+    this._historyProtectButton = el("button", { type: "button" }, historyDateContent);
+    this._historyProtectButton.addEventListener("click", () => this._protectHistoryRange());
     this._historyDownload = el("a", { download: "netvue-recording.mp4", hidden: "" }, historyActions);
     setIcon(this._historyDownload, ICONS.download);
     this._historyDownload.addEventListener("click", (event) => this._downloadAnnotated(event));
@@ -973,6 +982,47 @@ export class NetvueCameraCard extends HTMLElement {
     }
   }
 
+  async _protectHistoryRange() {
+    const entryId = this._entryId();
+    if (!entryId || !this._hass?.callApi || this._protectPending) return;
+    const startValue = this._historyDate?.value;
+    const endValue = this._historyProtectEnd?.value;
+    if (!startValue || !endValue) {
+      this._historyMessage.textContent = "Sélectionnez une heure de début et de fin.";
+      return;
+    }
+    const start = new Date(startValue);
+    const end = new Date(endValue);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+      this._historyMessage.textContent = "La plage sélectionnée est invalide.";
+      return;
+    }
+    this._protectPending = true;
+    this._historyProtectButton.disabled = true;
+    this._historyMessage.textContent = "Protection en cours…";
+    try {
+      const result = await this._hass.callApi(
+        "POST",
+        `netvue_local/protected/${encodeURIComponent(entryId)}`,
+        {
+          start: start.toISOString(),
+          end: end.toISOString(),
+          protection: "manual",
+        },
+      );
+      const coveredStart = new Date(result.covered_start);
+      const coveredEnd = new Date(result.covered_end);
+      this._historyMessage.textContent =
+        `Vidéo protégée: ${this._historyTimeLabel(coveredStart.getTime())} - ${this._historyTimeLabel(coveredEnd.getTime())}`;
+    } catch (error) {
+      this._historyMessage.textContent =
+        error?.body?.error || "Impossible de protéger cette plage.";
+    } finally {
+      this._protectPending = false;
+      this._historyProtectButton.disabled = false;
+    }
+  }
+
   _recordingState() {
     const entryId = this._entryId();
     if (!entryId) return null;
@@ -1031,13 +1081,29 @@ export class NetvueCameraCard extends HTMLElement {
     this._render();
     try {
       await this._refreshHistory(entryId, generation);
+      await this._refreshProtectedHistory(entryId, generation);
       if (!this._history || generation !== this._historyGeneration) return;
-      const last = this._historySegments.at(-1);
-      if (!last) {
-        this._historyMessage.textContent = this._t("historyEmpty");
-        return;
+      if (this._historyCursor !== null) {
+        this._setHistoryWindow(this._historyCursor);
+        await this._historySeek(this._historyCursor);
+      } else {
+        const intervals = [
+          ...this._historySegments.map((segment) => ({ start: segment.start, end: segment.end })),
+          ...this._historyProtected,
+        ];
+        const bounds = mergeIntervals(intervals).at(-1);
+        if (bounds) {
+          await this._historySeek(bounds.end - 1);
+        } else {
+          const now = Date.now();
+          this._setHistoryWindow(now);
+          this._historyCursor = now;
+          this._historyRange.value = String(now);
+          this._historyDate.value = localDateTime(now);
+          this._renderHistoryPosition(now);
+          this._historyMessage.textContent = this._t("historyEmpty");
+        }
       }
-      await this._historySeek(Math.max(last.start, last.end - 1000));
     } catch {
       if (this._history && generation === this._historyGeneration) {
         this._historyMessage.textContent = this._t("historyLoadError");
@@ -1050,32 +1116,88 @@ export class NetvueCameraCard extends HTMLElement {
     const segments = recordingSegments(data.recordings);
     if (!this._history || generation !== this._historyGeneration) return;
     this._historySegments = segments;
-    this._historyRange.disabled = !segments.length;
-    this._historyTicks.hidden = !segments.length;
+    this._historyRange.disabled = false;
+    this._historyTicks.hidden = false;
     if (segments.length) {
+      const bounds = mergeIntervals(segments);
+      const first = bounds[0].start;
+      const last = bounds.at(-1).end - 1;
+      if (!Number.isFinite(this._historyCursor)
+          || this._historyCursor < first
+          || this._historyCursor > last) {
+        this._historyCursor = last;
+      }
       this._setHistoryWindow(this._historyCursor);
     } else {
-      while (this._historyRail.firstChild) this._historyRail.removeChild(this._historyRail.firstChild);
-      this._historyCursorMarker.hidden = true;
-      this._historyPosition.hidden = true;
+      this._renderHistoryAvailability();
+    }
+  }
+
+  async _refreshProtectedHistory(entryId, generation) {
+    try {
+      const data = await this._hass.callApi(
+        "GET",
+        `netvue_local/protected/${encodeURIComponent(entryId)}`,
+      );
+      if (!this._history || generation !== this._historyGeneration) return;
+      this._historyProtected = (Array.isArray(data?.protected) ? data.protected : [])
+        .filter((item) => item.status === "saved")
+        .map((item) => ({
+          start: Date.parse(item.covered_start),
+          end: Date.parse(item.covered_end),
+          id: item.id,
+        }))
+        .filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start);
+      this._renderHistoryAvailability();
+    } catch {
+      if (this._history && generation === this._historyGeneration) {
+        this._historyProtected = [];
+        this._renderHistoryAvailability();
+      }
     }
   }
 
   _setHistoryWindow(time) {
-    if (!this._historySegments.length) return;
-    const first = this._historySegments[0].start;
-    const last = this._historySegments.at(-1).end - 1;
-    let end = last;
-    if (Number.isFinite(time) && time < last - HISTORY_WINDOW_MS) {
-      end = Math.min(last, Math.max(first + HISTORY_WINDOW_MS, time + HISTORY_WINDOW_MS / 2));
+    const intervals = [
+      ...this._historySegments.map((segment) => ({ start: segment.start, end: segment.end })),
+      ...this._historyProtected,
+    ];
+    const bounds = mergeIntervals(intervals);
+    if (!bounds.length || !Number.isFinite(time)) {
+      const center = Number.isFinite(time) ? time : Date.now();
+      this._historyRange.min = String(center - HISTORY_WINDOW_MS / 2);
+      this._historyRange.max = String(center + HISTORY_WINDOW_MS / 2);
+    } else {
+      const first = bounds[0].start;
+      const last = bounds.at(-1).end - 1;
+      if (time < first || time > last) {
+        this._historyRange.min = String(time - HISTORY_WINDOW_MS / 2);
+        this._historyRange.max = String(time + HISTORY_WINDOW_MS / 2);
+      } else {
+        let end = last;
+        if (time < last - HISTORY_WINDOW_MS) {
+          end = Math.min(last, Math.max(first + HISTORY_WINDOW_MS, time + HISTORY_WINDOW_MS / 2));
+        }
+        this._historyRange.min = String(Math.max(first, end - HISTORY_WINDOW_MS));
+        this._historyRange.max = String(end);
+      }
     }
-    this._historyRange.min = String(Math.max(first, end - HISTORY_WINDOW_MS));
-    this._historyRange.max = String(end);
     this._renderHistoryTicks();
     this._renderHistoryAvailability();
     if (!this._historyPosition.hidden) {
       this._renderHistoryPosition(Number(this._historyRange.value));
     }
+  }
+
+  async _positionHistoryDate(time) {
+    const date = new Date(time);
+    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0).getTime();
+    const end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0).getTime() - 1;
+    this._historyRange.min = String(start);
+    this._historyRange.max = String(end);
+    this._renderHistoryTicks();
+    this._renderHistoryAvailability();
+    await this._historySeek(time);
   }
 
   _historyTimeLabel(time) {
@@ -1111,7 +1233,7 @@ export class NetvueCameraCard extends HTMLElement {
       node.style.left = `${(span.start - start) / duration * 100}%`;
       node.style.width = `${(span.end - span.start) / duration * 100}%`;
     };
-    for (const segment of this._historySegments) {
+    for (const segment of mergeIntervals(this._historySegments)) {
       if (segment.end <= start) continue;
       if (segment.start >= end) break;
       const clipped = { start: Math.max(start, segment.start), end: Math.min(end, segment.end) };
@@ -1123,6 +1245,28 @@ export class NetvueCameraCard extends HTMLElement {
       }
     }
     addSpan();
+    let protectedSpan = null;
+    const addProtectedSpan = () => {
+      if (!protectedSpan) return;
+      const node = el("span", { class: "history-protected" }, this._historyRail);
+      node.style.left = `${(protectedSpan.start - start) / duration * 100}%`;
+      node.style.width = `${(protectedSpan.end - protectedSpan.start) / duration * 100}%`;
+    };
+    for (const protectedItem of mergeIntervals(this._historyProtected)) {
+      if (protectedItem.end <= start) continue;
+      if (protectedItem.start >= end) break;
+      const clipped = {
+        start: Math.max(start, protectedItem.start),
+        end: Math.min(end, protectedItem.end),
+      };
+      if (protectedSpan && clipped.start <= protectedSpan.end) {
+        protectedSpan.end = Math.max(protectedSpan.end, clipped.end);
+      } else {
+        addProtectedSpan();
+        protectedSpan = clipped;
+      }
+    }
+    addProtectedSpan();
   }
 
   _renderHistoryTicks() {
@@ -1160,16 +1304,24 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyDetections = [];
     this._historyDownload.hidden = true;
     this._renderHistoryDetections();
-    if (time < Number(this._historyRange.min) || time > Number(this._historyRange.max)) {
+    if (!Number.isFinite(Number(this._historyRange.min))
+        || !Number.isFinite(Number(this._historyRange.max))
+        || time < Number(this._historyRange.min)
+        || time > Number(this._historyRange.max)) {
       this._setHistoryWindow(time);
     }
     this._historyRange.value = String(time);
     this._renderHistoryPosition(Number(this._historyRange.value));
     this._historyDate.value = localDateTime(time);
-    let segment = segmentAt(this._historySegments, time);
+    this._historyProtectEnd.value = localDateTime(Math.min(time + 60000, Number(this._historyRange.max)));
+    const protectedSegment = intervalAt(this._historyProtected, time);
+    let segment = protectedSegment
+      ? { id: protectedSegment.id, start: protectedSegment.start, end: protectedSegment.end }
+      : segmentAt(this._historySegments, time);
     if (!segment) {
       try {
         await this._refreshHistory(entryId, generation);
+        await this._refreshProtectedHistory(entryId, generation);
       } catch {
         if (this._history && generation === this._historyGeneration) {
           this._historyMessage.textContent = this._t("historyLoadError");
@@ -1177,7 +1329,10 @@ export class NetvueCameraCard extends HTMLElement {
         return;
       }
       if (!this._history || generation !== this._historyGeneration) return;
-      segment = segmentAt(this._historySegments, time);
+      const refreshedProtected = intervalAt(this._historyProtected, time);
+      segment = refreshedProtected
+        ? { id: refreshedProtected.id, start: refreshedProtected.start, end: refreshedProtected.end }
+        : segmentAt(this._historySegments, time);
     }
     if (!segment) {
       this._historySegment = null;
@@ -1189,11 +1344,16 @@ export class NetvueCameraCard extends HTMLElement {
     }
     this._historyMessage.textContent = this._t("historyLoading");
     try {
+      const protectedSelection = intervalAt(this._historyProtected, time);
+      const isProtected = Boolean(protectedSelection && protectedSelection.id === segment.id);
       const duration = Math.floor(segment.end - segment.start) / 1000;
       const base = `${encodeURIComponent(entryId)}/${segment.id}`;
+      const path = isProtected
+        ? `/api/netvue_local/protected/${base}`
+        : `/api/netvue_local/playback/${base}?duration=${duration}`;
       const media = await this._hass.callWS({
         type: "auth/sign_path",
-        path: `/api/netvue_local/playback/${base}?duration=${duration}`,
+        path,
         expires: 86400,
       });
       if (!this._history || generation !== this._historyGeneration) return;
@@ -1205,7 +1365,7 @@ export class NetvueCameraCard extends HTMLElement {
       this._historyDownload.href = media.path;
       this._historyDownload.hidden = false;
       this._historyDetections = [];
-      if (this._hass?.callApi) {
+      if (!isProtected && this._hass?.callApi) {
         this._hass.callApi("GET", `netvue_local/recordings/${encodeURIComponent(entryId)}/${segment.id}/metadata`)
           .then((metadata) => {
             if (!this._history || generation !== this._historyGeneration) return;
@@ -1326,7 +1486,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyGeneration++;
     this._historySegment = null;
     this._historyPendingSeek = null;
-    this._historyCursor = null;
     this._historyScrubbing = false;
     this._historyFollowPending = false;
     this._clearTimer("_historyFollowTimer");
@@ -1409,6 +1568,8 @@ export class NetvueCameraCard extends HTMLElement {
       button.setAttribute("aria-pressed", String(fullscreen));
       button.title = button.getAttribute("aria-label");
     }
+    this._historyProtectButton.textContent = t("protectVideo");
+    this._historyProtectButton.setAttribute("aria-label", t("protectVideo"));
     setIcon(this._pttButton, ICONS.mic);
     const available = state === "live" && ptt.ready;
     this._pttButton.disabled = !available && !ptt.pressed;

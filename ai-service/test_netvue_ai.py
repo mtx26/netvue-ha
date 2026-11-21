@@ -1,6 +1,7 @@
 import json
 import unittest
 import tempfile
+import time
 from fractions import Fraction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,6 +17,7 @@ from netvue_ai import (
     IoUTracker,
     Track,
     YoloDetector,
+    EventStore,
     iou,
     point_in_zone,
     video_frames,
@@ -23,6 +25,29 @@ from netvue_ai import (
 
 
 class AiUnitTest(unittest.TestCase):
+    def test_event_store_persists_lifecycle_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            store = EventStore(str(path))
+            event = {
+                "id": "event-1", "timestamp": 1.0, "stream_name": "camera",
+                "event": "event_confirmed", "category": "person",
+                "track_id": 1, "zone": "entrance",
+            }
+            self.assertTrue(store.add(event))
+            self.assertFalse(store.add(event))
+            recovered = EventStore(str(path))
+            self.assertEqual([item["id"] for item in recovered.events], ["event-1"])
+
+    def test_rule_schedule_crosses_midnight(self):
+        worker = CameraWorker("test", {}, MagicMock(confidence=0.45), fps=1, confirmation=2)
+        rule = {"days": [0, 1, 2, 3, 4, 5, 6], "start": "22:00", "end": "06:00"}
+        midnight = time.mktime(time.strptime("2026-01-02 23:30", "%Y-%m-%d %H:%M"))
+        dawn = time.mktime(time.strptime("2026-01-02 05:30", "%Y-%m-%d %H:%M"))
+        noon = time.mktime(time.strptime("2026-01-02 12:00", "%Y-%m-%d %H:%M"))
+        self.assertTrue(worker._rule_matches_time(rule, midnight))
+        self.assertTrue(worker._rule_matches_time(rule, dawn))
+        self.assertFalse(worker._rule_matches_time(rule, noon))
     def test_two_cars_confirm_and_survive_independent_short_misses(self):
         tracker = IoUTracker(confirmation_frames=2)
         left = Detection(2, "car", 0.65, (0, 0, 30, 30))

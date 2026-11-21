@@ -11,3 +11,6 @@ DEFAULT_AI_CONFIDENCE = 0.38
 CONF_AI_FPS = "ai_fps"
 CONF_AI_CONFIRMATION_FRAMES = "ai_confirmation_frames"
 CONF_AI_ZONES = "ai_zones"
+CONF_AI_RULES = "ai_rules"
+CONF_NOTIFY_TARGETS = "notification_targets"
+CONF_NOTIFY_COOLDOWN = "notification_cooldown"

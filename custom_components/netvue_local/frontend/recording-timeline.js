@@ -21,6 +21,37 @@ export function segmentAt(segments, time) {
   return null;
 }
 
+export function mergeIntervals(intervals) {
+  if (!Array.isArray(intervals)) return [];
+  const sorted = intervals
+    .map((item) => ({ ...item, start: Number(item.start), end: Number(item.end) }))
+    .filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start)
+    .sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const item of sorted) {
+    const previous = merged.at(-1);
+    if (previous && item.start <= previous.end) {
+      previous.end = Math.max(previous.end, item.end);
+      previous.items = [...(previous.items || [previous]), item];
+    } else {
+      merged.push({ ...item });
+    }
+  }
+  return merged;
+}
+
+export function intervalAt(intervals, time) {
+  if (!Array.isArray(intervals)) return null;
+  const sorted = intervals
+    .filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end)
+      && time >= item.start && time < item.end)
+    .sort((a, b) => b.start - a.start);
+  for (const item of sorted) {
+    return item;
+  }
+  return null;
+}
+
 export function localDateTime(time) {
   const date = new Date(time);
   const pad = (value) => String(value).padStart(2, "0");

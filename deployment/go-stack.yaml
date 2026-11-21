@@ -82,6 +82,29 @@ services:
         delay: 5s
         max_attempts: 3
 
+  protected-recordings-init:
+    image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-bridge-go:latest}
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    networks: [host]
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chmod u+rwx /recordings-protected && chown 10001:10001 /recordings-protected"]
+    volumes:
+      - type: volume
+        source: recordings-protected
+        target: /recordings-protected
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the node shared with Home Assistant}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
   netvue-bridge:
     image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-bridge-go:latest}
     user: "10001:10001"
@@ -93,12 +116,13 @@ services:
       - -ec
       - |
         for i in $$(seq 1 60); do
-          if [ -r /recordings ] && [ -w /recordings ] && [ -x /recordings ]; then
+          if [ -r /recordings ] && [ -w /recordings ] && [ -x /recordings ] &&
+             [ -r /recordings-protected ] && [ -w /recordings-protected ] && [ -x /recordings-protected ]; then
             exec /netvue-bridge "$$@"
           fi
           sleep 1
         done
-        echo "Recording volume is not accessible; check recordings-init" >&2
+        echo "Recording volumes are not accessible; check recordings-init and protected-recordings-init" >&2
         exit 1
       - --
     command:
@@ -111,12 +135,18 @@ services:
       NETVUE_CLOUDFLARE_TURN_KEY_ID: "${NETVUE_CLOUDFLARE_TURN_KEY_ID:-}"
       NETVUE_CLOUDFLARE_TURN_API_TOKEN: "${NETVUE_CLOUDFLARE_TURN_API_TOKEN:-}"
       NETVUE_RECORDINGS_DIR: "/recordings"
+      NETVUE_PROTECTED_RECORDINGS_DIR: "/recordings-protected"
+      NETVUE_PROTECTED_MIN_FREE_BYTES: "${NETVUE_PROTECTED_MIN_FREE_BYTES:-1073741824}"
+      NETVUE_PROTECTED_MAX_DURATION: "${NETVUE_PROTECTED_MAX_DURATION:-1h}"
       NETVUE_RECORDING_RETENTION: "${NETVUE_RECORDING_RETENTION:-168h}"
       NETVUE_RECORDING_LIMIT_BYTES: "${NETVUE_RECORDING_LIMIT_BYTES:-0}"
     volumes:
       - type: volume
         source: recordings
         target: /recordings
+      - type: volume
+        source: recordings-protected
+        target: /recordings-protected
     stop_signal: SIGTERM
     stop_grace_period: 30s
     deploy:
@@ -197,4 +227,5 @@ networks:
 
 volumes:
   recordings:
+  recordings-protected:
   netvue-ai-config:

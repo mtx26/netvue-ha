@@ -26,7 +26,10 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
-| 💡 | Conservation sélective | Permettre de garder certains enregistrements au-delà de la rétention automatique ; conception à définir |
+| 🔄 | Conservation sélective | Export multi-segments et détection des trous testés synthétiquement ; limites d'espace, reprise après panne et validation réelle restent à consolider ([stockage protégé](protected-recordings.md)) |
+| 🔄 | Enregistrement IA automatique | Règles persistantes, cycle confirmé/actif/terminé, pré-événement 120 s et post-événement 300 s ; protection réelle et validation caméra nécessaires |
+| 💡 | Détection de colis | Architecture temporelle et état persisté ; aucun modèle ONNX de colis fiable/licencié n'est encore validé |
+| 🧪 | Notifications intelligentes | Notifications HA locales configurables, délai anti-doublon et liens Lovelace ; snapshot/iPhone/validation production nécessaires |
 | 🧪 | Exportation | Téléchargement MP4 authentifié ; export annoté complet, un à la fois, avec les mêmes boîtes que le replay. Le téléchargement original reste inchangé. Validation réelle nécessaire |
 | ⬜ | Captures | Enregistrer des images |
 
@@ -35,6 +38,7 @@ fiable, performante, modulaire et simple à installer.
 | État | Fonctionnalité | Objectif |
 |---|---|---|
 | 💡 | Détection de mouvement | Comparer Netvue, Go et Frigate |
+| 💡 | Comparaison Frigate | Tester gratuitement Frigate en local sur les flux RTSP existants, sans remplacer Netvue AI ; comparer précision, alertes et charge CPU sur le serveur actuel, sans envoi d'images ni matériel supplémentaire. Intégration HA via MQTT à étudier ; essais réels soumis à autorisation |
 | ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
 | 🧪 | Zones de détection | Une zone rectangulaire via la roue dentée de chaque carte ; toute l'image par défaut et bouton pour la resélectionner ; tests hors ligne, validation réelle nécessaire |
 | 🧪 | Notifications HA | Six événements voiture confirmés dans l'historique HA du Garage ; une automatisation de notification réelle reste à valider |

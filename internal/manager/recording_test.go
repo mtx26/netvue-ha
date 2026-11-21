@@ -420,3 +420,43 @@ func TestRecordingCleanupDeletesOnlyExpiredSegmentFiles(t *testing.T) {
 		t.Fatalf("unrelated file removed: %v", err)
 	}
 }
+
+func TestProtectedRecordingIndexPersistsAndDeletesOnlySelectedFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("NETVUE_RECORDINGS_DIR", dir)
+	protectedDir := filepath.Join(dir, "protected")
+	t.Setenv("NETVUE_PROTECTED_RECORDINGS_DIR", protectedDir)
+
+	manager := newRecordingManager(context.Background())
+	if !manager.protectedEnabled() {
+		t.Fatal("protected storage was not initialized")
+	}
+	recording := ProtectedRecording{
+		ID: "protected-1", StreamName: "camera", Protection: "manual",
+		RequestedStart: time.Now().UTC().Add(-time.Minute),
+		RequestedEnd:   time.Now().UTC(), CreatedAt: time.Now().UTC(),
+		Filename: "protected-1.mp4", Status: "saved", Size: 12,
+	}
+	if err := manager.saveProtectedIndex([]ProtectedRecording{recording}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(protectedDir, recording.Filename)
+	if err := os.WriteFile(path, []byte("video"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := manager.protectedRecordings()
+	if err != nil || len(reloaded) != 1 || reloaded[0].ID != recording.ID {
+		t.Fatalf("reloaded protected recordings = %+v, %v", reloaded, err)
+	}
+	if err := manager.deleteProtectedRecording(recording.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("protected file was not deleted: %v", err)
+	}
+	reloaded, err = manager.protectedRecordings()
+	if err != nil || len(reloaded) != 0 {
+		t.Fatalf("protected index after deletion = %+v, %v", reloaded, err)
+	}
+}
