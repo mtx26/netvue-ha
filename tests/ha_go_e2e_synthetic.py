@@ -225,7 +225,11 @@ async def main():
             registry = er.async_get(hass)
 
             def entity_id(domain):
-                suffix = {"sensor": "session", "binary_sensor": "rtsp"}.get(domain)
+                suffix = {
+                    "sensor": "session",
+                    "binary_sensor": "rtsp",
+                    "button": "restart",
+                }.get(domain)
                 entities = [item.entity_id for item in er.async_entries_for_config_entry(
                     registry, entry.entry_id) if item.domain == domain and (
                         suffix is None or item.unique_id == f"{entry.entry_id}_{suffix}"
