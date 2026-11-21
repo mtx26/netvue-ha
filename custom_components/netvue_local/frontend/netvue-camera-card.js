@@ -497,7 +497,7 @@ export class NetvueCameraCard extends HTMLElement {
     try {
       await this._hass.callApi(
         "POST",
-        `/api/netvue_local/recordings/${encodeURIComponent(entryId)}`,
+        `netvue_local/recordings/${encodeURIComponent(entryId)}`,
         { enabled },
       );
     } catch (error) {
@@ -516,7 +516,7 @@ export class NetvueCameraCard extends HTMLElement {
     try {
       const data = await this._hass.callApi(
         "GET",
-        `/api/netvue_local/recordings/${encodeURIComponent(entryId)}`,
+        `netvue_local/recordings/${encodeURIComponent(entryId)}`,
       );
       this._history.replaceChildren();
       const close = el("button", { type: "button" }, this._history);

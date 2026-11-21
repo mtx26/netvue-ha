@@ -36,11 +36,9 @@ services:
       MTX_PATHDEFAULTS_RECORDDELETEAFTER: "0s"
       MTX_PATHDEFAULTS_OVERRIDEPUBLISHER: "false"
     volumes:
-      - type: bind
-        source: ${NETVUE_RECORDINGS_DIR:-/var/lib/netvue/recordings}
+      - type: volume
+        source: recordings
         target: /recordings
-        bind:
-          create_host_path: true
     stop_grace_period: 15s
     deploy:
       replicas: 1
@@ -61,12 +59,48 @@ services:
       rollback_config:
         order: stop-first
 
+  recordings-init:
+    image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-bridge-go:latest}
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    networks: [host]
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chmod u+rwx /recordings && chown 10001:10001 /recordings"]
+    volumes:
+      - type: volume
+        source: recordings
+        target: /recordings
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the node shared with Home Assistant}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
   netvue-bridge:
     image: ${NETVUE_BRIDGE_IMAGE:-ghcr.io/mtx26/netvue-bridge-go:latest}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
     networks: [host]
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for i in $$(seq 1 60); do
+          if [ -r /recordings ] && [ -w /recordings ] && [ -x /recordings ]; then
+            exec /netvue-bridge "$$@"
+          fi
+          sleep 1
+        done
+        echo "Recording volume is not accessible; check recordings-init" >&2
+        exit 1
+      - --
     command:
       - serve
       - --source
@@ -80,11 +114,9 @@ services:
       NETVUE_RECORDING_RETENTION: "${NETVUE_RECORDING_RETENTION:-168h}"
       NETVUE_RECORDING_LIMIT_BYTES: "${NETVUE_RECORDING_LIMIT_BYTES:-0}"
     volumes:
-      - type: bind
-        source: ${NETVUE_RECORDINGS_DIR:-/var/lib/netvue/recordings}
+      - type: volume
+        source: recordings
         target: /recordings
-        bind:
-          create_host_path: true
     stop_signal: SIGTERM
     stop_grace_period: 30s
     deploy:
@@ -110,3 +142,6 @@ networks:
   host:
     external: true
     name: host
+
+volumes:
+  recordings:

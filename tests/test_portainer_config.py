@@ -30,7 +30,9 @@ class PortainerConfigTest(unittest.TestCase):
     def test_services_keep_container_security_settings(self):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
 
-        for name, service in stack["services"].items():
+        self.assertIn("recordings", stack["volumes"])
+        for name in ("mediamtx", "netvue-bridge"):
+            service = stack["services"][name]
             with self.subTest(service=name):
                 self.assertEqual(service["user"], "10001:10001")
                 self.assertTrue(service["read_only"])
@@ -39,12 +41,28 @@ class PortainerConfigTest(unittest.TestCase):
                 self.assertEqual(
                     service["volumes"],
                     [{
-                        "type": "bind",
-                        "source": "${NETVUE_RECORDINGS_DIR:-/var/lib/netvue/recordings}",
+                        "type": "volume",
+                        "source": "recordings",
                         "target": "/recordings",
-                        "bind": {"create_host_path": True},
                     }],
                 )
+
+        init = stack["services"]["recordings-init"]
+        self.assertEqual(init["user"], "0:0")
+        self.assertTrue(init["read_only"])
+        self.assertEqual(init["cap_drop"], ["ALL"])
+        self.assertEqual(init["cap_add"], ["CHOWN", "FOWNER"])
+        self.assertEqual(init["volumes"], stack["services"]["netvue-bridge"]["volumes"])
+        self.assertEqual(
+            init["deploy"]["placement"],
+            stack["services"]["netvue-bridge"]["deploy"]["placement"],
+        )
+        self.assertEqual(
+            init["deploy"]["placement"],
+            stack["services"]["mediamtx"]["deploy"]["placement"],
+        )
+        self.assertIn("chown 10001:10001 /recordings", init["command"][0])
+        self.assertIn('[ -w /recordings ]', stack["services"]["netvue-bridge"]["entrypoint"][2])
 
     def test_mediamtx_environment_matches_reference(self):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
