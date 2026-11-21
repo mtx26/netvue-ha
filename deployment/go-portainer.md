@@ -26,8 +26,12 @@ le contenu de [go-stack.yaml](./go-stack.yaml).
 | `NETVUE_NODE` | Nom du nœud Swarm qui héberge HA |
 | `NETVUE_SOURCE` | IPv4 LAN locale de ce nœud |
 | `NETVUE_BRIDGE_IMAGE` | Facultatif : tag ou digest Go à la place de `latest` |
+| `NETVUE_AI_IMAGE` | Facultatif : image IA, `ghcr.io/mtx26/netvue-ai:latest` par défaut |
 | `NETVUE_RECORDING_RETENTION` | Facultatif : durée de conservation, `168h` par défaut |
 | `NETVUE_RECORDING_LIMIT_BYTES` | Facultatif : limite globale en octets, `0` pour désactiver |
+
+Le workflow GitHub publie l'image IA après les tests sur `main`. Le paquet
+GHCR doit être public ou accessible au registre configuré dans Portainer.
 
 Un volume Docker local nommé par la stack est créé automatiquement sur le nœud
 choisi. Le service `recordings-init` prépare ses droits pour les deux services
@@ -85,7 +89,6 @@ l'API du pont restent sur `127.0.0.1`.
    |---|---|
    | `NETVUE_CLOUDFLARE_TURN_KEY_ID` | ID de la clé TURN Realtime |
    | `NETVUE_CLOUDFLARE_TURN_API_TOKEN` | Jeton API de cette clé |
-   | `NETVUE_AI_IMAGE` | Facultatif : image Docker du service IA |
 
    Une seule clé suffit pour toutes les caméras. Ne colle pas le jeton
    dans le YAML, Git, des logs ou une capture d'écran. Les administrateurs

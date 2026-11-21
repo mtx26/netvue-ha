@@ -45,6 +45,10 @@ class PortainerConfigTest(unittest.TestCase):
         )
         init = stack["services"]["netvue-ai-init"]
         self.assertEqual(init["user"], "0:0")
+        self.assertEqual(
+            service["image"], "${NETVUE_AI_IMAGE:-ghcr.io/mtx26/netvue-ai:latest}"
+        )
+        self.assertEqual(init["image"], service["image"])
         self.assertEqual(init["volumes"], service["volumes"])
         self.assertEqual(
             init["deploy"]["placement"],
