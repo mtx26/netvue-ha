@@ -101,10 +101,14 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
             stream_name = self._entry.options.get(
                 CONF_STREAM_NAME, self._entry.data[CONF_STREAM_NAME]
             )
-            ai_enabled = self._entry.options.get(
-                CONF_AI_ENABLED, self._entry.data.get(CONF_AI_ENABLED, True)
+            ai_configured = (
+                CONF_AI_ENABLED in self._entry.options
+                or CONF_AI_ENABLED in self._entry.data
             )
-            if ai_enabled is not None:
+            if ai_configured:
+                ai_enabled = self._entry.options.get(
+                    CONF_AI_ENABLED, self._entry.data[CONF_AI_ENABLED]
+                )
                 await async_set_detection_config(
                     self.hass,
                     stream_name,
