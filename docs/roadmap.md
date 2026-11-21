@@ -44,8 +44,8 @@ fiable, performante, modulaire et simple à installer.
 | ⬜ | Mesures de capacité | Débit, stockage et ressources |
 | 🧪 | Enregistrement manuel et continu | Contrôle Go/HA, fMP4 MediaMTX et réglages persistants implémentés ; validation réelle nécessaire |
 | 🧪 | Rétention | Rétention temporelle, limite globale et volume persistant configurés ; validation synthétique nécessaire |
-| 🧪 | Historique | Liste et lecture via le navigateur multimédia HA testées avec un pont synthétique ; lecture vidéo réelle et navigation dans les segments à valider |
-| 🧪 | Exportation | Téléchargement MP4 via MediaMTX et proxy HA authentifié implémenté ; validation réelle nécessaire |
+| 🧪 | Historique | Chronologie dans la carte, segment en cours, miniatures et navigation par plages testés hors ligne ; parcours HA et caméra réelle à valider |
+| 🧪 | Exportation | Téléchargement MP4 authentifié avec taille connue, limité à 1 Gio par export ; validation réelle nécessaire |
 | ⬜ | Captures | Enregistrer des images |
 
 ## 4. Détection et statistiques

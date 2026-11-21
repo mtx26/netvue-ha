@@ -2,9 +2,11 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from datetime import timedelta
 
 from aiohttp.test_utils import TestClient, TestServer
 from homeassistant.components.media_player import BrowseError, async_process_play_media_url
+from homeassistant.components.http.auth import async_sign_path
 from homeassistant.components.media_source import (
     Unresolvable,
     async_browse_media,
@@ -49,6 +51,43 @@ class MediaSourceTests(HassTestCase):
                 self.assertEqual(response.headers["Content-Disposition"], "inline")
                 self.assertEqual(response.content_type, "video/mp4")
                 self.assertEqual(await response.read(), self.bridge.recording_content)
+                self.assertEqual(int(response.headers["Content-Length"]), len(self.bridge.recording_content))
+                self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+                partial = await client.get(
+                    signed_url, headers={"Range": "bytes=2-5", "If-Range": '"recording"'}
+                )
+                self.assertEqual(partial.status, 206)
+                self.assertEqual(partial.headers["Content-Range"], "bytes 2-5/15")
+                self.assertEqual(await partial.read(), self.bridge.recording_content[2:6])
+                self.assertEqual(self.bridge.recording_ranges[-1], ("bytes=2-5", '"recording"'))
+                snapshot_url = async_sign_path(
+                    self.hass, f"{media.url}?duration=12.5", timedelta(hours=24)
+                )
+                snapshot = await client.get(snapshot_url, headers={"Range": "bytes=2-5"})
+                self.assertEqual(snapshot.status, 206)
+                self.assertEqual(self.bridge.recording_durations[-1], "12.5")
+                tampered = await client.get(snapshot_url.replace("duration=12.5", "duration=13"))
+                self.assertEqual(tampered.status, 401)
+                invalid = await client.get(signed_url, headers={"Range": "bytes=999-"})
+                self.assertEqual(invalid.status, 416)
+                self.assertEqual(invalid.headers["Content-Range"], "bytes */15")
+                head = await client.head(signed_url)
+                self.assertEqual(head.status, 200)
+                self.assertEqual(int(head.headers["Content-Length"]), len(self.bridge.recording_content))
+                thumbnail = await client.get(folder.children[0].thumbnail)
+                self.assertEqual(thumbnail.status, 200)
+                self.assertEqual(thumbnail.content_type, "image/jpeg")
+                self.assertEqual(await thumbnail.read(), b"synthetic-jpeg")
+                preview_url = async_sign_path(
+                    self.hass,
+                    f"/api/netvue_local/thumbnail/{entry.entry_id}/{recording_id}?offset=4",
+                    timedelta(hours=24),
+                )
+                preview = await client.get(preview_url)
+                self.assertEqual(preview.status, 200)
+                self.assertEqual(self.bridge.recording_offsets[-1], "4")
+                unsigned_thumbnail = await client.get(folder.children[0].thumbnail.split("?")[0])
+                self.assertEqual(unsigned_thumbnail.status, 401)
                 download_url = async_process_play_media_url(
                     self.hass,
                     f"/api/netvue_local/recordings/{entry.entry_id}/{recording_id}",

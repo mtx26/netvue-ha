@@ -4,12 +4,15 @@ import { createSignalling } from "./signalling.js";
 import { NetvueSession } from "./session.js";
 import { KEYBOARD, PressOwner } from "./press-owner.js";
 import { pttErrorKey, translator } from "./i18n.js";
+import { localDateTime, recordingSegments, segmentAt } from "./recording-timeline.js";
 import "./netvue-camera-wall-card.js";
 import "./netvue-camera-status-card.js";
 import "./card-editors.js";
 
 const HIDDEN_PAUSE_MS = 60000;
 const ERROR_TOAST_MS = 4000;
+const HISTORY_FOLLOW_POLL_MS = 5000;
+const HISTORY_FOLLOW_BUFFER_MS = 10000;
 const ENTITY_RE = /^camera\.[a-z0-9_]+$/;
 
 const STYLE = `
@@ -33,6 +36,26 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
   border-radius: 20px; padding: 8px 14px; cursor: pointer; min-height: 40px; }
 .bar button { width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 44px; }
+.bar button[hidden] { display: none; }
+.wrap[data-history] .bar { display: none; }
+.history-panel { position: relative; margin: 8px; padding: 8px; border-radius: 8px;
+  background: rgba(0,0,0,.9); color: #fff; line-height: 1.4; }
+.wrap:fullscreen[data-history], :host([wall-active]) .wrap[data-history] { flex-direction: column; }
+.wrap:fullscreen[data-history] video, :host([wall-active]) .wrap[data-history] video {
+  flex: 1 1 0; min-height: 0;
+}
+.wrap:fullscreen[data-history] .history-panel, :host([wall-active]) .wrap[data-history] .history-panel {
+  flex: 0 0 auto; width: calc(100% - 32px);
+}
+.history-panel[hidden], video[hidden] { display: none; }
+.history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.history-panel button, .history-panel a { min-height: 36px; padding: 5px 10px; }
+.history-panel a { color: #fff; }
+.history-panel input[type="range"] { width: 100%; }
+.history-panel input[type="datetime-local"] { max-width: 100%; }
+.history-message { min-height: 1.4em; font-size: 13px; }
+.history-preview { display: block; max-width: 160px; max-height: 90px; margin-bottom: 4px; }
+.history-preview[hidden] { display: none; }
 .bar button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round; }
 .navigate { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1;
@@ -105,6 +128,13 @@ export class NetvueCameraCard extends HTMLElement {
     this._connected = false;
     this._paused = false;
     this._wall = null;
+    this._history = false;
+    this._historyGeneration = 0;
+    this._historySegments = [];
+    this._historySegment = null;
+    this._historyCursor = null;
+    this._historyScrubbing = false;
+    this._historyFollowTimer = null;
     this._onRelease = () => this._releasePtt();
     this._onVisibility = () => this._visibilityChanged();
     this._onWindowPointer = (event) => this._pointerEnded(event);
@@ -124,6 +154,7 @@ export class NetvueCameraCard extends HTMLElement {
       this._render();
     }
     if (changed && this._connected) {
+      this._closeHistory(false);
       this._restart();
     }
   }
@@ -170,6 +201,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._clearTimer("_hiddenTimer");
     this._clearTimer("_toastTimer");
     this._paused = false;
+    this._closeHistory(false);
     this._stopSession();
     this._video.srcObject = null;
   }
@@ -185,7 +217,7 @@ export class NetvueCameraCard extends HTMLElement {
 
   // Start or stop the session so that it matches the entity availability.
   _sync() {
-    if (!this._config || !this._hass || this._paused) {
+    if (!this._config || !this._hass || this._paused || this._history) {
       return;
     }
     if (!this._available()) {
@@ -392,6 +424,13 @@ export class NetvueCameraCard extends HTMLElement {
     this._wrap = wrap;
     const video = (this._video = el("video", { playsinline: "", autoplay: "" }, wrap));
     video.muted = true;
+    this._historyVideo = el("video", { playsinline: "", controls: "", hidden: "" }, wrap);
+    this._historyVideo.addEventListener("loadedmetadata", () => this._historyMetadata());
+    this._historyVideo.addEventListener("timeupdate", () => this._historyTimeUpdate());
+    this._historyVideo.addEventListener("ended", () => this._historyEnded());
+    this._historyVideo.addEventListener("error", () => {
+      if (this._history) this._historyMessage.textContent = this._t("historyPlaybackError");
+    });
     this._overlay = el("div", { class: "overlay" }, wrap);
     this._overlayText = el("div", {}, this._overlay);
     this._retry = el("button", { type: "button" }, this._overlay);
@@ -419,6 +458,37 @@ export class NetvueCameraCard extends HTMLElement {
     this._muteButton.addEventListener("click", () => this._toggleMute());
     this._fullscreenButton = el("button", { type: "button", class: "fullscreen" }, bar);
     this._fullscreenButton.addEventListener("click", () => this._toggleFullscreen());
+    this._historyPanel = el("div", { class: "history-panel", hidden: "" }, wrap);
+    this._historyPreview = el("img", { class: "history-preview", hidden: "" }, this._historyPanel);
+    this._historyPreview.addEventListener("error", () => {
+      this._historyPreview.hidden = true;
+      if (this._history) this._historyMessage.textContent = this._t("historyPreviewError");
+    });
+    const historyControls = el("div", { class: "history-controls" }, this._historyPanel);
+    this._historyLiveButton = el("button", { type: "button" }, historyControls);
+    this._historyLiveButton.addEventListener("click", () => this._closeHistory(true));
+    this._historyHourButton = el("button", { type: "button" }, historyControls);
+    this._historyHourButton.textContent = "−1 h";
+    this._historyHourButton.addEventListener("click", () => this._historyJump(-3600000));
+    this._historyTenButton = el("button", { type: "button" }, historyControls);
+    this._historyTenButton.textContent = "−10 min";
+    this._historyTenButton.addEventListener("click", () => this._historyJump(-600000));
+    this._historyDate = el("input", { type: "datetime-local", step: "1" }, historyControls);
+    this._historyDate.addEventListener("change", () => {
+      const time = new Date(this._historyDate.value).getTime();
+      if (Number.isFinite(time)) this._historySeek(time);
+    });
+    this._historyDownload = el("a", { download: "netvue-recording.mp4", hidden: "" }, historyControls);
+    this._historyRange = el("input", { type: "range", step: "1000" }, this._historyPanel);
+    this._historyRange.addEventListener("input", () => {
+      this._historyScrubbing = true;
+      this._historyDate.value = localDateTime(Number(this._historyRange.value));
+    });
+    this._historyRange.addEventListener("change", () => {
+      this._historyScrubbing = false;
+      this._historySeek(Number(this._historyRange.value));
+    });
+    this._historyMessage = el("div", { class: "history-message", role: "status" }, this._historyPanel);
     this._live = el("div", { class: "sr", role: "status", "aria-live": "polite" }, wrap);
     this._render();
   }
@@ -512,11 +582,205 @@ export class NetvueCameraCard extends HTMLElement {
     }
   }
 
-  _openHistory() {
+  async _openHistory() {
     const entryId = this._entryId();
-    if (!entryId) return;
-    const item = `app,media-source://netvue_local/${entryId}`;
-    window.location.assign(`/media-browser/browser/${encodeURIComponent(item)}`);
+    if (!entryId || !this._hass?.callApi || !this._hass?.callWS) return;
+    this._history = true;
+    this._historySegments = [];
+    this._historyRange.disabled = true;
+    const generation = ++this._historyGeneration;
+    this._releasePtt();
+    this._stopSession();
+    this._video.hidden = true;
+    this._historyVideo.hidden = false;
+    this._historyPanel.hidden = false;
+    this._wrap.setAttribute("data-history", "");
+    this._historyMessage.textContent = this._t("historyLoading");
+    this._render();
+    try {
+      await this._refreshHistory(entryId, generation);
+      if (!this._history || generation !== this._historyGeneration) return;
+      const last = this._historySegments.at(-1);
+      if (!last) {
+        this._historyMessage.textContent = this._t("historyEmpty");
+        return;
+      }
+      await this._historySeek(Math.max(last.start, last.end - 1000));
+    } catch {
+      if (this._history && generation === this._historyGeneration) {
+        this._historyMessage.textContent = this._t("historyLoadError");
+      }
+    }
+  }
+
+  async _refreshHistory(entryId, generation) {
+    const data = await this._hass.callApi("GET", `netvue_local/recordings/${encodeURIComponent(entryId)}`);
+    const segments = recordingSegments(data.recordings);
+    if (!this._history || generation !== this._historyGeneration) return;
+    this._historySegments = segments;
+    this._historyRange.disabled = !segments.length;
+    if (segments.length) {
+      this._historyRange.min = String(segments[0].start);
+      this._historyRange.max = String(segments.at(-1).end - 1);
+    }
+  }
+
+  async _historySeek(time) {
+    if (!this._history || !Number.isFinite(time)) return;
+    this._clearTimer("_historyFollowTimer");
+    const generation = ++this._historyGeneration;
+    const entryId = this._entryId();
+    this._historyVideo.pause();
+    this._historySegment = null;
+    this._historyPendingSeek = null;
+    this._historyPreview.hidden = true;
+    this._historyPreview.removeAttribute("src");
+    this._historyCursor = time;
+    this._historyRange.value = String(time);
+    this._historyDate.value = localDateTime(time);
+    let segment = segmentAt(this._historySegments, time);
+    if (!segment) {
+      try {
+        await this._refreshHistory(entryId, generation);
+      } catch {
+        if (this._history && generation === this._historyGeneration) {
+          this._historyMessage.textContent = this._t("historyLoadError");
+        }
+        return;
+      }
+      if (!this._history || generation !== this._historyGeneration) return;
+      segment = segmentAt(this._historySegments, time);
+    }
+    if (!segment) {
+      this._historySegment = null;
+      this._historyVideo.removeAttribute("src");
+      this._historyVideo.load();
+      this._historyDownload.hidden = true;
+      this._historyPreview.hidden = true;
+      this._historyMessage.textContent = this._t("historyGap");
+      return;
+    }
+    this._historyMessage.textContent = this._t("historyLoading");
+    try {
+      const duration = Math.floor(segment.end - segment.start) / 1000;
+      const base = `${encodeURIComponent(entryId)}/${segment.id}`;
+      const offset = Math.floor((time - segment.start) / 1000);
+      const [media, preview] = await Promise.all([
+        this._hass.callWS({
+          type: "auth/sign_path",
+          path: `/api/netvue_local/playback/${base}?duration=${duration}`,
+          expires: 86400,
+        }),
+        this._hass.callWS({
+          type: "auth/sign_path",
+          path: `/api/netvue_local/thumbnail/${base}?offset=${offset}`,
+          expires: 86400,
+        }),
+      ]);
+      if (!this._history || generation !== this._historyGeneration) return;
+      this._historySegment = segment;
+      this._historyPendingSeek = { generation, offset: (time - segment.start) / 1000 };
+      this._historyVideo.src = media.path;
+      this._historyPreview.src = preview.path;
+      this._historyPreview.hidden = false;
+      this._historyVideo.muted = this._muted;
+      this._historyDownload.href = media.path;
+      this._historyDownload.hidden = false;
+      this._historyVideo.load();
+    } catch {
+      if (this._history && generation === this._historyGeneration) {
+        this._historyMessage.textContent = this._t("historyPlaybackError");
+      }
+    }
+  }
+
+  _historyMetadata() {
+    const pending = this._historyPendingSeek;
+    if (!this._history || !pending || pending.generation !== this._historyGeneration) return;
+    this._historyPendingSeek = null;
+    if (!Number.isFinite(this._historyVideo.duration)) {
+      this._historyMessage.textContent = this._t("historyPlaybackError");
+      return;
+    }
+    this._historyVideo.currentTime = Math.min(pending.offset, Math.max(0, this._historyVideo.duration - 0.1));
+    this._historyMessage.textContent = "";
+    const generation = pending.generation;
+    this._historyVideo.play().catch(() => {
+      if (this._history && generation === this._historyGeneration) {
+        this._historyMessage.textContent = this._t("historyPressPlay");
+      }
+    });
+  }
+
+  _historyTimeUpdate() {
+    if (!this._history || !this._historySegment || this._historyScrubbing) return;
+    this._historyCursor = this._historySegment.start + this._historyVideo.currentTime * 1000;
+    this._historyRange.value = String(this._historyCursor);
+    this._historyDate.value = localDateTime(this._historyCursor);
+  }
+
+  async _historyEnded() {
+    if (!this._history || !this._historySegment) return;
+    const generation = ++this._historyGeneration;
+    const previous = this._historySegment;
+    const cursor = previous.start + this._historyVideo.currentTime * 1000;
+    try {
+      await this._refreshHistory(this._entryId(), generation);
+      if (!this._history || generation !== this._historyGeneration) return;
+      const current = this._historySegments.find((segment) => segment.id === previous.id);
+      const next = this._historySegments.find((segment) => segment.start > previous.start
+        && segment.end > previous.end);
+      const active = Boolean(this._recordingState()?.attributes?.active);
+      if (current && (current.end > previous.end + HISTORY_FOLLOW_BUFFER_MS
+          || ((next || !active) && current.end > previous.end + 1000))) {
+        await this._historySeek(Math.min(cursor, current.end - 1));
+        return;
+      }
+      if (next && next.start <= previous.end + 2000) {
+        await this._historySeek(Math.max(next.start, previous.end));
+      } else if (!next && active) {
+        this._historyMessage.textContent = this._t("historyWaiting");
+        this._historyFollowTimer = setTimeout(() => {
+          this._historyFollowTimer = null;
+          this._historyEnded();
+        }, HISTORY_FOLLOW_POLL_MS);
+      } else {
+        this._historyMessage.textContent = next ? this._t("historyGap") : this._t("historyEnd");
+      }
+    } catch {
+      if (this._history && generation === this._historyGeneration) {
+        this._historyMessage.textContent = this._t("historyLoadError");
+      }
+    }
+  }
+
+  _historyJump(delta) {
+    if (this._historyCursor !== null) this._historySeek(this._historyCursor + delta);
+  }
+
+  _closeHistory(resume) {
+    if (!this._history) return;
+    this._history = false;
+    this._historyGeneration++;
+    this._historySegment = null;
+    this._historyPendingSeek = null;
+    this._historyCursor = null;
+    this._historyScrubbing = false;
+    this._clearTimer("_historyFollowTimer");
+    this._historyVideo.pause();
+    this._historyVideo.removeAttribute("src");
+    this._historyVideo.load();
+    this._historyVideo.hidden = true;
+    this._historyPanel.hidden = true;
+    this._historyDownload.hidden = true;
+    this._historyPreview.hidden = true;
+    this._wrap.removeAttribute("data-history");
+    this._video.hidden = false;
+    if (resume && this._connected) {
+      this._view = { state: "stopped" };
+      this._sync();
+    }
+    this._render();
   }
 
   _label() {
@@ -545,7 +809,7 @@ export class NetvueCameraCard extends HTMLElement {
     const label = this._label();
     const busy = state === "connecting" || state === "reconnecting";
     const failed = state === "error" || state === "unavailable" || state === "paused";
-    this._overlay.hidden = !(busy || failed);
+    this._overlay.hidden = this._history || !(busy || failed);
     this._overlayText.textContent = busy || failed ? label : "";
     this._retry.hidden = state !== "error";
     this._retry.textContent = t("retry");
@@ -608,6 +872,11 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.disabled = !this._entryId();
     this._historyButton.setAttribute("aria-label", t("recordingHistory"));
     this._historyButton.title = t("recordingHistory");
+    this._historyLiveButton.textContent = t("historyLive");
+    this._historyDate.setAttribute("aria-label", t("historyDate"));
+    this._historyRange.setAttribute("aria-label", t("historyTimeline"));
+    this._historyDownload.textContent = t("historyDownload");
+    this._historyPreview.setAttribute("alt", t("historyPreview"));
     const name = this._config && (this._config.name || this._entityState()?.attributes?.friendly_name);
     this._video.setAttribute("aria-label", name || "");
   }

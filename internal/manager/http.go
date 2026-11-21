@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
@@ -35,6 +38,7 @@ func (manager *Manager) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/cameras/{host}/recording/continuous", manager.handleRecordingContinuous)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings", manager.handleRecordingsList)
 	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings/{id}/download", manager.handleRecordingDownload)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings/{id}/thumbnail", manager.handleRecordingThumbnail)
 	mux.HandleFunc("DELETE /api/v1/cameras/{host}/recordings/{id}", manager.handleRecordingDelete)
 	mux.HandleFunc("GET /api/v1/webrtc/ice", manager.handleWebRTCICE)
 	mux.HandleFunc("PUT /api/v1/cameras/{host}/webrtc/{session_id}", manager.handleWebRTCOffer)
@@ -283,21 +287,129 @@ func (manager *Manager) handleRecordingDownload(w http.ResponseWriter, r *http.R
 		writeAPIError(w, http.StatusNotFound, "recording not found")
 		return
 	}
-	playback, err := manager.recordings.playbackRequest(camera.StreamName, segment)
-	if err == nil {
-		defer playback.Body.Close()
-		if playback.StatusCode == http.StatusOK {
-			w.Header().Set("Content-Type", playback.Header.Get("Content-Type"))
-			w.Header().Set("Content-Disposition",
-				fmt.Sprintf(`attachment; filename="netvue-%s-%s.mp4"`,
-					camera.StreamName, segment.Start.UTC().Format("20060102T150405Z")))
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.Copy(w, playback.Body)
+	if raw := r.URL.Query().Get("duration"); raw != "" {
+		duration, err := strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsNaN(duration) || math.IsInf(duration, 0) ||
+			duration <= 0 || duration > segment.Duration {
+			writeAPIError(w, http.StatusBadRequest, "invalid recording duration")
 			return
 		}
-		err = fmt.Errorf("MediaMTX playback returned HTTP %d", playback.StatusCode)
+		segment.Duration = duration
 	}
-	writeAPIError(w, http.StatusBadGateway, err.Error())
+	select {
+	case manager.recordings.playbackSlots <- struct{}{}:
+		defer func() { <-manager.recordings.playbackSlots }()
+	case <-r.Context().Done():
+		return
+	case <-manager.ctx.Done():
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	stop := context.AfterFunc(manager.ctx, cancel)
+	defer stop()
+	playback, err := manager.recordings.playbackRequest(ctx, camera.StreamName, segment)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	defer playback.Body.Close()
+	if playback.StatusCode != http.StatusOK {
+		writeAPIError(w, http.StatusBadGateway, fmt.Sprintf("MediaMTX playback returned HTTP %d", playback.StatusCode))
+		return
+	}
+	file, err := os.CreateTemp(manager.recordings.dir, ".netvue-playback-*.tmp")
+	if err != nil {
+		slog.Error("Unable to create recording playback file", "error", err)
+		writeAPIError(w, http.StatusInternalServerError, "unable to prepare recording playback")
+		return
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	size, err := io.Copy(file, io.LimitReader(playback.Body, maxPlaybackBytes+1))
+	if err != nil {
+		slog.Warn("Unable to prepare recording playback", "error", err)
+		writeAPIError(w, http.StatusBadGateway, "unable to prepare recording playback")
+		return
+	}
+	if size > maxPlaybackBytes {
+		writeAPIError(w, http.StatusBadGateway, "recording exceeds playback size limit")
+		return
+	}
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf(`attachment; filename="netvue-%s-%s.mp4"`,
+			camera.StreamName, segment.Start.UTC().Format("20060102T150405Z")))
+	w.Header().Set("ETag", fmt.Sprintf(`"%s-%.9f"`, segment.ID, segment.Duration))
+	http.ServeContent(w, r, "", time.Time{}, file)
+}
+
+func (manager *Manager) handleRecordingThumbnail(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	segment, found, err := manager.recordings.findSegment(camera.StreamName, r.PathValue("id"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !found {
+		writeAPIError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	if segment.Duration <= 0 {
+		writeAPIError(w, http.StatusNotFound, "recording is not ready")
+		return
+	}
+	var offset float64
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		var err error
+		offset, err = strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsNaN(offset) || math.IsInf(offset, 0) ||
+			offset < 0 || offset >= segment.Duration {
+			writeAPIError(w, http.StatusBadRequest, "invalid thumbnail offset")
+			return
+		}
+	}
+	select {
+	case manager.recordings.playbackSlots <- struct{}{}:
+		defer func() { <-manager.recordings.playbackSlots }()
+	case <-r.Context().Done():
+		return
+	case <-manager.ctx.Done():
+		return
+	}
+	ffmpeg, err := manager.webRTCFFmpeg()
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "thumbnail decoder unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(manager.ctx, cancel)
+	defer stop()
+	anchor := max(offset-3, 0)
+	segment.Start = segment.Start.Add(time.Duration(anchor * float64(time.Second)))
+	segment.Duration = min(segment.Duration-anchor, offset-anchor+2)
+	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error",
+		"-threads", "1", "-i", manager.recordings.playbackURL(camera.StreamName, segment, "fmp4"),
+		"-ss", strconv.FormatFloat(offset-anchor, 'f', 3, 64),
+		"-frames:v", "1", "-vf", "scale=320:180:force_original_aspect_ratio=decrease:force_divisible_by=2",
+		"-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1")
+	image, err := cmd.Output()
+	if err != nil {
+		slog.Warn("Unable to generate recording thumbnail", "error", err)
+		writeAPIError(w, http.StatusBadGateway, "unable to generate recording thumbnail")
+		return
+	}
+	if len(image) == 0 {
+		writeAPIError(w, http.StatusBadGateway, "unable to generate recording thumbnail")
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	_, _ = w.Write(image)
 }
 
 func (manager *Manager) handleRecordingDelete(w http.ResponseWriter, r *http.Request) {

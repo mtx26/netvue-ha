@@ -43,6 +43,9 @@ class FakeBridge:
         self.turn_response: dict | None = None
         self.recordings: dict[str, list[dict]] = {}
         self.recording_content = b"synthetic-video"
+        self.recording_ranges: list[tuple[str | None, str | None]] = []
+        self.recording_durations: list[str | None] = []
+        self.recording_offsets: list[str | None] = []
         self.port = _free_port()
         self._runner: web.AppRunner | None = None
 
@@ -61,6 +64,7 @@ class FakeBridge:
         app.router.add_delete(base + "/{host}", self._delete)
         app.router.add_get(base + "/{host}/recordings", self._recordings)
         app.router.add_get(base + "/{host}/recordings/{id}/download", self._recording_download)
+        app.router.add_get(base + "/{host}/recordings/{id}/thumbnail", self._recording_thumbnail)
         app.router.add_post(base + "/{host}/recording/{mode}", self._recording_mode)
         session = base + "/{host}/webrtc/{session}"
         app.router.add_route("*", session, self._webrtc)
@@ -102,11 +106,37 @@ class FakeBridge:
         recordings = self.recordings.get(request.match_info["host"], [])
         if not any(item["id"] == request.match_info["id"] for item in recordings):
             return web.Response(status=404)
+        self.recording_ranges.append((request.headers.get("Range"), request.headers.get("If-Range")))
+        self.recording_durations.append(request.query.get("duration"))
+        headers = {
+            "Content-Disposition": 'attachment; filename="recording.mp4"',
+            "Accept-Ranges": "bytes",
+            "ETag": '"recording"',
+        }
+        if request.headers.get("Range") and request.headers.get("If-Range", '"recording"') == '"recording"':
+            start = request.http_range.start or 0
+            stop = min(request.http_range.stop or len(self.recording_content), len(self.recording_content))
+            if start >= len(self.recording_content):
+                return web.Response(status=416, headers={"Content-Range": f"bytes */{len(self.recording_content)}"})
+            headers["Content-Range"] = f"bytes {start}-{stop - 1}/{len(self.recording_content)}"
+            return web.Response(
+                status=206, body=self.recording_content[start:stop],
+                content_type="video/mp4", headers=headers,
+            )
         return web.Response(
             body=self.recording_content,
             content_type="video/mp4",
-            headers={"Content-Disposition": 'attachment; filename="recording.mp4"'},
+            headers=headers,
         )
+
+    async def _recording_thumbnail(self, request):
+        if (forced := self._forced(request)) is not None:
+            return forced
+        recordings = self.recordings.get(request.match_info["host"], [])
+        if not any(item["id"] == request.match_info["id"] for item in recordings):
+            return web.Response(status=404)
+        self.recording_offsets.append(request.query.get("offset"))
+        return web.Response(body=b"synthetic-jpeg", content_type="image/jpeg")
 
     async def _recording_mode(self, request):
         if (forced := self._forced(request)) is not None:

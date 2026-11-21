@@ -151,8 +151,24 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
         if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id)
                 or not offer_sdp or len(offer_sdp.encode("utf-8")) > 128 * 1024):
             raise HomeAssistantError("Invalid WebRTC offer or session identifier")
-        if session_id in self._sessions or len(self._sessions) >= _MAX_SESSIONS:
+        if session_id in self._sessions:
             raise HomeAssistantError("WebRTC camera has too many viewers")
+        while len(self._sessions) >= _MAX_SESSIONS:
+            closing = [
+                state.task for state in self._sessions.values()
+                if state.closing and state.task is not None
+            ]
+            if not closing:
+                raise HomeAssistantError("WebRTC camera has too many viewers")
+            try:
+                async with asyncio.timeout(bridge_api.REQUEST_TIMEOUT):
+                    await asyncio.wait(closing, return_when=asyncio.FIRST_COMPLETED)
+            except TimeoutError as exc:
+                raise HomeAssistantError("WebRTC camera has too many viewers") from exc
+            if self._stopping or camera is not self._camera:
+                raise HomeAssistantError("WebRTC camera is not available")
+            if session_id in self._sessions:
+                raise HomeAssistantError("WebRTC camera has too many viewers")
         state = self._sessions[session_id] = _Session(asyncio.Event(), asyncio.Lock())
         worker = self._run(session_id, state, offer_sdp, send_message)
         try:

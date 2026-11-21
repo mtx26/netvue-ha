@@ -101,12 +101,21 @@ Le voyant **REC** apparaît lorsque l'enregistrement est demandé et que le flux
 est disponible. En mode continu, le bouton d'enregistrement manuel est masqué ;
 le mode continu se règle avec l'interrupteur de la caméra dans Home Assistant.
 Sinon, le bouton permet de démarrer ou d'arrêter l'enregistrement manuel.
-L'icône d'historique ouvre les enregistrements de cette caméra dans le
-navigateur multimédia de Home Assistant, où ils peuvent être lus.
+L'icône d'historique ouvre une chronologie dans la carte : sélectionner une
+date ou déplacer le curseur, revenir de 10 minutes ou d'une heure, puis utiliser
+les commandes du lecteur. Les segments contigus s'enchaînent ; une coupure
+est signalée. Le segment en cours devient lisible après écriture d'une partie
+complète, puis le lecteur attend environ dix secondes de nouvelles images
+avant de reprendre. **Retour au direct**
+réouvre le flux en direct. **Télécharger** exporte le segment sélectionné ;
+les enregistrements restent également accessibles dans la médiathèque HA.
 
 Le voyant reflète l'état rapporté par le pont et ne confirme pas à lui seul
-que les fichiers ont été écrits correctement. La navigation dans une vidéo
-peut être limitée par le serveur de lecture.
+que les fichiers ont été écrits correctement. L'export est préparé sur le
+volume des enregistrements avant lecture : il peut nécessiter du temps et jusqu'à
+1 Gio d'espace temporaire par demande, avec deux préparations simultanées au
+maximum. Les miniatures utilisent FFmpeg et peuvent être indisponibles pour une
+partie trop récente ou illisible. Le parcours réel reste à valider.
 
 La version 0.2.2 corrige le plantage `Illegal invocation` du lecteur. La
 version 0.2.3 ajoute le plein écran et deux cartes Lovelace complémentaires.

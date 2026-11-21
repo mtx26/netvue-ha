@@ -22,6 +22,7 @@ import (
 const (
 	defaultRecordingControlURL  = "http://127.0.0.1:9997"
 	defaultRecordingPlaybackURL = "http://127.0.0.1:9996"
+	maxPlaybackBytes            = 1 << 30
 )
 
 type RecordingStatus struct {
@@ -62,6 +63,7 @@ type recordingManager struct {
 	controlURL      string
 	playbackAddress string
 	client          *http.Client
+	playbackSlots   chan struct{}
 
 	mu     sync.RWMutex
 	states map[string]recordingState
@@ -75,6 +77,7 @@ func newRecordingManager(ctx context.Context) *recordingManager {
 		controlURL:      defaultRecordingControlURL,
 		playbackAddress: defaultRecordingPlaybackURL,
 		client:          &http.Client{Timeout: 5 * time.Second},
+		playbackSlots:   make(chan struct{}, 2),
 		states:          make(map[string]recordingState),
 	}
 	if dir == "" {
@@ -356,23 +359,27 @@ func (manager *recordingManager) deleteSegment(streamName, id string) error {
 	return nil
 }
 
-func (manager *recordingManager) playbackURL(streamName string, segment RecordingSegment) string {
+func (manager *recordingManager) playbackURL(streamName string, segment RecordingSegment, format string) string {
 	query := url.Values{}
 	query.Set("path", streamName)
 	query.Set("start", segment.Start.UTC().Format(time.RFC3339Nano))
 	query.Set("duration", fmt.Sprintf("%.3f", segment.Duration))
-	query.Set("format", "mp4")
+	query.Set("format", format)
 	return manager.playbackAddress + "/get?" + query.Encode()
 }
 
-func (manager *recordingManager) playbackRequest(streamName string, segment RecordingSegment) (*http.Response, error) {
+func (manager *recordingManager) playbackRequest(
+	ctx context.Context, streamName string, segment RecordingSegment,
+) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(
-		manager.ctx, http.MethodGet, manager.playbackURL(streamName, segment), nil,
+		ctx, http.MethodGet, manager.playbackURL(streamName, segment, "mp4"), nil,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return manager.client.Do(request)
+	client := *manager.client
+	client.Timeout = 0
+	return client.Do(request)
 }
 
 func (manager *recordingManager) cleanupLoop() {

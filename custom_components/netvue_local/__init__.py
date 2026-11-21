@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from pathlib import Path
 
-from aiohttp import ClientError, web
+from aiohttp import ClientError, ClientTimeout, web
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
@@ -145,6 +145,9 @@ class NetvueRecordingDeleteView(HomeAssistantView):
     async def get(self, request, entry_id, recording_id):
         return await _stream_recording(request, entry_id, recording_id, inline=False)
 
+    async def head(self, request, entry_id, recording_id):
+        return await _stream_recording(request, entry_id, recording_id, inline=False)
+
     async def delete(self, request, entry_id, recording_id):
         hass = request.app["hass"]
         entry = _recording_entry(hass, entry_id)
@@ -174,6 +177,37 @@ class NetvueRecordingPlaybackView(HomeAssistantView):
     async def get(self, request, entry_id, recording_id):
         return await _stream_recording(request, entry_id, recording_id, inline=True)
 
+    async def head(self, request, entry_id, recording_id):
+        return await _stream_recording(request, entry_id, recording_id, inline=True)
+
+
+class NetvueRecordingThumbnailView(HomeAssistantView):
+    url = "/api/netvue_local/thumbnail/{entry_id}/{recording_id}"
+    name = "api:netvue_local:recording_thumbnail"
+    requires_auth = True
+
+    async def get(self, request, entry_id, recording_id):
+        hass = request.app["hass"]
+        entry = _recording_entry(hass, entry_id)
+        if entry is None:
+            return web.json_response({"error": "camera not found"}, status=404)
+        host = entry.runtime_data.camera.host
+        try:
+            async with async_get_clientsession(hass).get(
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
+                f"{quote(recording_id, safe='')}/thumbnail",
+                params={"offset": request.query["offset"]} if "offset" in request.query else None,
+                timeout=20,
+            ) as response:
+                body = await response.read()
+                return web.Response(
+                    body=body,
+                    status=response.status,
+                    headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+                )
+        except (ClientError, TimeoutError):
+            return web.json_response({"error": "recording service unavailable"}, status=502)
+
 
 async def _stream_recording(request, entry_id, recording_id, *, inline):
     hass = request.app["hass"]
@@ -183,28 +217,41 @@ async def _stream_recording(request, entry_id, recording_id, *, inline):
     host = entry.runtime_data.camera.host
     session = async_get_clientsession(hass)
     try:
-        response = await session.get(
+        response = await session.request(
+            request.method,
             f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
             f"{quote(recording_id, safe='')}/download",
-            timeout=None,
+            params={"duration": request.query["duration"]} if "duration" in request.query else None,
+            headers={
+                key: request.headers[key] for key in ("Range", "If-Range")
+                if key in request.headers
+            },
+            timeout=ClientTimeout(total=None, sock_connect=5, sock_read=150),
         )
     except (ClientError, TimeoutError):
         return web.json_response({"error": "recording service unavailable"}, status=502)
     async with response:
-        if response.status != 200:
+        if response.status not in (200, 206):
             return web.Response(
                 body=await response.read(),
                 status=response.status,
-                headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+                headers={
+                    key: response.headers[key] for key in ("Content-Type", "Content-Range")
+                    if key in response.headers
+                },
             )
+        headers = {
+            key: response.headers[key]
+            for key in ("Content-Length", "Content-Range", "Accept-Ranges", "ETag")
+            if key in response.headers
+        }
+        headers["Content-Disposition"] = "inline" if inline else response.headers.get(
+            "Content-Disposition", f'attachment; filename="netvue-{recording_id}.mp4"'
+        )
+        headers["Content-Type"] = response.headers.get("Content-Type", "video/mp4")
         output = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Disposition": "inline" if inline else response.headers.get(
-                    "Content-Disposition", f'attachment; filename="netvue-{recording_id}.mp4"'
-                ),
-                "Content-Type": response.headers.get("Content-Type", "video/mp4"),
-            },
+            status=response.status,
+            headers=headers,
         )
         await output.prepare(request)
         async for chunk in response.content.iter_chunked(64 * 1024):
@@ -229,6 +276,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.http.register_view(NetvueRecordingListView())
     hass.http.register_view(NetvueRecordingDeleteView())
     hass.http.register_view(NetvueRecordingPlaybackView())
+    hass.http.register_view(NetvueRecordingThumbnailView())
     if not hass.data.get(_STATIC_PATH_KEY):
         version = (await async_get_integration(hass, DOMAIN)).version
         await hass.http.async_register_static_paths(

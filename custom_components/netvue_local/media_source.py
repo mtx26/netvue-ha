@@ -7,7 +7,12 @@ from datetime import datetime
 from urllib.parse import quote
 
 from aiohttp import ClientError
-from homeassistant.components.media_player import BrowseError, MediaClass, MediaType
+from homeassistant.components.media_player import (
+    BrowseError,
+    MediaClass,
+    MediaType,
+    async_process_play_media_url,
+)
 from homeassistant.components.media_source import (
     BrowseMediaSource,
     MediaSource,
@@ -95,6 +100,11 @@ class NetvueMediaSource(MediaSource):
             children.append(BrowseMediaSource(
                 domain=DOMAIN, identifier=f"{entry.entry_id}/{recording_id}",
                 media_class=MediaClass.VIDEO, media_content_type="video/mp4",
+                thumbnail=async_process_play_media_url(
+                    self.hass,
+                    f"/api/netvue_local/thumbnail/{quote(entry.entry_id, safe='')}/{recording_id}",
+                    allow_relative_url=True,
+                ),
                 title=title, can_play=True, can_expand=False,
             ))
         children.reverse()

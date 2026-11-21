@@ -23,5 +23,6 @@ préexistant de libération du quota échoue toujours séparément sous Windows.
 
 Implémentation testée hors ligne ; aucune caméra ni installation réelle n'a été
 contactée. Le décodage réel et le parcours visuel dans HA restent à valider.
-Le proxy ne prend pas en charge les requêtes Range ; le voyant reflète l'état
-rapporté par le pont, sans confirmer l'écriture effective des fichiers.
+Les requêtes Range ont été ajoutées en [phase 57](./phase57-lecture-chronologique.md).
+Le voyant reflète l'état rapporté par le pont, sans confirmer l'écriture
+effective des fichiers.

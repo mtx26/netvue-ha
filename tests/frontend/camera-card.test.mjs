@@ -48,6 +48,18 @@ class FakeElement {
     this.attributes.set(name, String(value));
   }
 
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
+  pause() {}
+
+  load() {}
+
+  play() {
+    return Promise.resolve();
+  }
+
   toggleAttribute(name, force) {
     if (force) {
       this.setAttribute(name, "");
@@ -180,15 +192,113 @@ test("manual recording controls and the REC indicator reflect continuous mode", 
   ]);
 });
 
-test("history opens this camera in the Home Assistant media browser", () => {
+test("timeline seeks across recordings, reports gaps and follows a growing segment", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
-  let destination;
-  window.location = { assign: (path) => { destination = path; } };
-  card.hass = { states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } } };
-  card._openHistory();
-  assert.equal(decodeURIComponent(destination),
-    "/media-browser/browser/app,media-source://netvue_local/entry1");
+  card._build();
+  const first = "a".repeat(32);
+  const second = "b".repeat(32);
+  const start = Date.parse("2026-11-20T12:00:00Z");
+  const recordings = [
+    { id: first, start: new Date(start).toISOString(), duration: 600 },
+    { id: second, start: new Date(start + 600000).toISOString(), duration: 60 },
+  ];
+  const resolved = [];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi(method, path) {
+      assert.equal(method, "GET");
+      assert.equal(path, "netvue_local/recordings/entry1");
+      return { recordings };
+    },
+    async callWS(message) {
+      assert.equal(message.type, "auth/sign_path");
+      resolved.push(message.path);
+      return { path: `/signed${message.path}` };
+    },
+  };
+  await card._openHistory();
+  assert.equal(card._history, true);
+  assert.equal(card._historyPanel.hidden, false);
+  assert.ok(resolved.includes(`/api/netvue_local/playback/entry1/${second}?duration=60`));
+  assert.ok(resolved.includes(`/api/netvue_local/thumbnail/entry1/${second}?offset=59`));
+  await card._historySeek(start + 300000);
+  assert.ok(resolved.includes(`/api/netvue_local/playback/entry1/${first}?duration=600`));
+  card._historyVideo.duration = 600;
+  card._historyMetadata();
+  assert.equal(card._historyVideo.currentTime, 300);
+  await card._historySeek(start - 1000);
+  assert.equal(card._historyMessage.textContent, "No recording at this time.");
+  assert.equal(card._historyDownload.hidden, true);
+  await card._historySeek(start + 599000);
+  card._historyVideo.currentTime = 600;
+  await card._historyEnded();
+  assert.ok(resolved.includes(`/api/netvue_local/playback/entry1/${second}?duration=60`));
+  card._historyVideo.currentTime = 60;
+  recordings[1].duration = 90;
+  await card._historyEnded();
+  assert.equal(card._historyPendingSeek.offset, 60);
+  card._closeHistory(false);
+  assert.equal(card._historyPanel.hidden, true);
+  assert.equal(card._video.hidden, false);
+});
+
+test("timeline ignores a late resolution after returning to live", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const resolutions = [];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi() {
+      return { recordings: [{ id: "a".repeat(32), start: "2026-11-20T12:00:00Z", duration: 60 }] };
+    },
+    callWS() { return new Promise((resolve) => { resolutions.push(resolve); }); },
+  };
+  const open = card._openHistory();
+  await Promise.resolve();
+  await Promise.resolve();
+  card._closeHistory(false);
+  for (const resolve of resolutions) resolve({ path: "/signed/late" });
+  await open;
+  assert.notEqual(card._historyVideo.src, "/signed/late");
+});
+
+test("timeline waits for more footage only while recording and cancels on exit", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const recording = { id: "a".repeat(32), start: "2026-11-20T12:00:00Z", duration: 60 };
+  card.hass = {
+    states: {
+      "camera.test": { attributes: { netvue_entry_id: "entry1" } },
+      "sensor.recording": {
+        state: "continuous",
+        attributes: { netvue_entry_id: "entry1", manual: false, continuous: true, active: true },
+      },
+    },
+    async callApi() {
+      return { recordings: [recording] };
+    },
+    async callWS(message) { return { path: message.path }; },
+  };
+  await card._openHistory();
+  card._historyVideo.currentTime = 60;
+  await card._historyEnded();
+  assert.equal(card._historyMessage.textContent, "Waiting for new recording footage…");
+  assert.notEqual(card._historyFollowTimer, null);
+  card._clearTimer("_historyFollowTimer");
+  recording.duration = 65;
+  await card._historyEnded();
+  assert.equal(card._historyMessage.textContent, "Waiting for new recording footage…");
+  card._clearTimer("_historyFollowTimer");
+  recording.duration = 72;
+  await card._historyEnded();
+  assert.equal(card._historyPendingSeek.offset, 60);
+  await card._historyEnded();
+  assert.notEqual(card._historyFollowTimer, null);
+  card._closeHistory(false);
+  assert.equal(card._historyFollowTimer, null);
 });
 
 test("the full-screen button enters and exits across shadow DOM retargeting", async () => {

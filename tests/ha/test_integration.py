@@ -528,9 +528,8 @@ class WebRTCTests(HassTestCase):
         self.assertNotIn(("PUT", f"/api/v1/cameras/{HOST}/webrtc/v4"), self.bridge.requests)
         self.assertFalse([r for r in self.bridge.requests if r[0] == "DELETE" and "/webrtc/" in r[1]])
         entity.close_webrtc_session("v0")
-        await self._wait_for_request("DELETE", "v0")
-        await self.hass.async_block_till_done()
         await entity.async_handle_async_webrtc_offer(MIC_OFFER, "v5", lambda _: None)
+        await self._wait_for_request("DELETE", "v0")
         await self._wait_for_request("PUT", "v5")
         for index in (1, 2, 3, 5):
             entity.close_webrtc_session(f"v{index}")
