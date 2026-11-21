@@ -1,67 +1,85 @@
 @startuml
-title Pont Netvue — composants et flux
+title Netvue Bridge — architecture actuelle
 left to right direction
 skinparam componentStyle rectangle
 
 actor "Utilisateur" as User
-actor "Navigateur / lecteur" as Viewer
+actor "Navigateur" as Viewer
 
-package "Home Assistant\ncustom_components/netvue_local" as HA {
+package "Home Assistant\nnetvue_local (Python)" as HA {
   component "Config flow\net options" as Config
-  component "Client API\nbridge_api.py" as HAAPI
-  component "Coordinator\net entités" as Coordinator
-  component "Provider WebRTC\nwebrtc.py" as HAWebRTC
+  component "Client API + Coordinator\nentités et diagnostics" as Coordinator
+  component "Provider WebRTC HA" as HAWebRTC
+  component "HA Stream\nRTSP / instantané" as HAStream
+  component "Cartes Lovelace\nJavaScript" as Frontend
+  component "Media Source\nhistorique caméra" as MediaSource
+  component "Proxy média HA\nauthentifié" as HAProxy
 }
 
-package "Pont Go\ncmd/netvue-bridge" as Bridge {
-  component "Commandes\n test / run / serve / talk" as CLI
-  component "API HTTP locale\n127.0.0.1:8765" as API
+package "Netvue Bridge\nGo 1.26" as Bridge {
+  component "CLI\ntest / run / serve / talk" as CLI
+  component "API HTTP loopback\n127.0.0.1:8765" as API
   component "Manager\nsessions par caméra" as Manager
   component "Client Netvue\ninternal/netvue" as Netvue
-  component "Publication RTSP\nH.264 / audio" as Publisher
-  component "Peer WebRTC\nsignalisation + média" as Peer
+  component "Publication RTSP\ngortsplib v5" as Publisher
+  component "WebRTC Pion v4\npairs et adaptation média" as Peer
+  component "Gestionnaire\nmodes et archives" as Recording
+}
+
+package "Services locaux" as Local {
+  database "MediaMTX 1.21\nRTSP :8554 / API :9997 / Playback :9996\nloopback" as MTX
+  component "Service IA optionnel\nPython 3.12 / ONNX Runtime\n127.0.0.1:8766" as AI
+  folder "Volume fMP4\npersistant" as Files
 }
 
 component "Caméra Netvue\nLAN" as Camera
-database "MediaMTX\n127.0.0.1:8554" as MTX
 
-User --> Config : ajouter / configurer caméra
-Config --> HAAPI : découverte
-Coordinator --> HAAPI : réconcilier / état / start
-HAAPI --> API : HTTP JSON loopback
+User --> Config : configurer caméra
+Config --> Coordinator : entrée HA persistée
+Coordinator --> API : HTTP JSON\nréconciliation / état / actions
 API --> Manager : valider et piloter
 CLI --> Netvue : test / run / talk
-Manager --> Netvue : session supervisée
-Netvue <--> Camera : UDP découverte,\nTCP protocole LIVE
-Netvue --> Publisher : trames H.264 / AAC / PCM
-Publisher --> MTX : ANNOUNCE / SETUP / RECORD,\nRTP sur RTSP/TCP
-Coordinator --> MTX : sonder disponibilité RTSP
-Viewer --> MTX : lire le flux RTSP
-Coordinator --> HA : entités caméra,\nétat et diagnostics
+Manager --> Netvue : session supervisée\npar caméra
+Netvue <--> Camera : découverte UDP,\nprotocole LIVE sur TCP
+Netvue --> Publisher : vidéo H.264\net audio pris en charge
+Publisher --> MTX : publication RTSP/TCP\nRTP
+Coordinator --> MTX : sonde RTSP indépendante
+HAStream --> MTX : lecture RTSP/TCP
+Viewer --> HAStream : lecture caméra HA
+Coordinator --> AI : configuration,\nétat et événements HTTP
+AI --> MTX : lecture RTSP/TCP\npour l'inférence locale
+AI --> MTX : API de contrôle\nliste des chemins
+Recording --> MTX : API de contrôle\net Playback
+MTX --> Files : enregistrement fMP4\nsur demande
+Recording --> Files : configuration persistante\net fichiers temporaires
+Coordinator --> HA : entités, états\net événements locaux
+MediaSource --> API : liste des archives
+API --> Recording : commandes et\nmétadonnées d'archives
+HAProxy --> API : lecture / miniature\nvia API loopback
+Recording --> HAProxy : réponses MP4 / JPEG
 
-HAWebRTC --> API : offre, candidats,\névénements, fermeture
-API --> Peer : créer / suivre un pair
-Peer --> MTX : lire le flux RTSP publié
-Peer --> Viewer : média WebRTC direct
-Viewer --> Peer : microphone WebRTC\nsi activé explicitement
+Frontend --> HAWebRTC : offre et candidats\nsignalisation HA
+HAWebRTC --> API : HTTP offre,\ncandidats, événements
+API --> Peer : créer / suivre / fermer
+Peer --> MTX : lecture RTSP/TCP
+Peer --> Viewer : média WebRTC direct\nICE UDP
+Viewer --> Peer : microphone Opus\nuniquement pendant PTT
 Peer --> Manager : ouvrir / fermer talkback
-Manager --> Netvue : talkback sur la session\ncaméra déjà active
+Manager --> Netvue : session caméra active
 
 note bottom of Camera
 Seul le client Go parle le protocole de la caméra.
 La découverte seule n'ouvre pas de session vidéo.
 end note
 
-note bottom of Manager
-Le registre Go est volatil. Home Assistant conserve
-les entrées et réconcilie une entrée absente au démarrage.
-Une session supervisée et un flux RTSP disponible
-sont deux états distincts.
+note bottom of Peer
+La signalisation passe par Home Assistant et l'API loopback.
+MediaMTX WebRTC est désactivé ; Pion publie directement
+aux navigateurs. TURN Cloudflare est facultatif.
 end note
 
-note bottom of Peer
-ICE est limité à l'adresse source IPv4 configurée.
-L'audio caméra et le microphone WebRTC sont optionnels ;
-le contrôle microphone est désactivé par défaut.
+note bottom of Manager
+Le registre Go est volatil ; les entrées sont persistées par HA.
+L'état de session et la disponibilité RTSP sont distincts.
 end note
 @enduml

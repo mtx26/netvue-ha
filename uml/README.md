@@ -1,19 +1,19 @@
 # Schémas UML du pont Netvue
 
-Ces schémas décrivent les chemins réellement présents dans le dépôt : le
-parcours Home Assistant, la session Netvue vers RTSP, le contrôle des sessions
-par l'API et la signalisation WebRTC. Ils documentent le code actif au moment
-de leur rédaction ; ils ne signifient pas que chaque fonction a été validée
-sur une caméra réelle.
+Ces schémas décrivent l'architecture active : Home Assistant, le pont Go,
+MediaMTX et le service IA Python optionnel, ainsi que les parcours caméra,
+enregistrement et WebRTC. Les versions et bibliothèques indiquées sont celles
+du dépôt. Les diagrammes décrivent le code présent, pas une validation
+automatique sur caméra réelle.
 
 ## Diagrammes
 
 | Fichier | Ce qu'il montre |
 |---|---|
-| [01-architecture.puml](./01-architecture.puml) | Les composants et les flux entre Home Assistant, Go, la caméra et MediaMTX. |
-| [02-session-camera.puml](./02-session-camera.puml) | Les étapes et contrôles d'une session caméra, de la validation des paramètres à la publication RTSP et au superviseur. |
-| [03-cycle-home-assistant.puml](./03-cycle-home-assistant.puml) | Découverte, configuration, réconciliation, surveillance et retrait d'une caméra depuis Home Assistant. |
-| [04-webrtc.puml](./04-webrtc.puml) | Signalisation WebRTC, lecture RTSP et conversion média optionnelle. |
+| [01-architecture.puml](./01-architecture.puml) | Pile Go/Python actuelle, intégration HA, MediaMTX, enregistrements et détection IA locale. |
+| [02-session-camera.puml](./02-session-camera.puml) | Session Netvue, contrôles du protocole, publication gortsplib/RTSP et supervision. |
+| [03-cycle-home-assistant.puml](./03-cycle-home-assistant.puml) | Découverte, configuration, réconciliation, suivi de l'enregistrement et de l'IA, puis retrait. |
+| [04-webrtc.puml](./04-webrtc.puml) | Signalisation HA, Pion, adaptation FFmpeg partagée, audio et push-to-talk. |
 
 Les fichiers `.puml` peuvent être ouverts avec un visualiseur PlantUML ou une
 extension PlantUML pour VS Code. Les tests qui couvrent ces composants et les

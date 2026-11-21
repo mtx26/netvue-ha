@@ -1,15 +1,16 @@
 @startuml
-title Home Assistant — ajout, réconciliation et retrait
+title Home Assistant — configuration, réconciliation et suivi local
 autonumber
 
 actor Utilisateur
 participant "Config flow\nconfig_flow.py" as Flow
-participant "Client de pont\nbridge_api.py" as HAAPI
-participant "API Manager Go\nmanager/http.go" as API
+participant "Client API du pont\nbridge_api.py" as HAAPI
+participant "API Manager Go\n/api/v1" as API
 participant "Manager\nmanager/manager.go" as Manager
 participant "Session caméra\nsuperviseur Go" as Session
 participant "Coordinator\ncoordinator.py" as Coordinator
 participant "MediaMTX" as MTX
+participant "Service IA optionnel\nPython / ONNX Runtime" as AI
 
 == Découverte et création ==
 Utilisateur -> Flow : choisir découverte ou saisie manuelle
@@ -17,11 +18,12 @@ Flow -> HAAPI : async_discover_cameras()
 HAAPI -> API : POST /api/v1/discovery
 API -> Manager : empêcher une découverte concurrente
 Manager --> API : adresses trouvées ou erreur
-API --> HAAPI : liste JSON (hôtes seulement)
-HAAPI -> HAAPI : valider la forme JSON,\nchaque IPv4 LAN et les doublons
+API --> HAAPI : DiscoveryResult\n(hôte, port, métadonnées)
+HAAPI -> HAAPI : valider les résultats,\nextraire les hôtes uniques
 HAAPI --> Flow : choix des caméras
-Utilisateur -> Flow : choisir un hôte ou saisir une IPv4
+Utilisateur -> Flow : choisir un hôte ou saisir une IPv4,\nnom et options IA
 Flow -> Flow : normaliser hôte,\nvalider nom et détecter doublon
+Flow -> Flow : valider les zones IA\net les options configurées
 Flow --> Utilisateur : erreur de formulaire ou entrée créée
 
 == Chargement et réconciliation ==
@@ -51,6 +53,11 @@ loop intervalle du coordinator
   Coordinator -> HAAPI : réconcilier l'entrée
   Coordinator -> MTX : sonder l'URL RTSP
   MTX --> Coordinator : disponible / indisponible
+  Coordinator -> HAAPI : lire l'état d'enregistrement
+  HAAPI -> API : GET /api/v1/cameras/{host}/recording
+  API --> HAAPI : état ou erreur
+  Coordinator -> AI : appliquer configuration,\nlire état et événements
+  AI --> Coordinator : détection / événements\nou service indisponible
   Coordinator -> Coordinator : garder séparés état Manager\net disponibilité RTSP
   Coordinator --> Utilisateur : mettre à jour capteurs et entités
 end
@@ -58,7 +65,7 @@ end
 == Actions utilisateur ==
 opt reprise explicite
   Utilisateur -> HAAPI : start caméra
-  HAAPI -> API : POST /cameras/{host}/start
+  HAAPI -> API : POST /api/v1/cameras/{host}/start
   API -> Manager : valider l'état et démarrer si nécessaire
   Manager -> Session : démarrer / reprendre
   API --> HAAPI : état ou erreur
@@ -66,7 +73,7 @@ end
 
 opt arrêt ou suppression de l'entrée
   Utilisateur -> HAAPI : arrêter / retirer entrée
-  HAAPI -> API : POST /stop ou DELETE /cameras/{host}
+  HAAPI -> API : POST /api/v1/cameras/{host}/stop\nou DELETE /api/v1/cameras/{host}
   API -> Manager : annuler session et attendre sa fin
   Manager -> Session : fermer connexions et publication
   Manager --> API : arrêté / supprimé

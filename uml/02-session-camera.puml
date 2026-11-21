@@ -1,19 +1,19 @@
 @startuml
-title Session caméra — validations et publication
+title Session caméra — Go, protocole Netvue et publication MediaMTX
 autonumber
 
 actor "CLI ou Manager" as Caller
-participant "runSessionWithLiveTalk\ninternal/netvue/session.go" as Session
+participant "runSessionWithLiveTalkAndDiscovery\ninternal/netvue/session.go" as Session
 participant "Découverte UDP\ninternal/netvue/discovery.go" as Discovery
 participant "Caméra Netvue" as Camera
 participant "Protocole / LIVE\nprotocol.go, authentication.go" as Protocol
 participant "Récepteur LIVE\nsession.go" as Receiver
-participant "videoPublisher\nmedia.go" as Publisher
-participant "MediaMTX" as MTX
+participant "videoPublisher\nmedia.go / gortsplib v5" as Publisher
+participant "MediaMTX\nRTSP TCP" as MTX
 participant "Superviseur\nsupervisor.go" as Supervisor
 
 Caller -> Session : démarrer session
-Session -> Session : valider durée
+Session -> Session : valider les options\net la durée si bornée
 Session -> Session : valider URL RTSP loopback,\nIPv4 LAN source/caméra et adresses distinctes
 Session -> MTX : préflight TCP de l'écouteur RTSP
 alt paramètre invalide ou RTSP indisponible
