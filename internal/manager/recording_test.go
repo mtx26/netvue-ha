@@ -271,6 +271,7 @@ pathDefaults:
   record: true
   recordFormat: fmp4
   recordPath: '%s/%%path/%%Y-%%m-%%d_%%H-%%M-%%S-%%f'
+  recordDeleteAfter: 0s
 paths:
   all_others:
 `, apiAddress, playbackAddress, filepath.ToSlash(dir))
