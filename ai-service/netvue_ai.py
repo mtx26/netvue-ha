@@ -214,7 +214,10 @@ class CameraWorker:
 
     def set_enabled(self, enabled: bool) -> None:
         with self._lock:
+            changed = self.status["enabled"] != enabled
             self.status["enabled"] = enabled
+        if changed:
+            _LOGGER.info("AI %s for %s", "enabled" if enabled else "disabled", self.stream_name)
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -242,6 +245,10 @@ class CameraWorker:
             del self.events[:-200]
         with self._lock:
             self.status["last_event_at"] = now
+        _LOGGER.info(
+            "Detection %s for %s: category=%s confidence=%.2f zone=%s",
+            event_type, self.stream_name, label, confidence, zone or "whole_image",
+        )
 
     def run(self) -> None:
         url = f"rtsp://127.0.0.1:8554/{self.stream_name}"
@@ -270,6 +277,8 @@ class CameraWorker:
                     frame = decoded.to_ndarray(format="bgr24")
                     new_size = frame.shape[:2]
                     if new_size != frame_size:
+                        _LOGGER.info("Video ready for %s: %dx%d", self.stream_name,
+                                     new_size[1], new_size[0])
                         next_id = self.tracker.next_id
                         self.tracker = IoUTracker(self.tracker.confirmation_frames)
                         self.tracker.next_id = next_id
@@ -306,12 +315,16 @@ class CameraWorker:
             with self._lock:
                 self.status["state"] = "reconnecting"
                 self.status["detections"] = []
+            if self.running and self.status["enabled"]:
+                _LOGGER.info("Reconnecting video for %s", self.stream_name)
             time.sleep(1)
 
     def start(self) -> None:
+        _LOGGER.info("Starting AI worker for %s", self.stream_name)
         self.thread.start()
 
     def stop(self) -> None:
+        _LOGGER.info("Stopping AI worker for %s", self.stream_name)
         self.running = False
 
 
@@ -321,7 +334,10 @@ class AiService:
         confidence = float(os.environ.get("NETVUE_AI_CONFIDENCE", "0.45"))
         fps = float(os.environ.get("NETVUE_AI_FPS", "3"))
         confirmation = int(os.environ.get("NETVUE_AI_CONFIRMATION_FRAMES", "3"))
+        _LOGGER.info("Loading YOLOv8n model with ONNX Runtime CPU")
         self.detector = YoloDetector(model, confidence)
+        _LOGGER.info("AI model ready: confidence=%.2f fps=%.1f confirmation_frames=%d",
+                     confidence, fps, confirmation)
         self.fps = fps
         self.confirmation = confirmation
         self.zones = load_zones()
@@ -337,7 +353,11 @@ class AiService:
         try:
             with open(self.config_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
+            _LOGGER.info("No saved AI configuration; using defaults")
+            return {}
+        except (json.JSONDecodeError, OSError) as exc:
+            _LOGGER.error("Cannot load saved AI configuration: %s", exc)
             return {}
         return data if isinstance(data, dict) else {}
 
@@ -354,7 +374,8 @@ class AiService:
         try:
             with urllib.request.urlopen("http://127.0.0.1:9997/v3/paths/list", timeout=3) as response:
                 data = json.load(response)
-        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            _LOGGER.warning("Cannot discover MediaMTX streams: %s", exc)
             return []
         names = []
         for item in data.get("items", []):
@@ -396,6 +417,8 @@ class AiService:
 
 
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    _LOGGER.info("Starting Netvue AI service")
     service = AiService()
     app = web.Application(client_max_size=1024)
 
@@ -462,6 +485,7 @@ async def main() -> None:
             "zones": clean_zones,
         }
         with service._lock:
+            changed = service.configs.get(name) != config
             service.configs[name] = config
             service.save_configs()
             worker = service.workers.get(name)
@@ -471,6 +495,11 @@ async def main() -> None:
                 worker.interval = 1.0 / float(fps)
                 worker.tracker.confirmation_frames = confirmation
                 worker.confidence = float(confidence)
+        if changed:
+            _LOGGER.info(
+                "AI settings updated for %s: enabled=%s confidence=%.2f fps=%.1f zones=%d",
+                name, enabled, confidence, fps, len(clean_zones),
+            )
         if worker is None:
             service.reconcile()
             with service._lock:
@@ -505,14 +534,16 @@ async def main() -> None:
             service.reconcile()
 
     task = asyncio.create_task(reconciliation_loop())
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 8766)
     await site.start()
+    _LOGGER.info("Netvue AI API listening on 127.0.0.1:8766; waiting for camera streams")
     stop = asyncio.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         asyncio.get_running_loop().add_signal_handler(signum, stop.set)
     await stop.wait()
+    _LOGGER.info("Stopping Netvue AI service")
     service.stop_event.set()
     task.cancel()
     for worker in list(service.workers.values()):

@@ -55,7 +55,7 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 💡 | Détection de mouvement | Comparer Netvue, Go et Frigate |
 | ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
-| 🧪 | Zones de détection | Une zone rectangulaire dans une grande fenêtre via la roue dentée de chaque carte ; dessin/enregistrement testés en navigateur synthétique, validation réelle nécessaire |
+| 🧪 | Zones de détection | Une zone rectangulaire via la roue dentée de chaque carte ; toute l'image par défaut et bouton pour la resélectionner ; tests hors ligne, validation réelle nécessaire |
 | 🧪 | Notifications HA | Événements `netvue_local_event` et capteur/switch IA ; validation réelle nécessaire |
 | ⬜ | Statistiques | Suivre événements et disponibilité |
 | 🧪 | Détection d'objets | YOLOv8n COCO CPU pour personnes, animaux, véhicules ; accélération AMD et colis non validés |

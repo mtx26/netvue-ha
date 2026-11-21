@@ -108,13 +108,21 @@ class NetvueCameraCardEditor extends NetvueCardEditor {
       .zone-stage { position:relative; margin:12px auto 0; width:fit-content; max-width:100%; background:#111; overflow:hidden; }
       .zone-stage img { display:block; width:auto; max-width:100%; max-height:72dvh; user-select:none; }
       .zone-stage canvas { position:absolute; inset:0; width:100%; height:100%; touch-action:none; cursor:crosshair; }
-      .zone-controls button { min-height:36px; }
+      .zone-controls button { min-height:40px; padding:8px 16px; border:1px solid var(--divider-color, #666);
+        border-radius:20px; background:transparent; color:var(--primary-text-color, #fff);
+        font:500 14px var(--paper-font-body1_-_font-family, Roboto, sans-serif); cursor:pointer; }
+      .zone-controls button:not([data-save-zones]):hover { background:var(--secondary-background-color, #333); }
+      .zone-controls [data-save-zones]:hover { filter:brightness(0.9); }
+      .zone-controls button:focus-visible { outline:2px solid var(--primary-color, #03a9f4); outline-offset:2px; }
+      .zone-controls [data-save-zones] { background:var(--primary-color, #03a9f4);
+        border-color:var(--primary-color, #03a9f4); color:var(--text-primary-color, #fff); }
     `;
     root.appendChild(style);
     this._zoneEditor = document.createElement("section");
     this._zoneEditor.className = "zone-editor";
     this._zoneEditor.innerHTML = `
       <div class="zone-controls">
+        <button type="button" data-full-zone></button>
         <button type="button" data-clear-zone></button>
         <button type="button" data-save-zones></button>
       </div>
@@ -126,6 +134,7 @@ class NetvueCameraCardEditor extends NetvueCardEditor {
     `;
     root.appendChild(this._zoneEditor);
     const t = translator(this._hass?.locale?.language || this._hass?.language);
+    this._zoneEditor.querySelector("[data-full-zone]").textContent = t("zoneFull");
     this._zoneEditor.querySelector("[data-clear-zone]").textContent = t("zoneClear");
     this._zoneEditor.querySelector("[data-save-zones]").textContent = t("zoneSave");
     this._canvas = this._zoneEditor.querySelector("[data-zone-canvas]");
@@ -135,6 +144,10 @@ class NetvueCameraCardEditor extends NetvueCardEditor {
     this._canvas.addEventListener("pointerup", (event) => this._finishZone(event));
     this._zoneEditor.querySelector("[data-clear-zone]").addEventListener("click", () => {
       delete this._zones[this._zoneName];
+      this._drawZones();
+    });
+    this._zoneEditor.querySelector("[data-full-zone]").addEventListener("click", () => {
+      this._zones = { [this._zoneName]: [0, 0, 1, 1] };
       this._drawZones();
     });
     this._zoneEditor.querySelector("[data-save-zones]").addEventListener("click", () => this._save());
@@ -195,7 +208,7 @@ class NetvueCameraCardEditor extends NetvueCardEditor {
       this._aiConfig = config;
       const existing = Object.entries(config.ai_zones)[0];
       this._zoneName = existing?.[0] || "entrance";
-      this._zones = existing ? { [this._zoneName]: existing[1] } : {};
+      this._zones = { [this._zoneName]: existing?.[1] || [0, 0, 1, 1] };
       this._preview.src = this._hass.states?.[this._config.entity]?.attributes?.entity_picture
         || `/api/camera_proxy/${this._config.entity}`;
       this._drawZones();

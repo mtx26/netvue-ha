@@ -510,7 +510,7 @@ class LifecycleTests(HassTestCase):
         self.assertEqual(self.entity_id(entry, "camera"), before)
         self.assertEqual(list(self.bridge.cameras), [HOST])
         self.assertEqual(len(er.async_entries_for_config_entry(
-            er.async_get(self.hass), entry.entry_id)), 12)
+            er.async_get(self.hass), entry.entry_id)), 13)
 
     async def test_removal_deletes_session_entities_and_device(self):
         entry = await self.create_entry()

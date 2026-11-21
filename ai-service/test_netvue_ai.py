@@ -7,10 +7,39 @@ from unittest.mock import MagicMock, patch
 import av
 import numpy as np
 
-from netvue_ai import CameraWorker, IoUTracker, Detection, iou, point_in_zone, video_frames
+from netvue_ai import AiService, CameraWorker, IoUTracker, Detection, iou, point_in_zone, video_frames
 
 
 class AiUnitTest(unittest.TestCase):
+    def test_enabled_logs_only_state_changes(self):
+        worker = CameraWorker("test", {}, MagicMock(confidence=0.45), fps=1, confirmation=2)
+        with self.assertLogs("netvue_ai", level="INFO") as logs:
+            worker.set_enabled(False)
+            worker.set_enabled(False)
+            worker.set_enabled(True)
+        self.assertEqual(len(logs.output), 2)
+        self.assertIn("AI disabled for test", logs.output[0])
+        self.assertIn("AI enabled for test", logs.output[1])
+
+    def test_detection_logs_respect_event_cooldown(self):
+        worker = CameraWorker("test", {}, MagicMock(confidence=0.45), fps=1, confirmation=2)
+        with self.assertLogs("netvue_ai", level="INFO") as logs:
+            worker.emit("object_detected", "dog", 0.9, 1)
+            worker.emit("object_detected", "dog", 0.9, 1)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("category=dog confidence=0.90", logs.output[0])
+        self.assertEqual(len(worker.events), 1)
+
+    def test_discovery_failure_is_logged(self):
+        with (
+            patch.dict("netvue_ai.os.environ", {"NETVUE_AI_STREAM_NAMES": ""}),
+            patch("netvue_ai.urllib.request.urlopen", side_effect=OSError("offline")),
+            self.assertLogs("netvue_ai", level="WARNING") as logs,
+        ):
+            names = AiService.discover_stream_names(MagicMock())
+        self.assertEqual(names, [])
+        self.assertIn("Cannot discover MediaMTX streams: offline", logs.output[0])
+
     def test_iou_tracks_same_object_across_frames(self):
         tracker = IoUTracker(confirmation_frames=3)
         first = Detection(0, "person", 0.9, (100, 100, 200, 300))
@@ -93,12 +122,15 @@ class AiUnitTest(unittest.TestCase):
             patch("netvue_ai.video_frames", side_effect=lambda _url: frames()),
             patch("netvue_ai.time.monotonic", side_effect=[1.0, 2.0, 3.0]),
             patch("netvue_ai.time.sleep"),
+            self.assertLogs("netvue_ai", level="INFO") as logs,
         ):
             worker.run()
         self.assertEqual([args[0].shape[:2] for args, _ in detector.detect.call_args_list],
                          dimensions)
         self.assertEqual(len(worker.events), 1)
         self.assertEqual(closed, [True])
+        self.assertTrue(any("Video ready for test: 128x96" in line for line in logs.output))
+        self.assertTrue(any("category=person" in line for line in logs.output))
 
 
 if __name__ == "__main__":

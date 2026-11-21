@@ -37,6 +37,12 @@ existants, puis exposer son état et ses événements dans Home Assistant.
   Enregistrer. Un nouveau dessin remplace le précédent. Pour les anciennes
   configurations multi-zones, la première zone est affichée et seule cette
   zone reste après enregistrement. L'interface reste à valider dans HA réel.
+- Sans zone enregistrée, toute l'image est présélectionnée ; le bouton
+  « Toute l'image » rétablit cette sélection. Boutons harmonisés avec le thème HA.
+- Logs IA au niveau INFO : démarrage, modèle prêt, lecteurs vidéo,
+  activation/désactivation, événements confirmés et configuration modifiée.
+  Les requêtes HTTP et chaque image ne sont pas journalisées ; les erreurs
+  de découverte, décodage et chargement de configuration sont visibles.
 - Roadmap et architecture mises à jour.
 - Correction du formulaire HA : le type `dict` brut provoquait une erreur
   HTTP 500 (`unable to serialize schema`) dans les paramètres. Les zones
@@ -58,7 +64,12 @@ existants, puis exposer son état et ses événements dans Home Assistant.
 - Régression synthétique multi-résolution, pixels, fermeture du lecteur et
   remise à zéro de la confirmation du suivi lors d'un changement de taille.
 - Test de configuration Portainer du conteneur IA.
-- Tests Go/Python à relancer après les changements.
+- Dernières évolutions : 70 tests frontend et 9 tests IA réussis hors ligne.
+  Navigateur synthétique : image entière présélectionnée, bouton de
+  resélection et enregistrement vérifiés ; boutons de 40 px adaptés au thème.
+  Démarrage IA simulé sans caméra/modèle : logs INFO visibles.
+- Corrigé le compte d'entités du test HA de rechargement (13 avec le
+  nouveau capteur textuel, au lieu de 12).
 - Suite HA exécutée dans un conteneur isolé : 106 tests et 63 sous-tests
   réussis ; 64 tests frontend réussis.
 
@@ -80,3 +91,6 @@ le lecteur WebRTC existant.
 Validation restante : catégories réellement visibles, précision/retard des
 événements, endurance 24 h, switch depuis HA après chargement, intégration du
 colis, accélération AMD/VAAPI et mesures multi-caméras plus longues.
+
+Les dernières évolutions de l'éditeur et des logs sont validées hors ligne ;
+aucun déploiement ni redémarrage réel n'a été effectué pour ces changements.
