@@ -36,7 +36,15 @@ class PortainerConfigTest(unittest.TestCase):
                 self.assertTrue(service["read_only"])
                 self.assertEqual(service["cap_drop"], ["ALL"])
                 self.assertNotIn("ports", service)
-                self.assertNotIn("volumes", service)
+                self.assertEqual(
+                    service["volumes"],
+                    [{
+                        "type": "bind",
+                        "source": "${NETVUE_RECORDINGS_DIR:-/var/lib/netvue/recordings}",
+                        "target": "/recordings",
+                        "bind": {"create_host_path": True},
+                    }],
+                )
 
     def test_mediamtx_environment_matches_reference(self):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
@@ -62,16 +70,20 @@ class PortainerConfigTest(unittest.TestCase):
 
         compare(reference)
         self.assertEqual(reference["paths"], {"all_others": None})
-        self.assertNotIn("volumes", service)
+        self.assertEqual(service["volumes"][0]["target"], "/recordings")
 
     def test_mediamtx_only_enables_local_rtsp_tcp(self):
         config = yaml.safe_load((ROOT / "deployment/mediamtx.yml").read_text())
         self.assertTrue(config["rtsp"])
         self.assertEqual(config["rtspAddress"], "127.0.0.1:8554")
         self.assertEqual(config["rtspTransports"], ["tcp"])
-        for service in ("rtmp", "hls", "webrtc", "srt", "moq", "api", "metrics", "pprof", "playback"):
+        for service in ("rtmp", "hls", "webrtc", "srt", "moq", "metrics", "pprof"):
             with self.subTest(service=service):
                 self.assertFalse(config[service])
+        self.assertTrue(config["api"])
+        self.assertEqual(config["apiAddress"], "127.0.0.1:9997")
+        self.assertTrue(config["playback"])
+        self.assertEqual(config["playbackAddress"], "127.0.0.1:9996")
 
     def test_mediamtx_runtime_listeners_are_isolated(self):
         binary = os.environ.get("NETVUE_TEST_MEDIAMTX")
@@ -127,7 +139,14 @@ class PortainerConfigTest(unittest.TestCase):
                                     protocol.startswith("udp") or fields[3] == "0A"
                                 ):
                                     listeners.add((protocol, fields[1]))
-                        self.assertEqual(listeners, {("tcp", f"0100007F:{port:04X}")})
+                        self.assertEqual(
+                            listeners,
+                            {
+                                ("tcp", f"0100007F:{port:04X}"),
+                                ("tcp", "0100007F:270C"),
+                                ("tcp", "0100007F:270D"),
+                            },
+                        )
                     finally:
                         process.terminate()
                         try:

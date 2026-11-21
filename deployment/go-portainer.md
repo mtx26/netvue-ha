@@ -26,9 +26,14 @@ le contenu de [go-stack.yaml](./go-stack.yaml).
 | `NETVUE_NODE` | Nom du nœud Swarm qui héberge HA |
 | `NETVUE_SOURCE` | IPv4 LAN locale de ce nœud |
 | `NETVUE_BRIDGE_IMAGE` | Facultatif : tag ou digest Go à la place de `latest` |
-| `NETVUE_RECORDINGS_DIR` | Répertoire persistant sur le nœud pour les fMP4 |
+| `NETVUE_RECORDINGS_DIR` | Facultatif : répertoire persistant, `/var/lib/netvue/recordings` par défaut |
 | `NETVUE_RECORDING_RETENTION` | Facultatif : durée de conservation, `168h` par défaut |
 | `NETVUE_RECORDING_LIMIT_BYTES` | Facultatif : limite globale en octets, `0` pour désactiver |
+
+Créer le répertoire choisi avant le déploiement et le rendre accessible aux
+conteneurs non-root : `mkdir -p /var/lib/netvue/recordings` puis
+`chown 10001:10001 /var/lib/netvue/recordings`. Appliquer les mêmes droits au
+répertoire configuré si `NETVUE_RECORDINGS_DIR` est remplacé.
 
 Le nom du nœud figure dans Portainer ; l'IPv4 est visible avec `ip -4 address`
 sur le serveur. Cliquer sur **Deploy the stack**. Aucun fichier MediaMTX ni

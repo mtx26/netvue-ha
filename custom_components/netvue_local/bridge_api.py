@@ -233,6 +233,8 @@ class ManagedCamera:
                 async with session.get(
                     f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording"
                 ) as response:
+                    if response.status == 404:
+                        return RecordingStatus(False, False, False)
                     if response.status != 200:
                         raise BridgeError(f"Bridge returned HTTP {response.status}")
                     try:

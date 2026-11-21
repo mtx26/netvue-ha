@@ -14,7 +14,8 @@ from PIL import Image, ImageDraw
 
 from custom_components.netvue_local import async_setup_entry, async_unload_entry
 from custom_components.netvue_local.bridge_api import (
-    BridgeError, ManagedCamera, SessionStatus, async_discover_cameras, async_stop_camera,
+    BridgeError, ManagedCamera, RecordingStatus, SessionStatus,
+    async_discover_cameras, async_stop_camera,
 )
 from custom_components.netvue_local.binary_sensor import NetvueCameraUnavailableSensor
 from custom_components.netvue_local.button import NetvueRestartButton
@@ -523,7 +524,8 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await async_unload_entry(hass, entry))
         stop.assert_awaited_once_with(hass, "192.168.10.2")
         entries.async_forward_entry_setups.assert_awaited_once_with(
-            entry, [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON]
+            entry, [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR,
+                    Platform.BUTTON, Platform.SWITCH]
         )
 
     async def test_cancelled_unload_waits_and_restores_only_successful_platforms(self):
@@ -883,7 +885,8 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await task
         entries.async_forward_entry_setups.assert_awaited_once_with(
-            entry, [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON])
+            entry, [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR,
+                    Platform.BUTTON, Platform.SWITCH])
         self.current = None  # The failed DELETE may have removed the session.
         with self.assertRaisesRegex(BridgeError, "deletion outcome is uncertain"):
             await self.camera.async_reconcile()
@@ -1048,10 +1051,18 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         with patch("custom_components.netvue_local.coordinator.async_probe_stream",
                    new=unittest.mock.AsyncMock(return_value=True)) as probe:
             result = await NetvueCoordinator._async_update_data(coordinator)
-            self.assertEqual(result, CameraData(SessionStatus("supervising", None), True))
+            self.assertEqual(
+                result,
+                CameraData(
+                    SessionStatus("supervising", None),
+                    True,
+                    recording=RecordingStatus(False, False, False),
+                ),
+            )
             self.current = None
             self.assertEqual(await NetvueCoordinator._async_update_data(coordinator), result)
-        self.assertEqual([method for method, _ in self.requests], ["GET", "POST", "GET", "POST"])
+        self.assertEqual([method for method, _ in self.requests],
+                         ["GET", "POST", "GET", "POST"])
         self.assertEqual(probe.await_count, 2)
 
     async def test_coordinator_probes_sdp_even_if_manager_fails(self):

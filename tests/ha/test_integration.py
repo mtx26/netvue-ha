@@ -230,8 +230,10 @@ class EntityTests(HassTestCase):
         self.assertEqual(
             sorted((e.domain, e.unique_id.removeprefix(entry.entry_id)) for e in entities),
             [("binary_sensor", "_rtsp"), ("binary_sensor", "_unavailable"),
-             ("button", "_restart"), ("camera", ""), ("sensor", "_diagnostic"),
-             ("sensor", "_session")],
+             ("button", "_restart"), ("button", "_start_recording"),
+             ("button", "_stop_recording"), ("camera", ""),
+             ("sensor", "_diagnostic"), ("sensor", "_recording"),
+             ("sensor", "_session"), ("switch", "_continuous_recording")],
         )
         device = dr.async_entries_for_config_entry(dr.async_get(self.hass), entry.entry_id)
         self.assertEqual([(d.name, d.manufacturer) for d in device], [("Salon", "Netvue")])
@@ -241,6 +243,8 @@ class EntityTests(HassTestCase):
         self.assertEqual(self.state(entry, "sensor", "diagnostic").state, "healthy")
         # Restart is only offered for a stopped or failed session.
         self.assertEqual(self.state(entry, "button", "restart").state, "unavailable")
+        self.assertEqual(self.state(entry, "sensor", "recording").state, "inactive")
+        self.assertEqual(self.state(entry, "switch", "continuous_recording").state, "off")
         entity = camera.get_camera_from_entity_id(self.hass, self.entity_id(entry, "camera"))
         self.assertEqual(await entity.stream_source(), f"rtsp://127.0.0.1:8554/{STREAM_NAME}")
         self.assertEqual(entity.stream_options["rtsp_transport"], "tcp")
@@ -373,7 +377,7 @@ class LifecycleTests(HassTestCase):
         self.assertEqual(self.entity_id(entry, "camera"), before)
         self.assertEqual(list(self.bridge.cameras), [HOST])
         self.assertEqual(len(er.async_entries_for_config_entry(
-            er.async_get(self.hass), entry.entry_id)), 6)
+            er.async_get(self.hass), entry.entry_id)), 10)
 
     async def test_removal_deletes_session_entities_and_device(self):
         entry = await self.create_entry()
@@ -401,7 +405,7 @@ class LifecycleTests(HassTestCase):
         await self.hass.async_block_till_done()
         self.assertEqual(entry.state, ConfigEntryState.FAILED_UNLOAD)
         self.assertIn(HOST, self.bridge.cameras)
-        for domain in ("camera", "binary_sensor", "sensor", "button"):
+        for domain in ("camera", "binary_sensor", "sensor", "button", "switch"):
             self.assertTrue(self.hass.states.async_entity_ids(domain), domain)
 
 

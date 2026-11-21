@@ -37,7 +37,7 @@ services:
       MTX_PATHDEFAULTS_OVERRIDEPUBLISHER: "false"
     volumes:
       - type: bind
-        source: ${NETVUE_RECORDINGS_DIR:?set the persistent recordings directory}
+        source: ${NETVUE_RECORDINGS_DIR:-/var/lib/netvue/recordings}
         target: /recordings
         bind:
           create_host_path: true
@@ -81,7 +81,7 @@ services:
       NETVUE_RECORDING_LIMIT_BYTES: "${NETVUE_RECORDING_LIMIT_BYTES:-0}"
     volumes:
       - type: bind
-        source: ${NETVUE_RECORDINGS_DIR:?set the persistent recordings directory}
+        source: ${NETVUE_RECORDINGS_DIR:-/var/lib/netvue/recordings}
         target: /recordings
         bind:
           create_host_path: true
