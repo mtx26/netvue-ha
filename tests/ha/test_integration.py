@@ -170,6 +170,23 @@ class OptionsFlowTests(HassTestCase):
         self.assertEqual(self.bridge.cameras[OTHER_HOST]["stream_name"], "netvue_192_168_10_3")
         self.assertEqual(self.entity_id(entry, "camera"), camera_entity)
 
+    async def test_host_change_preserves_ai_options_when_service_is_unavailable(self):
+        entry = await self.create_entry()
+        ai_options = {
+            "ai_enabled": True,
+            "ai_confidence": 0.6,
+            "ai_fps": 3,
+            "ai_confirmation_frames": 3,
+            "ai_zones": {"garden": [0.1, 0.2, 0.8, 0.9]},
+        }
+        self.hass.config_entries.async_update_entry(entry, options=ai_options)
+        result = await self._init(entry, host=OTHER_HOST)
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        self.assertEqual({key: entry.options[key] for key in ai_options}, ai_options)
+        self.assertEqual(entry.state, ConfigEntryState.LOADED)
+        self.assertEqual(list(self.bridge.cameras), [OTHER_HOST])
+
     async def test_host_change_retries_after_bridge_recovers(self):
         entry = await self.create_entry()
         stop_camera = netvue_local.async_stop_camera
@@ -229,11 +246,13 @@ class EntityTests(HassTestCase):
         entities = er.async_entries_for_config_entry(registry, entry.entry_id)
         self.assertEqual(
             sorted((e.domain, e.unique_id.removeprefix(entry.entry_id)) for e in entities),
-            [("binary_sensor", "_rtsp"), ("binary_sensor", "_unavailable"),
+            [("binary_sensor", "_ai_detection"), ("binary_sensor", "_rtsp"),
+             ("binary_sensor", "_unavailable"),
              ("button", "_restart"), ("button", "_start_recording"),
              ("button", "_stop_recording"), ("camera", ""),
              ("sensor", "_diagnostic"), ("sensor", "_recording"),
-             ("sensor", "_session"), ("switch", "_continuous_recording")],
+             ("sensor", "_session"), ("switch", "_ai_detection_enabled"),
+             ("switch", "_continuous_recording")],
         )
         device = dr.async_entries_for_config_entry(dr.async_get(self.hass), entry.entry_id)
         self.assertEqual([(d.name, d.manufacturer) for d in device], [("Salon", "Netvue")])
@@ -377,7 +396,7 @@ class LifecycleTests(HassTestCase):
         self.assertEqual(self.entity_id(entry, "camera"), before)
         self.assertEqual(list(self.bridge.cameras), [HOST])
         self.assertEqual(len(er.async_entries_for_config_entry(
-            er.async_get(self.hass), entry.entry_id)), 10)
+            er.async_get(self.hass), entry.entry_id)), 12)
 
     async def test_removal_deletes_session_entities_and_device(self):
         entry = await self.create_entry()

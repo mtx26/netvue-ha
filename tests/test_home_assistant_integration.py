@@ -1047,9 +1047,13 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_each_coordinator_update_reconciles_then_probes(self):
         url = self.record["rtsp_url"]
-        coordinator = SimpleNamespace(camera=self.camera, url=url)
+        entry = SimpleNamespace(data={"stream_name": self.record["stream_name"]}, options={})
+        coordinator = SimpleNamespace(camera=self.camera, url=url, _entry=entry, hass=self.hass)
         with patch("custom_components.netvue_local.coordinator.async_probe_stream",
-                   new=unittest.mock.AsyncMock(return_value=True)) as probe:
+                   new=unittest.mock.AsyncMock(return_value=True)) as probe, \
+                patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                      new=unittest.mock.AsyncMock(
+                          side_effect=BridgeError("AI unavailable"))):
             result = await NetvueCoordinator._async_update_data(coordinator)
             self.assertEqual(
                 result,
@@ -1057,6 +1061,7 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
                     SessionStatus("supervising", None),
                     True,
                     recording=RecordingStatus(False, False, False),
+                    ai_error="AI unavailable",
                 ),
             )
             self.current = None
@@ -1066,15 +1071,21 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probe.await_count, 2)
 
     async def test_coordinator_probes_sdp_even_if_manager_fails(self):
-        entry = SimpleNamespace(data={"stream_url": self.record["rtsp_url"]}, options={})
+        entry = SimpleNamespace(data={"stream_url": self.record["rtsp_url"],
+                                      "stream_name": self.record["stream_name"]}, options={})
         # Exercise the update method without constructing HA's scheduler.
-        coordinator = SimpleNamespace(camera=self.camera, url=entry.data["stream_url"])
+        coordinator = SimpleNamespace(
+            camera=self.camera, url=entry.data["stream_url"], _entry=entry, hass=self.hass)
         self.status["GET"] = 503
         with self.assertLogs("custom_components.netvue_local.coordinator", level="WARNING"), \
                 patch("custom_components.netvue_local.coordinator.async_probe_stream",
-                      new=unittest.mock.AsyncMock(return_value=True)) as probe:
+                      new=unittest.mock.AsyncMock(return_value=True)) as probe, \
+                patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                      new=unittest.mock.AsyncMock(
+                          side_effect=BridgeError("AI unavailable"))):
             self.assertEqual(await NetvueCoordinator._async_update_data(coordinator),
-                             CameraData(None, True, "Bridge returned HTTP 503"))
+                             CameraData(None, True, "Bridge returned HTTP 503",
+                                        ai_error="AI unavailable"))
         probe.assert_awaited_once_with(entry.data["stream_url"])
 
 if __name__ == "__main__":

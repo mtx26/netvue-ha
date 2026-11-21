@@ -37,22 +37,14 @@
     "step": {
       "init": {
         "title": "Camera options",
-        "description": "Configure the address, AI detection, confidence, rate, confirmation and zones.",
-        "data": {
-          "host": "Camera IPv4 address",
-          "ai_enabled": "AI detection enabled",
-          "ai_confidence": "Minimum confidence",
-          "ai_fps": "Analyzed frames per second",
-          "ai_confirmation_frames": "Confirmation frames",
-          "ai_zones": "Zones JSON"
-        }
+        "description": "The bridge will stop the old stream and start one for this address.",
+        "data": {"host": "Camera IPv4 address"}
       }
     },
     "error": {
       "invalid_input": "Invalid IPv4 address.",
       "already_configured": "This camera is already configured.",
-      "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed.",
-      "ai_unavailable": "The local AI detection service is unavailable."
+      "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed."
     },
     "abort": {
       "already_configured": "This camera is already configured."

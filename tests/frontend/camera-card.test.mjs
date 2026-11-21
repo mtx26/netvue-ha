@@ -17,6 +17,18 @@ class FakeElement {
     return child;
   }
 
+  querySelector(selector) {
+    const match = /^\[(data-[a-z-]+)\]$/.exec(selector);
+    if (!match || !this.innerHTML?.includes(match[1])) {
+      return null;
+    }
+    this.selectedElements ??= new Map();
+    if (!this.selectedElements.has(selector)) {
+      this.selectedElements.set(selector, new FakeElement());
+    }
+    return this.selectedElements.get(selector);
+  }
+
   get firstChild() {
     return this.children[0] || null;
   }

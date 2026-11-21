@@ -37,22 +37,14 @@
     "step": {
       "init": {
         "title": "Options de la caméra",
-        "description": "Configurez l'adresse, la détection IA, la confiance, la cadence, la confirmation et les zones.",
-        "data": {
-          "host": "Adresse IPv4 de la caméra",
-          "ai_enabled": "Détection IA activée",
-          "ai_confidence": "Confiance minimale",
-          "ai_fps": "Images analysées par seconde",
-          "ai_confirmation_frames": "Images de confirmation",
-          "ai_zones": "Zones JSON"
-        }
+        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse.",
+        "data": {"host": "Adresse IPv4 de la caméra"}
       }
     },
     "error": {
       "invalid_input": "Adresse IPv4 invalide.",
       "already_configured": "Cette caméra est déjà configurée.",
-      "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée.",
-      "ai_unavailable": "Le service de détection IA est indisponible.",
+      "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée."
     },
     "abort": {
       "already_configured": "Cette caméra est déjà configurée."

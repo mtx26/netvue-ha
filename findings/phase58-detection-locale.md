@@ -32,6 +32,11 @@ existants, puis exposer son état et ses événements dans Home Assistant.
 - Tests unitaires du suivi IoU et des zones.
 - Test de configuration Portainer du conteneur IA.
 - Tests Go/Python à relancer après les changements.
+- Suite HA exécutée dans un conteneur isolé : 106 tests et 63 sous-tests
+  réussis ; 64 tests frontend réussis.
+
+Le changement d'adresse de la caméra reste possible lorsque le service IA est
+indisponible et conserve les options IA de l'entrée.
 
 ## État
 
