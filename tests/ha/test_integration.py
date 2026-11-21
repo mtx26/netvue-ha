@@ -361,6 +361,7 @@ class EntityTests(HassTestCase):
             ):
                 await entry.runtime_data._async_fire_new_detection_events(event_status)
                 await entry.runtime_data._async_fire_new_detection_events(event_status)
+            await self.hass.async_block_till_done()
         finally:
             unsubscribe()
 
