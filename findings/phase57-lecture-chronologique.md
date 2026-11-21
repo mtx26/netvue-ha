@@ -9,8 +9,11 @@ La frise affiche au maximum 24 heures ; une autre date déplace la fenêtre sans
 modifier la conservation.
 Une recherche manuelle dans le lecteur annule la reprise automatique en
 attente afin qu'une réponse tardive ne replace pas le curseur.
-Dans l'historique, le voyant REC est masqué ; un curseur contrasté et des
-boutons de saut de dix secondes facilitent la navigation.
+Dans l'historique, le voyant REC est masqué ; la barre sur la vidéo offre le
+retour au direct clairement identifié, les sauts de quinze secondes et les
+autres actions directement accessibles.
+La frise affiche les périodes enregistrées en vert, les coupures en gris et
+l'heure du curseur, avec des graduations.
 
 ## Modifications
 
@@ -36,6 +39,12 @@ Un test frontend vérifie l'annulation d'une reprise programmée ou déjà en co
 lors d'une recherche manuelle.
 Les sauts entre segments et le déplacement de la frise ont été vérifiés dans
 un navigateur local avec une vidéo synthétique et des plages HTTP.
+Les commandes directes ont été vérifiées par les tests frontend ; leur
+disposition et le sélecteur de date ont été contrôlés dans un navigateur local
+avec des données simulées, notamment sur une carte de 260 pixels.
+Les plages vertes, leur découpage dans la fenêtre et l'heure du curseur sont
+testés hors ligne ; leur affichage et la navigation au clavier ont été vérifiés
+dans un navigateur avec des données simulées.
 
 ## Limites
 

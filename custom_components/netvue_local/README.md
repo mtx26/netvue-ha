@@ -101,10 +101,12 @@ Le voyant **REC** apparaît lorsque l'enregistrement est demandé et que le flux
 est disponible. En mode continu, le bouton d'enregistrement manuel est masqué ;
 le mode continu se règle avec l'interrupteur de la caméra dans Home Assistant.
 Sinon, le bouton permet de démarrer ou d'arrêter l'enregistrement manuel.
-L'icône d'historique ouvre une chronologie dans la carte : sélectionner une
-date ou déplacer le curseur, avancer ou reculer de 10 secondes, revenir de
-10 minutes ou d'une heure, puis utiliser les commandes du lecteur. Le voyant
-REC n'est affiché que sur le direct. La frise graduée affiche au maximum 24 heures,
+L'icône d'historique ouvre une chronologie dans la carte. Sur la vidéo, les
+commandes permettent de revenir au **DIRECT**, de sauter de 15 secondes,
+de reculer de 10 minutes ou d'une heure, de choisir une date et de télécharger
+le segment. Le voyant
+REC n'est affiché que sur le direct. La frise indique en vert les périodes
+enregistrées et affiche l'heure du curseur. Elle couvre au maximum 24 heures,
 coupures comprises ; une date plus ancienne déplace cette fenêtre sans effacer
 les enregistrements. La conservation dépend de la rétention configurée (sept
 jours par défaut), de la limite de stockage et des enregistrements
@@ -150,7 +152,8 @@ caméra (Opus) et le push-to-talk, via les commandes WebSocket natives de HA
 (`camera/webrtc/offer`, `camera/webrtc/candidate`, `camera/webrtc/get_client_config`)
 et le fournisseur `webrtc.py`. La vidéo démarre seule, en sourdine si le
 navigateur l'exige ; le bouton haut-parleur active le son de la même balise
-`<video>`. Le bouton « Maintenir pour parler » (souris, tactile, Espace ou
+`<video>`. Survoler ou sélectionner cette commande affiche le réglage de
+volume. Le bouton « Maintenir pour parler » (souris, tactile, Espace ou
 Entrée) remplace la piste micro par `replaceTrack` : aucune renégociation, aucun
 nouveau lecteur, la vidéo n'est jamais interrompue. Le micro est relâché dès
 que le bouton, la page, la fenêtre ou la connexion se ferme. Le navigateur

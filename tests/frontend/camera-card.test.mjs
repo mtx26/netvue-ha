@@ -7,7 +7,9 @@ class FakeElement {
     this.children = [];
     this.attributes = new Map();
     this.listeners = new Map();
-    this.style = {};
+    this.style = {
+      setProperty(name, value) { this[name] = value; },
+    };
   }
 
   appendChild(child) {
@@ -55,6 +57,10 @@ class FakeElement {
   pause() {}
 
   load() {}
+
+  focus() {
+    this.focused = true;
+  }
 
   play() {
     return Promise.resolve();
@@ -192,6 +198,31 @@ test("manual recording controls and the REC indicator reflect continuous mode", 
   ]);
 });
 
+test("volume control adjusts sound and restores it after muting", () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  assert.equal(card._volumeRange.value, "0");
+  card._volumeRange.value = "0.35";
+  card._volumeRange.dispatch("input");
+  assert.equal(card._video.volume, 0.35);
+  assert.equal(card._historyVideo.volume, 0.35);
+  assert.equal(card._video.muted, false);
+  assert.equal(card._muteButton.getAttribute("aria-label"), "Mute camera sound");
+  card._muteButton.dispatch("click");
+  assert.equal(card._video.muted, true);
+  assert.equal(card._volumeRange.value, "0");
+  card._muteButton.dispatch("click");
+  assert.equal(card._video.muted, false);
+  assert.equal(card._volumeRange.value, "0.35");
+  card._volumeRange.value = "0";
+  card._volumeRange.dispatch("input");
+  assert.equal(card._video.muted, true);
+  card._muteButton.dispatch("click");
+  assert.equal(card._video.volume, 0.35);
+  assert.equal(card._volumeRange.value, "0.35");
+});
+
 test("timeline seeks across recordings, reports gaps and follows a growing segment", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
@@ -243,7 +274,7 @@ test("timeline seeks across recordings, reports gaps and follows a growing segme
   assert.equal(card._video.hidden, false);
 });
 
-test("history hides REC and the ten-second controls seek across segments", async () => {
+test("history hides REC and the fifteen-second controls seek across segments", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -271,13 +302,69 @@ test("history hides REC and the ten-second controls seek across segments", async
   card._historyForwardButton.dispatch("click");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(card._historySegment.id, "b".repeat(32));
-  assert.equal(card._historyPendingSeek.offset, 5);
+  assert.equal(card._historyPendingSeek.offset, 10);
   card._historyBackButton.dispatch("click");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(card._historySegment.id, "a".repeat(32));
   assert.equal(card._historyPendingSeek.offset, 55);
   card._closeHistory(false);
   assert.equal(card._recordingIndicator.hidden, false);
+});
+
+test("history overlay exposes jumps, date, download and a clear return to live", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const start = new Date(2026, 10, 20, 12).getTime();
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi() {
+      return { recordings: [{ id: "a".repeat(32), start: new Date(start).toISOString(), duration: 7200 }] };
+    },
+    async callWS(message) { return { path: `/signed${message.path}` }; },
+  };
+  await card._openHistory();
+  assert.equal(card._historyPlayer.hidden, false);
+  assert.equal(card._historyVideo.getAttribute("controls"), "");
+  const actions = findByClass(card._historyPlayer, "history-actions");
+  assert.deepEqual(actions.children, [
+    card._historyLiveButton, card._historyHourButton, card._historyTenButton,
+    card._historyBackButton, card._historyForwardButton, card._historyDatePicker, card._historyDownload,
+  ]);
+  assert.equal(card._historyLiveButton.textContent, "LIVE");
+  assert.equal(card._historyLiveButton.getAttribute("aria-label"), "Back to live");
+  assert.equal(card._historyBackButton.getAttribute("aria-label"), "Go back 15 seconds");
+  assert.equal(card._historyForwardButton.getAttribute("aria-label"), "Go forward 15 seconds");
+  assert.equal(card._historyDateButton.getAttribute("aria-label"), "Recording date and time");
+  assert.equal(card._historyDownload.getAttribute("aria-label"), "Download");
+  assert.equal(card._historyDownload.hidden, false);
+  assert.ok(card._historyDownload.href.startsWith("/signed/api/netvue_local/playback/"));
+  await card._historySeek(start + 6600000);
+  card._historyHourButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(card._historyCursor, start + 3000000);
+  card._historyTenButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(card._historyCursor, start + 2400000);
+  card._historyDatePicker.open = true;
+  card._historyDate.value = "2026-11-20T12:10:00";
+  card._historyDate.dispatch("change");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(card._historyDatePicker.open, false);
+  assert.equal(card._historyCursor, start + 600000);
+  card._historyDatePicker.open = true;
+  let stopped = false;
+  card._historyDatePicker.dispatch("keydown", { key: "Escape", stopPropagation() { stopped = true; } });
+  assert.equal(card._historyDatePicker.open, false);
+  assert.equal(card._historyDateButton.focused, true);
+  assert.equal(stopped, true);
+  card.hass = { ...card.hass, language: "fr" };
+  assert.equal(card._historyLiveButton.textContent, "DIRECT");
+  assert.equal(card._historyLiveButton.getAttribute("aria-label"), "Retour au direct");
+  card._historyLiveButton.dispatch("click");
+  assert.equal(card._history, false);
+  assert.equal(card._historyPlayer.hidden, true);
+  assert.equal(card._historyDownload.hidden, true);
 });
 
 test("timeline graduations follow the available recording bounds across days", async () => {
@@ -303,9 +390,13 @@ test("timeline graduations follow the available recording bounds across days", a
   assert.equal(card._historyTicks.children.length, 5);
   const dateFormat = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
   const timeFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  for (const [index, time] of [start, start + (end - 1 - start) / 2, end - 1].entries()) {
-    assert.equal(card._historyTickLabels[index].time.textContent, timeFormat.format(time));
-    assert.equal(card._historyTickLabels[index].date.textContent, dateFormat.format(time));
+  for (const [index, time] of [
+    start, start + (end - 1 - start) / 4, start + (end - 1 - start) / 2,
+    start + (end - 1 - start) * 3 / 4, end - 1,
+  ].entries()) {
+    const rounded = Math.round(time / 60000) * 60000;
+    assert.equal(card._historyTickLabels[index].time.textContent, timeFormat.format(rounded));
+    assert.equal(card._historyTickLabels[index].date.textContent, dateFormat.format(rounded));
   }
   card._historyRange.value = String(start + 30000);
   card._historyRange.dispatch("input");
@@ -320,6 +411,50 @@ test("timeline graduations follow the available recording bounds across days", a
   await card._refreshHistory("entry1", card._historyGeneration);
   assert.equal(card._historyTicks.hidden, true);
   assert.equal(card._historyRange.disabled, true);
+  assert.equal(card._historyRail.children.length, 0);
+  assert.equal(card._historyCursorMarker.hidden, true);
+  assert.equal(card._historyPosition.hidden, true);
+  card._closeHistory(false);
+});
+
+test("timeline shows recorded intervals and the time under the moving cursor", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const start = Date.parse("2026-11-20T12:00:00Z");
+  const recordings = [
+    { id: "a".repeat(32), start: new Date(start).toISOString(), duration: 10 },
+    { id: "b".repeat(32), start: new Date(start + 10000).toISOString(), duration: 10 },
+    { id: "c".repeat(32), start: new Date(start + 40000).toISOString(), duration: 10 },
+    { id: "d".repeat(32), start: new Date(start + 45000).toISOString(), duration: 15 },
+  ];
+  card.hass = {
+    locale: { language: "fr-FR" },
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi() { return { recordings }; },
+    async callWS(message) { return { path: message.path }; },
+  };
+  await card._openHistory();
+  assert.equal(card._historyRail.children.length, 2);
+  const [first, second] = card._historyRail.children;
+  assert.equal(first.style.left, "0%");
+  assert.ok(Math.abs(parseFloat(first.style.width) - 20000 / 59999 * 100) < 0.001);
+  assert.ok(Math.abs(parseFloat(second.style.left) - 40000 / 59999 * 100) < 0.001);
+  assert.ok(Math.abs(parseFloat(second.style.width) - 19999 / 59999 * 100) < 0.001);
+  const format = new Intl.DateTimeFormat("fr-FR", { timeStyle: "medium" });
+  card._historyRange.value = String(start + 15000);
+  card._historyRange.dispatch("input");
+  assert.equal(card._historyPositionLabel.textContent, format.format(start + 15000));
+  assert.ok(Math.abs(parseFloat(card._historyPanel.style["--history-position"]) - 15000 / 59999 * 100) < 0.001);
+  assert.equal(card._historyCursorMarker.hidden, false);
+  card._historyScrubbing = false;
+  await card._historySeek(start + 40000);
+  card._historyVideo.currentTime = 5;
+  card._historyTimeUpdate();
+  assert.equal(card._historyPositionLabel.textContent, format.format(start + 45000));
+  recordings.splice(0, 2);
+  await card._refreshHistory("entry1", card._historyGeneration);
+  assert.equal(card._historyRail.children.length, 1);
   card._closeHistory(false);
 });
 
@@ -331,6 +466,7 @@ test("timeline shows at most 24 hours and moves to older recordings without dele
   const day = 24 * 60 * 60 * 1000;
   const recordings = [
     { id: "a".repeat(32), start: new Date(start).toISOString(), duration: 600 },
+    { id: "c".repeat(32), start: new Date(start + 2 * day - 3600000).toISOString(), duration: 7200 },
     { id: "b".repeat(32), start: new Date(start + 3 * day).toISOString(), duration: 600 },
   ];
   card.hass = {
@@ -342,13 +478,17 @@ test("timeline shows at most 24 hours and moves to older recordings without dele
   const latest = start + 3 * day + 600000 - 1;
   assert.equal(Number(card._historyRange.max), latest);
   assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), day);
+  assert.equal(card._historyRail.children.length, 2);
+  assert.equal(card._historyRail.children[0].style.left, "0%");
+  assert.ok(parseFloat(card._historyRail.children[0].style.width) > 0);
   const older = start + 300000;
   await card._historySeek(older);
   assert.ok(Number(card._historyRange.min) <= older);
   assert.ok(Number(card._historyRange.max) >= older);
   assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), day);
   assert.equal(card._historySegment.id, "a".repeat(32));
-  assert.equal(recordings.length, 2);
+  assert.equal(recordings.length, 3);
+  assert.equal(card._historyRail.children.length, 1);
   await card._historySeek(start + 3 * day + 300000);
   assert.equal(Number(card._historyRange.max), latest);
   assert.equal(card._historySegment.id, "b".repeat(32));
@@ -472,17 +612,20 @@ test("the full-screen button enters and exits across shadow DOM retargeting", as
   const button = findByClass(card.shadowRoot, "fullscreen");
   assert.ok(button);
   assert.equal(button.disabled, false);
+  const enterIcon = button.innerHTML;
 
   button.dispatch("click");
   await Promise.resolve();
   assert.equal(button.getAttribute("aria-pressed"), "true");
   assert.equal(button.getAttribute("aria-label"), "Exit full screen");
+  assert.notEqual(button.innerHTML, enterIcon);
 
   button.dispatch("click");
   await Promise.resolve();
   assert.equal(document.fullscreenElement, null);
   assert.equal(button.getAttribute("aria-pressed"), "false");
   assert.equal(button.getAttribute("aria-label"), "Open camera in full screen");
+  assert.equal(button.innerHTML, enterIcon);
 
   button.dispatch("click");
   await Promise.resolve();
