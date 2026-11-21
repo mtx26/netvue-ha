@@ -159,6 +159,11 @@ button[disabled] { color: rgba(255,255,255,.65); cursor: default; }
 .bar .ptt[aria-pressed="true"] { background: var(--error-color, #db4437); }
 .toast { position: absolute; left: 8px; right: 8px; top: 8px; padding: 8px 12px; border-radius: 8px;
   color: #fff; background: rgba(176,0,32,.9); line-height: 1.4; font-size: 14px; }
+.settings-panel { position: absolute; inset: 0; z-index: 4; overflow: auto; padding: 12px;
+  background: var(--card-background-color, #222); color: var(--primary-text-color, #fff); line-height: 1.4; }
+.settings-panel[hidden] { display: none; }
+.settings-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.settings-header button { color: inherit; background: transparent; border-color: currentColor; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 `;
 
@@ -191,6 +196,7 @@ const ICONS = {
   forwardFifteen: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-2 7M20 5v5h-5"/><text x="8" y="15">15</text></svg>',
   calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>',
   download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m-4-4 4 4 4-4M4 17v3h16v-3"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="m19.4 15 .1.1 1.4 1.1-1.6 2.8-1.7-.5a8 8 0 0 1-1.8 1l-.4 1.7h-3.2l-.4-1.7a8 8 0 0 1-1.8-1l-1.7.5-1.6-2.8 1.4-1.1a8 8 0 0 1 0-2l-1.4-1.1 1.6-2.8 1.7.5a8 8 0 0 1 1.8-1l.4-1.7h3.2l.4 1.7a8 8 0 0 1 1.8 1l1.7-.5 1.6 2.8-1.4 1.1a8 8 0 0 1 0 2z" transform="translate(-1.6 -2.1)"/></svg>',
 };
 
 export class NetvueCameraCard extends HTMLElement {
@@ -251,6 +257,7 @@ export class NetvueCameraCard extends HTMLElement {
       this._render();
     }
     if (changed && this._connected) {
+      this._closeSettings();
       this._closeHistory(false);
       this._restart();
     }
@@ -288,6 +295,7 @@ export class NetvueCameraCard extends HTMLElement {
 
   disconnectedCallback() {
     this._connected = false;
+    this._closeSettings();
     this._releasePtt();
     window.removeEventListener("blur", this._onRelease);
     window.removeEventListener("pagehide", this._onRelease);
@@ -606,6 +614,8 @@ export class NetvueCameraCard extends HTMLElement {
     this._recordButton.addEventListener("click", () => this._toggleManualRecording());
     this._historyButton = el("button", { type: "button", class: "history-button" }, bar);
     this._historyButton.addEventListener("click", () => this._openHistory());
+    this._settingsButton = el("button", { type: "button", class: "settings" }, bar);
+    this._settingsButton.addEventListener("click", () => this._openSettings());
     this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
     this._bindPtt(this._pttButton);
     const volumeControl = el("div", { class: "volume-control" }, bar);
@@ -650,6 +660,20 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyPosition = el("div", { class: "history-position", hidden: "", "aria-hidden": "true" }, this._historyPanel);
     this._historyPositionLabel = el("span", { class: "history-position-label" }, this._historyPosition);
     this._historyMessage = el("div", { class: "history-message", role: "status" }, this._historyPanel);
+    this._settingsPanel = el("div", {
+      class: "settings-panel", hidden: "", role: "region",
+    }, wrap);
+    const settingsHeader = el("div", { class: "settings-header" }, this._settingsPanel);
+    this._settingsTitle = el("strong", {}, settingsHeader);
+    this._settingsClose = el("button", { type: "button" }, settingsHeader);
+    this._settingsClose.addEventListener("click", () => this._closeSettings());
+    this._settingsPanel.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        this._closeSettings();
+        this._settingsButton.focus();
+        event.stopPropagation();
+      }
+    });
     this._live = el("div", { class: "sr", role: "status", "aria-live": "polite" }, wrap);
     this._render();
   }
@@ -705,6 +729,28 @@ export class NetvueCameraCard extends HTMLElement {
   _entryId() {
     const state = this._entityState();
     return state?.attributes?.netvue_entry_id || null;
+  }
+
+  _openSettings() {
+    if (!this._entryId() || !this._hass?.callApi || this._zoneEditor) return;
+    this._releasePtt();
+    const editor = document.createElement("netvue-camera-card-editor");
+    editor.setAttribute("zones-only", "");
+    editor.setConfig({ entity: this._config.entity });
+    editor.hass = this._hass;
+    this._zoneEditor = editor;
+    this._settingsPanel.appendChild(editor);
+    this._settingsPanel.hidden = false;
+    this._settingsClose.focus();
+  }
+
+  _closeSettings() {
+    if (!this._settingsPanel) return;
+    this._settingsPanel.hidden = true;
+    if (this._zoneEditor) {
+      this._settingsPanel.removeChild(this._zoneEditor);
+      this._zoneEditor = null;
+    }
   }
 
   _recordingState() {
@@ -1148,6 +1194,13 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.disabled = !this._entryId();
     this._historyButton.setAttribute("aria-label", t("recordingHistory"));
     this._historyButton.title = t("recordingHistory");
+    setIcon(this._settingsButton, ICONS.settings);
+    this._settingsButton.disabled = !this._entryId() || !this._hass?.callApi;
+    this._settingsButton.setAttribute("aria-label", t("cameraSettings"));
+    this._settingsButton.title = t("cameraSettings");
+    this._settingsPanel.setAttribute("aria-label", t("cameraSettings"));
+    this._settingsTitle.textContent = t("cameraSettings");
+    this._settingsClose.textContent = t("closeSettings");
     this._historyLiveButton.textContent = t("historyLiveShort");
     for (const [button, text] of [
       [this._historyLiveButton, t("historyLive")],

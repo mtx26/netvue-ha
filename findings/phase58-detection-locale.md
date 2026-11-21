@@ -28,7 +28,8 @@ existants, puis exposer son état et ses événements dans Home Assistant.
 - Configuration IA : activation, seuil de confiance, cadence, confirmation
   et zones JSON disponibles directement lors de l'ajout manuel ou découverte
   de la caméra, puis modifiables dans les options de l'intégration.
-  L'éditeur de carte Lovelace ne contient plus ces paramètres.
+  La roue dentée de chaque carte caméra ouvre le dessin des zones ; l'interface
+  reste à valider dans Home Assistant réel.
 - Roadmap et architecture mises à jour.
 
 ## Tests

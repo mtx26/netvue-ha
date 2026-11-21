@@ -1070,6 +1070,36 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
                          ["GET", "POST", "GET", "POST"])
         self.assertEqual(probe.await_count, 2)
 
+    async def test_coordinator_applies_ai_options_to_legacy_entry(self):
+        entry = SimpleNamespace(
+            data={"stream_name": self.record["stream_name"]},
+            options={
+                "ai_enabled": False,
+                "ai_confidence": 0.6,
+                "ai_fps": 2,
+                "ai_confirmation_frames": 4,
+                "ai_zones": {"garden": [0.1, 0.2, 0.8, 0.9]},
+            },
+        )
+        coordinator = SimpleNamespace(
+            camera=self.camera, url=self.record["rtsp_url"], _entry=entry, hass=self.hass
+        )
+        with (
+            patch("custom_components.netvue_local.coordinator.async_probe_stream",
+                  new=unittest.mock.AsyncMock(return_value=True)),
+            patch("custom_components.netvue_local.coordinator.async_set_detection_config",
+                  new=unittest.mock.AsyncMock()) as configure,
+            patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                  new=unittest.mock.AsyncMock(side_effect=BridgeError("AI unavailable"))),
+        ):
+            result = await NetvueCoordinator._async_update_data(coordinator)
+        configure.assert_awaited_once_with(
+            self.hass, self.record["stream_name"], enabled=False, confidence=0.6,
+            fps=2, confirmation_frames=4,
+            zones={"garden": [0.1, 0.2, 0.8, 0.9]},
+        )
+        self.assertEqual(result.ai_error, "AI unavailable")
+
     async def test_coordinator_probes_sdp_even_if_manager_fails(self):
         entry = SimpleNamespace(data={"stream_url": self.record["rtsp_url"],
                                       "stream_name": self.record["stream_name"]}, options={})

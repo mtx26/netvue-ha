@@ -58,6 +58,10 @@ class FakeElement {
     return this.attributes.get(name) ?? null;
   }
 
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
   }
@@ -89,6 +93,14 @@ class FakeElement {
   attachShadow() {
     this.shadowRoot = new FakeElement("shadow-root");
     return this.shadowRoot;
+  }
+
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: 200, height: 100 };
+  }
+
+  getContext() {
+    return { clearRect() {}, fillRect() {}, strokeRect() {} };
   }
 }
 
@@ -208,6 +220,90 @@ test("manual recording controls and the REC indicator reflect continuous mode", 
     { method: "POST", url: "/api/netvue_local/recordings/entry1", body: { enabled: true } },
     { method: "POST", url: "/api/netvue_local/recordings/entry1", body: { enabled: false } },
   ]);
+});
+
+test("settings open on the selected camera and save drawn zones without changing other AI options", async () => {
+  const calls = [];
+  const config = {
+    ai_enabled: false, ai_confidence: 0.7, ai_fps: 2,
+    ai_confirmation_frames: 4, ai_zones: {},
+  };
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  card.hass = {
+    states: {
+      "camera.test": { attributes: { netvue_entry_id: "entry1", entity_picture: "/image" } },
+    },
+    async callApi(method, path, body) {
+      calls.push({ method, path, body });
+      return method === "GET" ? { ...config } : body;
+    },
+  };
+  card._settingsButton.dispatch("click");
+  assert.equal(card._settingsPanel.hidden, false);
+  const editor = card._zoneEditor;
+  assert.equal(editor.hasAttribute("zones-only"), true);
+  editor.connectedCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(editor._form.hidden, true);
+  assert.equal(editor._preview.src, "/image");
+  editor._resizeCanvas();
+  editor._startZone({ clientX: 20, clientY: 20, pointerId: 1 });
+  editor._finishZone({ clientX: 160, clientY: 80 });
+  config.ai_confidence = 0.8;
+  await editor._save();
+  assert.deepEqual(calls.at(-1), {
+    method: "PUT",
+    path: "netvue_local/detection/entry1",
+    body: { ...config, ai_zones: { entrance: [0.1, 0.2, 0.8, 0.8] } },
+  });
+  card._settingsClose.dispatch("click");
+  assert.equal(card._settingsPanel.hidden, true);
+  assert.equal(card._zoneEditor, null);
+});
+
+test("zone settings report a failed load without saving defaults", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const methods = [];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi(method) { methods.push(method); throw new Error("offline"); },
+  };
+  card._settingsButton.dispatch("click");
+  const editor = card._zoneEditor;
+  editor.connectedCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  await editor._save();
+  assert.deepEqual(methods, ["GET"]);
+  assert.equal(editor._zoneEditor.querySelector("[data-zone-message]").textContent,
+    "Unable to load settings.");
+});
+
+test("settings use the entry of each camera independently", async () => {
+  const paths = [];
+  const hass = {
+    states: {
+      "camera.first": { attributes: { netvue_entry_id: "first" } },
+      "camera.second": { attributes: { netvue_entry_id: "second" } },
+    },
+    async callApi(_method, path) {
+      paths.push(path);
+      return { ai_zones: {} };
+    },
+  };
+  for (const entity of ["camera.first", "camera.second"]) {
+    const card = new NetvueCameraCard();
+    card.setConfig({ entity });
+    card._build();
+    card.hass = hass;
+    card._settingsButton.dispatch("click");
+    card._zoneEditor.connectedCallback();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(paths, ["netvue_local/detection/first", "netvue_local/detection/second"]);
 });
 
 test("volume control adjusts sound and restores it after muting", () => {

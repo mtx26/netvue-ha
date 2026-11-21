@@ -90,7 +90,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
                 vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=3):
                     vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_ZONES, default="{}"): str,
+                vol.Required(CONF_AI_ZONES, default={}): dict,
             }), errors=errors,
         )
 
@@ -156,7 +156,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
                 vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=3):
                     vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_ZONES, default="{}"): str,
+                vol.Required(CONF_AI_ZONES, default={}): dict,
             }), errors=errors,
         )
 
@@ -266,8 +266,6 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                     vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
                 vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=default_ai_confirmation):
                     vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_ZONES, default=json.dumps(
-                    default_ai_zones, ensure_ascii=False, separators=(",", ":")
-                )): str,
+                vol.Required(CONF_AI_ZONES, default=default_ai_zones): dict,
             }), errors=errors,
         )

@@ -107,7 +107,7 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
             )
             if ai_configured:
                 ai_enabled = self._entry.options.get(
-                    CONF_AI_ENABLED, self._entry.data[CONF_AI_ENABLED]
+                    CONF_AI_ENABLED, self._entry.data.get(CONF_AI_ENABLED)
                 )
                 await async_set_detection_config(
                     self.hass,
