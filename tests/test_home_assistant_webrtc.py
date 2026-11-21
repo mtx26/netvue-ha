@@ -309,7 +309,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(lambda: not self.provider._sessions)
         self.assertEqual(sum(r[0] == "DELETE" for r in self.requests), 1)
 
-    async def test_four_concurrent_sessions_then_rejection_without_handoff(self):
+    async def test_four_concurrent_sessions_then_wait_for_handoff(self):
         self.block_delete = True
         for index in range(4):
             await self.provider.async_handle_async_webrtc_offer(
@@ -322,14 +322,17 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(r[0] == "PUT" for r in self.requests), 4)
         self.provider.async_close_session("s0")
         await asyncio.wait_for(self.delete_started.wait(), 2)
-        # The slot frees only when the DELETE completed; no previous-session wait exists.
-        with self.assertRaisesRegex(HomeAssistantError, "too many viewers"):
-            await self.provider.async_handle_async_webrtc_offer(
-                self.camera, "offer", "s5", lambda _: None)
-        self.delete_continue.set()
-        await self.wait_for(lambda: "s0" not in self.provider._sessions)
-        await self.provider.async_handle_async_webrtc_offer(
-            self.camera, "offer", "s6", lambda _: None)
+        handoff = asyncio.create_task(self.provider.async_handle_async_webrtc_offer(
+            self.camera, "offer", "s5", lambda _: None))
+        try:
+            await asyncio.sleep(0)
+            self.assertFalse(handoff.done())
+            self.assertEqual(sum(r[0] == "PUT" for r in self.requests), 4)
+        finally:
+            self.delete_continue.set()
+        await asyncio.wait_for(handoff, 2)
+        self.assertNotIn("s0", self.provider._sessions)
+        self.assertIn("s5", self.provider._sessions)
         await self.wait_for(lambda: sum(r[0] == "PUT" for r in self.requests) == 5)
 
     async def test_sessions_are_isolated(self):
