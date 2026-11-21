@@ -268,9 +268,9 @@ apiAddress: %s
 playback: true
 playbackAddress: %s
 pathDefaults:
-record: true
-recordFormat: fmp4
-recordPath: '%s/%%path/%%Y-%%m-%%d_%%H-%%M-%%S-%%f'
+  record: true
+  recordFormat: fmp4
+  recordPath: '%s/%%path/%%Y-%%m-%%d_%%H-%%M-%%S-%%f'
 paths:
   all_others:
 `, apiAddress, playbackAddress, filepath.ToSlash(dir))
