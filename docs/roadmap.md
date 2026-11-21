@@ -66,7 +66,7 @@ fiable, performante, modulaire et simple à installer.
 | 🧪 | WebRTC | Un essai réel a rencontré une offre navigateur incompatible avec le profil H.264 du flux ; adaptation testée hors ligne, lecture WebRTC réelle non confirmée. Un FFmpeg d'adaptation par caméra, partagé entre spectateurs (phase 40) : 9 transcodeurs simultanés avaient saturé la limite de 0,5 CPU en production. ICE limité à l'IPv4 source en UDP : un tunnel HTTPS seul ne suffit pas à distance |
 | 🧪 | Micro à distance sans VPN | Cloudflare TURN facultatif par installation, configuration ICE limitée aux caméras Netvue en mode WebRTC natif ; négociation via relais local testée, Cloudflare et restitution du micro hors LAN à valider |
 | 🧪 | Carte caméra Lovelace | Lecteur WebRTC, audio, push-to-talk, plein écran et éditeur visuel ; affichage réel à confirmer |
-| 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras, regroupement état/diagnostic, découverte automatique des entités et éditeurs visuels ; affichage réel à confirmer |
+| 🧪 | Mur et synthèse caméra Lovelace | Grille multi-caméras, navigation plein écran, regroupement état/diagnostic, découverte automatique des entités et éditeurs visuels ; affichage réel à confirmer |
 | 🧪 | Miniature caméra HA | Image complète proportionnelle dans le badge 80 × 80 ; proxy et formats synthétiques testés, affichage réel à confirmer ([phase 46](../findings/phase46-miniature-ha.md)) |
 | 🧪 | Configuration HA réelle | Vérifier dans l'interface installée le parcours découverte/saisie IPv4, la création de l'entrée et l'affichage des entités |
 | 🧪 | Alertes de panne | Entité « Caméra indisponible » et diagnostics actionnables ajoutés ; tests HA/Portainer passés en conteneur isolé, état réel HA non vérifié |

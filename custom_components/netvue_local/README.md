@@ -106,6 +106,8 @@ La version 0.2.6 versionne aussi le chemin des modules importés afin d'éviter
 qu'un ancien fichier JavaScript reste en cache après une mise à jour.
 La version 0.2.7 remplace les emojis des contrôles par des icônes SVG
 uniformes et place le microphone, le son puis le plein écran dans cet ordre.
+La version 0.2.8 corrige la sortie du plein écran et ajoute des flèches pour
+parcourir les caméras du mur sans quitter le plein écran.
 Le bouton plein écran permet de revenir au tableau de bord avec Échap ou en
 appuyant de nouveau sur le bouton. Il est désactivé si le navigateur ne prend
 pas cette fonction en charge.
@@ -149,7 +151,9 @@ entities:
 ```
 
 Chaque caméra ouvre son propre lecteur WebRTC et conserve les commandes audio,
-micro et plein écran. Afficher plusieurs flux simultanément augmente
+micro et plein écran. En plein écran, les flèches latérales parcourent les
+caméras dans l'ordre de la liste, avec retour au début ou à la fin.
+Afficher plusieurs flux simultanément augmente
 l'utilisation du réseau et des ressources ; limiter la liste aux caméras à
 surveiller en même temps.
 

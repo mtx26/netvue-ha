@@ -17,10 +17,10 @@ const STYLE = `
 ha-card { overflow: hidden; position: relative; }
 .wrap { position: relative; background: #000; line-height: 0; }
 video { width: 100%; max-height: 80vh; background: #000; }
-.wrap:fullscreen {
+.wrap:fullscreen, :host([wall-active]) .wrap {
   width: 100vw; height: 100vh; height: 100dvh; display: flex; align-items: center; justify-content: center;
 }
-.wrap:fullscreen video {
+.wrap:fullscreen video, :host([wall-active]) video {
   width: 100%; height: 100%; max-height: 100vh; max-height: 100dvh; object-fit: contain;
 }
 .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
@@ -35,6 +35,10 @@ button { font: inherit; color: #fff; background: rgba(255,255,255,.2); border: 1
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 44px; }
 .bar button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round; }
+.navigate { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1;
+  width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 30px; line-height: 1; }
+.previous { left: 8px; }
+.next { right: 8px; }
 .history { position: absolute; left: 8px; right: 8px; bottom: 64px; max-height: 45%;
   overflow: auto; padding: 8px; border-radius: 8px; background: rgba(20,20,20,.95);
   color: #fff; line-height: 1.4; font-size: 13px; }
@@ -103,6 +107,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._built = false;
     this._connected = false;
     this._paused = false;
+    this._wall = null;
     this._onRelease = () => this._releasePtt();
     this._onVisibility = () => this._visibilityChanged();
     this._onWindowPointer = (event) => this._pointerEnded(event);
@@ -280,8 +285,10 @@ export class NetvueCameraCard extends HTMLElement {
 
   async _toggleFullscreen() {
     try {
-      if (document.fullscreenElement === this._wrap) {
+      if (this._isFullscreen()) {
         await document.exitFullscreen();
+      } else if (this._wall) {
+        await this._wall._openFullscreen(this);
       } else {
         await this._wrap.requestFullscreen();
       }
@@ -291,8 +298,15 @@ export class NetvueCameraCard extends HTMLElement {
   }
 
   _fullscreenSupported() {
-    return typeof this._wrap.requestFullscreen === "function"
+    const target = this._wall ? this._wall._grid : this._wrap;
+    return typeof target.requestFullscreen === "function"
       && typeof document.exitFullscreen === "function";
+  }
+
+  _isFullscreen() {
+    return this._wall
+      ? this._wall._isFullscreen() && this._wall._activeCard === this
+      : this.shadowRoot.fullscreenElement === this._wrap;
   }
 
   _showMicError(code) {
@@ -387,6 +401,12 @@ export class NetvueCameraCard extends HTMLElement {
     this._retry.addEventListener("click", () => this._retryClicked());
     this._toast = el("div", { class: "toast", role: "alert" }, wrap);
     this._history = el("div", { class: "history", hidden: "" }, wrap);
+    this._previousButton = el("button", { type: "button", class: "navigate previous" }, wrap);
+    this._previousButton.textContent = "‹";
+    this._previousButton.addEventListener("click", () => this._wall?._navigate(-1));
+    this._nextButton = el("button", { type: "button", class: "navigate next" }, wrap);
+    this._nextButton.textContent = "›";
+    this._nextButton.addEventListener("click", () => this._wall?._navigate(1));
     const bar = el("div", { class: "bar" }, wrap);
     this._status = el("div", { class: "status" }, bar);
     this._recordButton = el("button", { type: "button", class: "record" }, bar);
@@ -561,7 +581,14 @@ export class NetvueCameraCard extends HTMLElement {
     setIcon(this._muteButton, this._muted ? ICONS.muted : ICONS.speaker);
     this._muteButton.setAttribute("aria-label", this._muted ? t("unmute") : t("mute"));
     this._muteButton.setAttribute("aria-pressed", String(!this._muted));
-    const fullscreen = document.fullscreenElement === this._wrap;
+    const fullscreen = this._isFullscreen();
+    const navigation = fullscreen && this._wall && this._wall._cards.length > 1;
+    this._previousButton.hidden = !navigation;
+    this._nextButton.hidden = !navigation;
+    this._previousButton.setAttribute("aria-label", t("previousCamera"));
+    this._nextButton.setAttribute("aria-label", t("nextCamera"));
+    this._previousButton.title = t("previousCamera");
+    this._nextButton.title = t("nextCamera");
     const fullscreenLabel = fullscreen ? t("exitFullscreen") : t("fullscreen");
     const fullscreenSupported = this._fullscreenSupported();
     setIcon(this._fullscreenButton, ICONS.fullscreen);

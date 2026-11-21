@@ -2,6 +2,8 @@ const CAMERA_RE = /^camera\.[a-z0-9_]+$/;
 const STYLE = `
 :host { display: block; }
 .wall { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+.wall:fullscreen { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #000; }
+.wall:fullscreen > netvue-camera-card:not([wall-active]) { display: none; }
 `;
 
 export class NetvueCameraWallCard extends HTMLElement {
@@ -26,6 +28,8 @@ export class NetvueCameraWallCard extends HTMLElement {
     this._hass = null;
     this._cards = [];
     this._built = false;
+    this._activeCard = null;
+    this._onFullscreenChange = () => this._updateFullscreen();
   }
 
   setConfig(config) {
@@ -57,6 +61,41 @@ export class NetvueCameraWallCard extends HTMLElement {
 
   connectedCallback() {
     this._build();
+    document.addEventListener("fullscreenchange", this._onFullscreenChange);
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener("fullscreenchange", this._onFullscreenChange);
+  }
+
+  _isFullscreen() {
+    return this.shadowRoot.fullscreenElement === this._grid;
+  }
+
+  async _openFullscreen(card) {
+    this._activeCard = card;
+    await this._grid.requestFullscreen();
+  }
+
+  _navigate(direction) {
+    if (!this._isFullscreen() || this._cards.length < 2) {
+      return;
+    }
+    this._activeCard._releasePtt();
+    const index = this._cards.indexOf(this._activeCard);
+    this._activeCard = this._cards[(index + direction + this._cards.length) % this._cards.length];
+    this._updateFullscreen();
+  }
+
+  _updateFullscreen() {
+    const fullscreen = this._isFullscreen();
+    for (const card of this._cards) {
+      card.toggleAttribute("wall-active", fullscreen && card === this._activeCard);
+      card._render();
+    }
+    if (!fullscreen) {
+      this._activeCard = null;
+    }
   }
 
   _build() {
@@ -80,11 +119,17 @@ export class NetvueCameraWallCard extends HTMLElement {
     if (!this._built || !this._config) {
       return;
     }
+    const fullscreen = this._isFullscreen();
+    const activeEntity = this._activeCard?._config.entity;
+    if (fullscreen && this._activeCard) {
+      this._activeCard._releasePtt();
+    }
     while (this._grid.firstChild) {
       this._grid.removeChild(this._grid.firstChild);
     }
     this._cards = this._config.entities.map((entity) => {
       const card = document.createElement("netvue-camera-card");
+      card._wall = this;
       card.setConfig({ entity });
       if (this._hass) {
         card.hass = this._hass;
@@ -92,6 +137,10 @@ export class NetvueCameraWallCard extends HTMLElement {
       this._grid.appendChild(card);
       return card;
     });
+    if (fullscreen) {
+      this._activeCard = this._cards.find((card) => card._config.entity === activeEntity) || this._cards[0];
+      this._updateFullscreen();
+    }
   }
 }
 

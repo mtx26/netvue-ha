@@ -7,6 +7,7 @@ class FakeElement {
     this.children = [];
     this.attributes = new Map();
     this.listeners = new Map();
+    this.style = {};
   }
 
   appendChild(child) {
@@ -47,6 +48,14 @@ class FakeElement {
     this.attributes.set(name, String(value));
   }
 
+  toggleAttribute(name, force) {
+    if (force) {
+      this.setAttribute(name, "");
+    } else {
+      this.attributes.delete(name);
+    }
+  }
+
   attachShadow() {
     this.shadowRoot = new FakeElement("shadow-root");
     return this.shadowRoot;
@@ -68,19 +77,30 @@ class FakeDocument {
   }
 
   addEventListener(type, callback) {
-    this.listeners.set(type, callback);
+    this.listeners.set(type, [...(this.listeners.get(type) || []), callback]);
   }
 
-  removeEventListener(type) {
-    this.listeners.delete(type);
+  removeEventListener(type, callback) {
+    this.listeners.set(type, (this.listeners.get(type) || []).filter((item) => item !== callback));
   }
 
   dispatch(type) {
-    this.listeners.get(type)?.();
+    for (const callback of this.listeners.get(type) || []) {
+      callback();
+    }
   }
 
   async exitFullscreen() {
     this.fullscreenElement = null;
+    this.fullscreenRoot.fullscreenElement = null;
+    this.fullscreenRoot = null;
+    this.dispatch("fullscreenchange");
+  }
+
+  enterFullscreen(root, element, host) {
+    this.fullscreenRoot = root;
+    root.fullscreenElement = element;
+    this.fullscreenElement = host;
     this.dispatch("fullscreenchange");
   }
 }
@@ -117,13 +137,12 @@ function findByClass(node, className) {
   return null;
 }
 
-test("the full-screen button enters fullscreen and tracks browser exits", async () => {
+test("the full-screen button enters and exits across shadow DOM retargeting", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
   card._wrap.requestFullscreen = async () => {
-    document.fullscreenElement = card._wrap;
-    document.dispatch("fullscreenchange");
+    document.enterFullscreen(card.shadowRoot, card._wrap, card);
   };
   card._render();
   card.connectedCallback();
@@ -137,9 +156,16 @@ test("the full-screen button enters fullscreen and tracks browser exits", async 
   assert.equal(button.getAttribute("aria-pressed"), "true");
   assert.equal(button.getAttribute("aria-label"), "Exit full screen");
 
-  await document.exitFullscreen();
+  button.dispatch("click");
+  await Promise.resolve();
+  assert.equal(document.fullscreenElement, null);
   assert.equal(button.getAttribute("aria-pressed"), "false");
   assert.equal(button.getAttribute("aria-label"), "Open camera in full screen");
+
+  button.dispatch("click");
+  await Promise.resolve();
+  await document.exitFullscreen();
+  assert.equal(button.getAttribute("aria-pressed"), "false");
   card.disconnectedCallback();
 });
 
@@ -180,6 +206,73 @@ test("the camera wall creates one existing camera card per distinct entity", () 
     () => wall.setConfig({ entities: ["camera.front_door", "camera.front_door"] }),
     /distinct camera entities/,
   );
+  wall.disconnectedCallback();
+});
+
+test("wall fullscreen switches existing cameras, releases talk and restores the grid", async () => {
+  const WallCard = customElements.get("netvue-camera-wall-card");
+  const wall = new WallCard();
+  wall.setConfig({ entities: ["camera.entry", "camera.garage", "camera.garden"] });
+  wall.connectedCallback();
+  wall._grid.requestFullscreen = async () => {
+    document.enterFullscreen(wall.shadowRoot, wall._grid, wall);
+  };
+  for (const card of wall._cards) {
+    card.connectedCallback();
+  }
+
+  const [entry, garage, garden] = wall._cards;
+  assert.equal(entry._nextButton.hidden, true);
+  garage._fullscreenButton.dispatch("click");
+  await Promise.resolve();
+  assert.equal(garage.getAttribute("wall-active"), "");
+  assert.equal(garage._nextButton.hidden, false);
+  assert.equal(garage._previousButton.getAttribute("aria-label"), "Previous camera");
+
+  let releases = 0;
+  garage._ptt = { release: () => { releases++; } };
+  garage._nextButton.dispatch("click");
+  assert.equal(releases, 1);
+  assert.equal(garden.getAttribute("wall-active"), "");
+  assert.equal(garage.getAttribute("wall-active"), null);
+  assert.equal(garden._fullscreenButton.getAttribute("aria-label"), "Exit full screen");
+
+  garden._nextButton.dispatch("click");
+  assert.equal(entry.getAttribute("wall-active"), "");
+  entry._previousButton.dispatch("click");
+  assert.equal(garden.getAttribute("wall-active"), "");
+  garden._fullscreenButton.dispatch("click");
+  await Promise.resolve();
+  assert.equal(document.fullscreenElement, null);
+  assert.ok(wall._cards.every((card) => card.getAttribute("wall-active") === null));
+  assert.ok(wall._cards.every((card) => card._nextButton.hidden));
+  assert.deepEqual(wall._cards, [entry, garage, garden]);
+  garage._ptt = null;
+  for (const card of wall._cards) card.disconnectedCallback();
+  wall.disconnectedCallback();
+});
+
+test("wall fullscreen survives configuration changes and browser exit", async () => {
+  const WallCard = customElements.get("netvue-camera-wall-card");
+  const wall = new WallCard();
+  wall.setConfig({ entities: ["camera.entry", "camera.garage"] });
+  wall.connectedCallback();
+  wall._grid.requestFullscreen = async () => {
+    document.enterFullscreen(wall.shadowRoot, wall._grid, wall);
+  };
+  wall._cards.forEach((card) => card.connectedCallback());
+  wall._cards[1]._fullscreenButton.dispatch("click");
+  await Promise.resolve();
+
+  wall.setConfig({ entities: ["camera.garage", "camera.garden"] });
+  wall._cards.forEach((card) => card.connectedCallback());
+  assert.equal(wall._activeCard._config.entity, "camera.garage");
+  assert.equal(wall._activeCard.getAttribute("wall-active"), "");
+  await document.exitFullscreen();
+  assert.ok(wall._cards.every((card) => card.getAttribute("wall-active") === null));
+  assert.equal(wall._activeCard, null);
+  wall._cards.forEach((card) => card.disconnectedCallback());
+  wall.disconnectedCallback();
 });
 
 test("the status card summarizes availability and renders optional session details", () => {
