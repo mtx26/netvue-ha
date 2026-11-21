@@ -78,6 +78,14 @@ class FakeElement {
     this.focused = true;
   }
 
+  showModal() {
+    this.open = true;
+  }
+
+  close() {
+    this.open = false;
+  }
+
   play() {
     return Promise.resolve();
   }
@@ -242,12 +250,15 @@ test("settings open on the selected camera and save drawn zones without changing
   };
   card._settingsButton.dispatch("click");
   assert.equal(card._settingsPanel.hidden, false);
+  assert.equal(card._settingsPanel.tagName, "dialog");
+  assert.equal(card._settingsPanel.open, true);
   const editor = card._zoneEditor;
   assert.equal(editor.hasAttribute("zones-only"), true);
   editor.connectedCallback();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(editor._form.hidden, true);
   assert.equal(editor._preview.src, "/image");
+  assert.equal(editor._zoneEditor.querySelector("[data-zone-name]"), null);
   editor._resizeCanvas();
   editor._startZone({ clientX: 20, clientY: 20, pointerId: 1 });
   editor._finishZone({ clientX: 160, clientY: 80 });
@@ -260,6 +271,7 @@ test("settings open on the selected camera and save drawn zones without changing
   });
   card._settingsClose.dispatch("click");
   assert.equal(card._settingsPanel.hidden, true);
+  assert.equal(card._settingsPanel.open, false);
   assert.equal(card._zoneEditor, null);
 });
 
@@ -280,6 +292,38 @@ test("zone settings report a failed load without saving defaults", async () => {
   assert.deepEqual(methods, ["GET"]);
   assert.equal(editor._zoneEditor.querySelector("[data-zone-message]").textContent,
     "Unable to load settings.");
+});
+
+test("drawing replaces the single zone and clearing removes it", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const config = {
+    ai_enabled: true, ai_confidence: 0.45, ai_fps: 3, ai_confirmation_frames: 3,
+    ai_zones: { garden: [0, 0, 0.2, 0.2], entrance: [0.4, 0.4, 0.6, 0.6] },
+  };
+  const saved = [];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi(method, _path, body) {
+      if (method === "PUT") saved.push(body);
+      return method === "GET" ? config : body;
+    },
+  };
+  card._openSettings();
+  const editor = card._zoneEditor;
+  editor.connectedCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  editor._resizeCanvas();
+  for (const end of [{ clientX: 100, clientY: 50 }, { clientX: 160, clientY: 80 }]) {
+    editor._startZone({ clientX: 20, clientY: 20, pointerId: 1 });
+    editor._finishZone(end);
+  }
+  await editor._save();
+  assert.deepEqual(saved[0].ai_zones, { garden: [0.1, 0.2, 0.8, 0.8] });
+  editor._zoneEditor.querySelector("[data-clear-zone]").dispatch("click");
+  await editor._save();
+  assert.deepEqual(saved[1].ai_zones, {});
 });
 
 test("settings use the entry of each camera independently", async () => {
@@ -360,7 +404,8 @@ test("timeline seeks across recordings, reports gaps and follows a growing segme
   assert.equal(card._history, true);
   assert.equal(card._historyPanel.hidden, false);
   assert.ok(resolved.includes(`/api/netvue_local/playback/entry1/${second}?duration=60`));
-  assert.ok(resolved.includes(`/api/netvue_local/thumbnail/entry1/${second}?offset=59`));
+  assert.ok(resolved.every((path) => !path.includes("/thumbnail/")));
+  assert.equal(findByClass(card._historyPanel, "history-preview"), null);
   await card._historySeek(start + 300000);
   assert.ok(resolved.includes(`/api/netvue_local/playback/entry1/${first}?duration=600`));
   card._historyVideo.duration = 600;
@@ -750,6 +795,38 @@ test("the full-screen button is disabled when the browser lacks support", () => 
   const button = findByClass(card.shadowRoot, "fullscreen");
   assert.ok(button);
   assert.equal(button.disabled, true);
+  assert.equal(card._historyFullscreenButton.disabled, true);
+});
+
+test("history fullscreen includes the timeline and exits without closing history", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  card._wrap.requestFullscreen = async () => {
+    document.enterFullscreen(card.shadowRoot, card._wrap, card);
+  };
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi() { return { recordings: [] }; },
+    async callWS() {},
+  };
+  card.connectedCallback();
+  await card._openHistory();
+  assert.equal(card._historyVideo.getAttribute("controlslist"), "nofullscreen");
+
+  card._historyFullscreenButton.dispatch("click");
+  await Promise.resolve();
+  assert.equal(card.shadowRoot.fullscreenElement, card._wrap);
+  assert.ok(card._wrap.children.includes(card._historyPanel));
+  assert.equal(card._historyPanel.hidden, false);
+  assert.equal(card._historyFullscreenButton.getAttribute("aria-label"), "Exit full screen");
+
+  card._historyFullscreenButton.dispatch("click");
+  await Promise.resolve();
+  assert.equal(document.fullscreenElement, null);
+  assert.equal(card._history, true);
+  assert.equal(card._historyPanel.hidden, false);
+  card.disconnectedCallback();
 });
 
 test("the camera wall creates one existing camera card per distinct entity", () => {

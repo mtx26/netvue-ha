@@ -28,8 +28,11 @@ existants, puis exposer son état et ses événements dans Home Assistant.
 - Configuration IA : activation, seuil de confiance, cadence, confirmation
   et zones JSON disponibles directement lors de l'ajout manuel ou découverte
   de la caméra, puis modifiables dans les options de l'intégration.
-  La roue dentée de chaque carte caméra ouvre le dessin des zones ; l'interface
-  reste à valider dans Home Assistant réel.
+  La roue dentée de chaque carte caméra ouvre une grande fenêtre modale :
+  une seule zone rectangulaire, sans choix de catégorie, avec Effacer et
+  Enregistrer. Un nouveau dessin remplace le précédent. Pour les anciennes
+  configurations multi-zones, la première zone est affichée et seule cette
+  zone reste après enregistrement. L'interface reste à valider dans HA réel.
 - Roadmap et architecture mises à jour.
 - Correction du formulaire HA : le type `dict` brut provoquait une erreur
   HTTP 500 (`unable to serialize schema`) dans les paramètres. Les zones
@@ -44,6 +47,9 @@ existants, puis exposer son état et ses événements dans Home Assistant.
 
 ## Tests
 
+- Simplification du dessin : 68 tests frontend réussis. Vérification navigateur
+  synthétique : fenêtre de 701 px dans une vue de 730 px (carte de 320 px),
+  dessin et enregistrement d'un unique rectangle, puis fermeture vérifiés.
 - Tests unitaires du suivi IoU et des zones.
 - Régression synthétique multi-résolution, pixels, fermeture du lecteur et
   remise à zéro de la confirmation du suivi lors d'un changement de taille.

@@ -70,7 +70,7 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 .history-player[hidden] { display: none; }
 .history-player video { display: block; }
 .history-actions { position: absolute; top: 4px; right: 4px; z-index: 2; display: flex;
-  justify-content: flex-end; align-items: center; width: min(298px, calc(100% - 8px));
+  justify-content: flex-end; align-items: center; width: min(338px, calc(100% - 8px));
   border-radius: 24px; background: rgba(0,0,0,.75); line-height: 1.4; }
 .history-actions > button, .history-actions > a, .history-date { flex: 1 1 0; min-width: 0; max-width: 40px; }
 .history-actions > .history-live { flex: 0 0 58px; max-width: 58px; font: 600 11px sans-serif; }
@@ -142,8 +142,6 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
 .history-tick:last-child .history-tick-label { transform: translateX(-100%); text-align: right; }
 .history-tick-date { display: block; color: #aaa; font-size: 10px; }
 .history-message { min-height: 1.4em; font-size: 13px; }
-.history-preview { display: block; max-width: 160px; max-height: 90px; margin-bottom: 4px; }
-.history-preview[hidden] { display: none; }
 .bar button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round; }
 .navigate { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1;
@@ -159,8 +157,10 @@ button[disabled] { color: rgba(255,255,255,.65); cursor: default; }
 .bar .ptt[aria-pressed="true"] { background: var(--error-color, #db4437); }
 .toast { position: absolute; left: 8px; right: 8px; top: 8px; padding: 8px 12px; border-radius: 8px;
   color: #fff; background: rgba(176,0,32,.9); line-height: 1.4; font-size: 14px; }
-.settings-panel { position: absolute; inset: 0; z-index: 4; overflow: auto; padding: 12px;
+.settings-panel { box-sizing: border-box; width: 96vw; max-width: 1400px; max-height: 94dvh;
+  margin: auto; overflow: auto; padding: 16px; border: 0; border-radius: 12px;
   background: var(--card-background-color, #222); color: var(--primary-text-color, #fff); line-height: 1.4; }
+.settings-panel::backdrop { background: rgba(0,0,0,.75); }
 .settings-panel[hidden] { display: none; }
 .settings-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .settings-header button { color: inherit; background: transparent; border-color: currentColor; }
@@ -541,7 +541,9 @@ export class NetvueCameraCard extends HTMLElement {
     const video = (this._video = el("video", { playsinline: "", autoplay: "" }, wrap));
     video.muted = true;
     this._historyPlayer = el("div", { class: "history-player", hidden: "" }, wrap);
-    this._historyVideo = el("video", { playsinline: "", controls: "", hidden: "" }, this._historyPlayer);
+    this._historyVideo = el("video", {
+      playsinline: "", controls: "", controlslist: "nofullscreen", hidden: "",
+    }, this._historyPlayer);
     this._historyVideo.addEventListener("loadedmetadata", () => this._historyMetadata());
     this._historyVideo.addEventListener("timeupdate", () => this._historyTimeUpdate());
     this._historyVideo.addEventListener("ended", () => this._historyEnded());
@@ -593,6 +595,8 @@ export class NetvueCameraCard extends HTMLElement {
     });
     this._historyDownload = el("a", { download: "netvue-recording.mp4", hidden: "" }, historyActions);
     setIcon(this._historyDownload, ICONS.download);
+    this._historyFullscreenButton = el("button", { type: "button", class: "history-fullscreen" }, historyActions);
+    this._historyFullscreenButton.addEventListener("click", () => this._toggleFullscreen());
     this._overlay = el("div", { class: "overlay" }, wrap);
     this._overlayText = el("div", {}, this._overlay);
     this._retry = el("button", { type: "button" }, this._overlay);
@@ -628,11 +632,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._fullscreenButton = el("button", { type: "button", class: "fullscreen" }, bar);
     this._fullscreenButton.addEventListener("click", () => this._toggleFullscreen());
     this._historyPanel = el("div", { class: "history-panel", hidden: "" }, wrap);
-    this._historyPreview = el("img", { class: "history-preview", hidden: "" }, this._historyPanel);
-    this._historyPreview.addEventListener("error", () => {
-      this._historyPreview.hidden = true;
-      if (this._history) this._historyMessage.textContent = this._t("historyPreviewError");
-    });
     this._historyTicks = el("div", { class: "history-ticks", "aria-hidden": "true" }, this._historyPanel);
     this._historyTickLabels = [];
     for (let index = 0; index < 5; index++) {
@@ -660,13 +659,17 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyPosition = el("div", { class: "history-position", hidden: "", "aria-hidden": "true" }, this._historyPanel);
     this._historyPositionLabel = el("span", { class: "history-position-label" }, this._historyPosition);
     this._historyMessage = el("div", { class: "history-message", role: "status" }, this._historyPanel);
-    this._settingsPanel = el("div", {
-      class: "settings-panel", hidden: "", role: "region",
+    this._settingsPanel = el("dialog", {
+      class: "settings-panel", hidden: "",
     }, wrap);
     const settingsHeader = el("div", { class: "settings-header" }, this._settingsPanel);
     this._settingsTitle = el("strong", {}, settingsHeader);
     this._settingsClose = el("button", { type: "button" }, settingsHeader);
     this._settingsClose.addEventListener("click", () => this._closeSettings());
+    this._settingsPanel.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      this._closeSettings();
+    });
     this._settingsPanel.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         this._closeSettings();
@@ -741,16 +744,19 @@ export class NetvueCameraCard extends HTMLElement {
     this._zoneEditor = editor;
     this._settingsPanel.appendChild(editor);
     this._settingsPanel.hidden = false;
+    this._settingsPanel.showModal();
     this._settingsClose.focus();
   }
 
   _closeSettings() {
     if (!this._settingsPanel) return;
+    if (this._settingsPanel.open) this._settingsPanel.close();
     this._settingsPanel.hidden = true;
     if (this._zoneEditor) {
       this._settingsPanel.removeChild(this._zoneEditor);
       this._zoneEditor = null;
     }
+    this._settingsButton.focus();
   }
 
   _recordingState() {
@@ -936,8 +942,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyVideo.pause();
     this._historySegment = null;
     this._historyPendingSeek = null;
-    this._historyPreview.hidden = true;
-    this._historyPreview.removeAttribute("src");
     this._historyCursor = time;
     if (time < Number(this._historyRange.min) || time > Number(this._historyRange.max)) {
       this._setHistoryWindow(time);
@@ -963,7 +967,6 @@ export class NetvueCameraCard extends HTMLElement {
       this._historyVideo.removeAttribute("src");
       this._historyVideo.load();
       this._historyDownload.hidden = true;
-      this._historyPreview.hidden = true;
       this._historyMessage.textContent = this._t("historyGap");
       return;
     }
@@ -971,25 +974,15 @@ export class NetvueCameraCard extends HTMLElement {
     try {
       const duration = Math.floor(segment.end - segment.start) / 1000;
       const base = `${encodeURIComponent(entryId)}/${segment.id}`;
-      const offset = Math.floor((time - segment.start) / 1000);
-      const [media, preview] = await Promise.all([
-        this._hass.callWS({
-          type: "auth/sign_path",
-          path: `/api/netvue_local/playback/${base}?duration=${duration}`,
-          expires: 86400,
-        }),
-        this._hass.callWS({
-          type: "auth/sign_path",
-          path: `/api/netvue_local/thumbnail/${base}?offset=${offset}`,
-          expires: 86400,
-        }),
-      ]);
+      const media = await this._hass.callWS({
+        type: "auth/sign_path",
+        path: `/api/netvue_local/playback/${base}?duration=${duration}`,
+        expires: 86400,
+      });
       if (!this._history || generation !== this._historyGeneration) return;
       this._historySegment = segment;
       this._historyPendingSeek = { generation, offset: (time - segment.start) / 1000 };
       this._historyVideo.src = media.path;
-      this._historyPreview.src = preview.path;
-      this._historyPreview.hidden = false;
       this._historyVideo.muted = this._muted;
       this._historyVideo.volume = this._volume;
       this._historyDownload.href = media.path;
@@ -1092,7 +1085,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyDatePicker.open = false;
     this._historyPanel.hidden = true;
     this._historyDownload.hidden = true;
-    this._historyPreview.hidden = true;
     this._wrap.removeAttribute("data-history");
     this._video.hidden = false;
     if (resume && this._connected) {
@@ -1153,16 +1145,13 @@ export class NetvueCameraCard extends HTMLElement {
     this._nextButton.title = t("nextCamera");
     const fullscreenLabel = fullscreen ? t("exitFullscreen") : t("fullscreen");
     const fullscreenSupported = this._fullscreenSupported();
-    setIcon(this._fullscreenButton, fullscreen ? ICONS.exitFullscreen : ICONS.fullscreen);
-    this._fullscreenButton.disabled = !fullscreenSupported;
-    this._fullscreenButton.setAttribute(
-      "aria-label",
-      fullscreenSupported ? fullscreenLabel : t("fullscreenUnsupported"),
-    );
-    this._fullscreenButton.setAttribute("aria-pressed", String(fullscreen));
-    this._fullscreenButton.title = fullscreenSupported
-      ? fullscreenLabel
-      : t("fullscreenUnsupported");
+    for (const button of [this._fullscreenButton, this._historyFullscreenButton]) {
+      setIcon(button, fullscreen ? ICONS.exitFullscreen : ICONS.fullscreen);
+      button.disabled = !fullscreenSupported;
+      button.setAttribute("aria-label", fullscreenSupported ? fullscreenLabel : t("fullscreenUnsupported"));
+      button.setAttribute("aria-pressed", String(fullscreen));
+      button.title = button.getAttribute("aria-label");
+    }
     setIcon(this._pttButton, ICONS.mic);
     const available = state === "live" && ptt.ready;
     this._pttButton.disabled = !available && !ptt.pressed;
@@ -1217,7 +1206,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyDateLabel.textContent = t("historyDate");
     this._historyDate.setAttribute("aria-label", t("historyDate"));
     this._historyRange.setAttribute("aria-label", t("historyTimeline"));
-    this._historyPreview.setAttribute("alt", t("historyPreview"));
     const name = this._config && (this._config.name || this._entityState()?.attributes?.friendly_name);
     this._video.setAttribute("aria-label", name || "");
   }
