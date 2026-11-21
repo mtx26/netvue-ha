@@ -40,6 +40,26 @@ class SessionStatus(NamedTuple):
     connection_port: int | None = None
 
 
+class RecordingStatus(NamedTuple):
+    manual: bool
+    continuous: bool
+    active: bool
+    error: str | None = None
+
+
+def _recording_status(data) -> RecordingStatus:
+    if not isinstance(data, dict):
+        raise BridgeError("Bridge returned invalid recording status")
+    if type(data.get("manual")) is not bool or type(data.get("continuous")) is not bool:
+        raise BridgeError("Bridge returned invalid recording status")
+    if type(data.get("active")) is not bool:
+        raise BridgeError("Bridge returned invalid recording status")
+    error = data.get("error")
+    if error is not None and not isinstance(error, str):
+        raise BridgeError("Bridge returned invalid recording status")
+    return RecordingStatus(data["manual"], data["continuous"], data["active"], error)
+
+
 def _camera_metadata(data) -> CameraMetadata | None:
     """Ignore unknown/invalid optional fields without rejecting an older bridge."""
     if not isinstance(data, dict):
@@ -205,6 +225,59 @@ class ManagedCamera:
                         return await _camera_response(response, self.host, self.stream_name)
             except (ClientError, TimeoutError) as exc:
                 raise BridgeError("Cannot reach the local bridge manager") from exc
+
+    async def async_recording_status(self) -> RecordingStatus:
+        session = async_get_clientsession(self.hass)
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                async with session.get(
+                    f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording"
+                ) as response:
+                    if response.status != 200:
+                        raise BridgeError(f"Bridge returned HTTP {response.status}")
+                    try:
+                        data = await response.json()
+                    except (ValueError, ClientError) as exc:
+                        raise BridgeError("Bridge returned invalid recording JSON") from exc
+                    return _recording_status(data)
+        except (ClientError, TimeoutError) as exc:
+            raise BridgeError("Cannot reach the local bridge manager") from exc
+
+    async def async_set_recording(self, enabled: bool) -> RecordingStatus:
+        session = async_get_clientsession(self.hass)
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                async with session.post(
+                    f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording/"
+                    + ("start" if enabled else "stop")
+                ) as response:
+                    if response.status != 200:
+                        raise BridgeError(f"Bridge returned HTTP {response.status}")
+                    try:
+                        data = await response.json()
+                    except (ValueError, ClientError) as exc:
+                        raise BridgeError("Bridge returned invalid recording JSON") from exc
+                    return _recording_status(data)
+        except (ClientError, TimeoutError) as exc:
+            raise BridgeError("Cannot reach the local bridge manager") from exc
+
+    async def async_set_continuous_recording(self, enabled: bool) -> RecordingStatus:
+        session = async_get_clientsession(self.hass)
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                async with session.put(
+                    f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording/continuous",
+                    json={"enabled": enabled},
+                ) as response:
+                    if response.status != 200:
+                        raise BridgeError(f"Bridge returned HTTP {response.status}")
+                    try:
+                        data = await response.json()
+                    except (ValueError, ClientError) as exc:
+                        raise BridgeError("Bridge returned invalid recording JSON") from exc
+                    return _recording_status(data)
+        except (ClientError, TimeoutError) as exc:
+            raise BridgeError("Cannot reach the local bridge manager") from exc
 
 
 async def async_stop_camera(hass: HomeAssistant, host: str) -> None:

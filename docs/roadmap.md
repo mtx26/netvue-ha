@@ -42,10 +42,10 @@ fiable, performante, modulaire et simple à installer.
 | État | Fonctionnalité | Objectif |
 |---|---|---|
 | ⬜ | Mesures de capacité | Débit, stockage et ressources |
-| ⬜ | Enregistrement continu | Enregistrer les vidéos |
-| ⬜ | Rétention | Gérer automatiquement l'espace disque |
-| ⬜ | Historique | Consulter les enregistrements |
-| ⬜ | Exportation | Télécharger des extraits |
+| 🧪 | Enregistrement manuel et continu | Contrôle Go/HA, fMP4 MediaMTX et réglages persistants implémentés ; validation réelle nécessaire |
+| 🧪 | Rétention | Rétention temporelle, limite globale et volume persistant configurés ; validation synthétique nécessaire |
+| 🧪 | Historique | Liste, filtrage, lecture/export et suppression via API locale implémentés ; interface HA et E2E à valider |
+| 🧪 | Exportation | Téléchargement MP4 via MediaMTX et proxy HA authentifié implémenté ; validation réelle nécessaire |
 | ⬜ | Captures | Enregistrer des images |
 
 ## 4. Détection et statistiques

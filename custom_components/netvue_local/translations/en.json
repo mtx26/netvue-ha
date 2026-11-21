@@ -81,10 +81,23 @@
           "session_failed": "Session failed",
           "session_unknown": "Session status unknown"
         }
+      },
+      "recording": {
+        "name": "Recording",
+        "state": {
+          "inactive": "Inactive",
+          "manual": "Manual",
+          "continuous": "Continuous"
+        }
       }
     },
     "button": {
-      "restart_session": {"name": "Restart session"}
+      "restart_session": {"name": "Restart session"},
+      "start_recording": {"name": "Start recording"},
+      "stop_recording": {"name": "Stop recording"}
+    },
+    "switch": {
+      "continuous_recording": {"name": "Continuous recording"}
     }
   }
 }

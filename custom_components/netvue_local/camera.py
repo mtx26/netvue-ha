@@ -73,9 +73,17 @@ class NetvueCamera(NetvueEntity, Camera):
         self._url = url
         self._entry = entry
         self._host = entry.options.get(CONF_HOST, entry.data.get(CONF_HOST))
+        self._entry_id = entry.entry_id
         self._netvue_provider = None
         self._remove_provider = None
         self.stream_options[CONF_RTSP_TRANSPORT] = "tcp"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        return {
+            "netvue_entry_id": self._entry_id,
+            "netvue_host": self._host,
+        }
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

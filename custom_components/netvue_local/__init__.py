@@ -2,10 +2,13 @@
 
 import asyncio
 import logging
+from urllib.parse import quote
 
 from pathlib import Path
 
+from aiohttp import ClientError, web
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -13,15 +16,22 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .bridge_api import BridgeError, async_stop_camera
+from .bridge_api import API_URL, BridgeError, async_stop_camera
 from .const import CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL, DOMAIN
 from .coordinator import NetvueCoordinator
 from .rtsp import stream_url_from_name
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR, Platform.BUTTON]
+PLATFORMS = [
+    Platform.CAMERA,
+    Platform.BINARY_SENSOR,
+    Platform.SENSOR,
+    Platform.BUTTON,
+    Platform.SWITCH,
+]
 
 FRONTEND_URL = "/netvue_local/frontend"
 CARD_MODULE = "netvue-camera-card.js"
@@ -29,6 +39,169 @@ _FRONTEND_DIR = Path(__file__).parent / "frontend"
 _STATIC_PATH_KEY = f"{DOMAIN}_frontend_static_path_registered"
 _FRONTEND_MODULE_REQUESTED_KEY = f"{DOMAIN}_frontend_module_requested"
 _FRONTEND_MODULE_REGISTERED_KEY = f"{DOMAIN}_frontend_module_registered"
+
+
+def _recording_entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain != DOMAIN or not hasattr(entry, "runtime_data"):
+        return None
+    return entry
+
+
+class NetvueRecordingListView(HomeAssistantView):
+    url = "/api/netvue_local/recordings/{entry_id}"
+    name = "api:netvue_local:recordings"
+    requires_auth = True
+
+    async def post(self, request, entry_id):
+        hass = request.app["hass"]
+        entry = _recording_entry(hass, entry_id)
+        if entry is None:
+            return web.json_response({"error": "camera not found"}, status=404)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid request"}, status=400)
+        enabled = body.get("enabled")
+        if type(enabled) is not bool:
+            return web.json_response({"error": "invalid request"}, status=400)
+        host = entry.runtime_data.camera.host
+        session = async_get_clientsession(hass)
+        mode = "start" if enabled else "stop"
+        try:
+            async with session.post(
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recording/{mode}",
+                timeout=5,
+            ) as response:
+                data = await response.json()
+                return web.json_response(data, status=response.status)
+        except (ClientError, TimeoutError):
+            return web.json_response(
+                {"error": "recording service unavailable"}, status=502
+            )
+
+    async def put(self, request, entry_id):
+        hass = request.app["hass"]
+        entry = _recording_entry(hass, entry_id)
+        if entry is None:
+            return web.json_response({"error": "camera not found"}, status=404)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid request"}, status=400)
+        enabled = body.get("enabled")
+        if type(enabled) is not bool:
+            return web.json_response({"error": "invalid request"}, status=400)
+        host = entry.runtime_data.camera.host
+        session = async_get_clientsession(hass)
+        try:
+            async with session.put(
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recording/continuous",
+                json={"enabled": enabled},
+                timeout=5,
+            ) as response:
+                data = await response.json()
+                return web.json_response(data, status=response.status)
+        except (ClientError, TimeoutError):
+            return web.json_response(
+                {"error": "recording service unavailable"}, status=502
+            )
+
+    async def get(self, request, entry_id):
+        hass = request.app["hass"]
+        entry = _recording_entry(hass, entry_id)
+        if entry is None:
+            return web.json_response({"error": "camera not found"}, status=404)
+        host = entry.runtime_data.camera.host
+        params = {}
+        if request.query.get("start"):
+            params["start"] = request.query["start"]
+        if request.query.get("end"):
+            params["end"] = request.query["end"]
+        session = async_get_clientsession(hass)
+        try:
+            async with session.get(
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recordings",
+                params=params,
+                timeout=5,
+            ) as response:
+                data = await response.json()
+                return web.json_response(data, status=response.status)
+        except (ClientError, TimeoutError):
+            return web.json_response(
+                {"error": "recording service unavailable"}, status=502
+            )
+
+
+class NetvueRecordingDeleteView(HomeAssistantView):
+    url = "/api/netvue_local/recordings/{entry_id}/{recording_id}"
+    name = "api:netvue_local:recording_delete"
+    requires_auth = True
+
+    async def get(self, request, entry_id, recording_id):
+        hass = request.app["hass"]
+        entry = _recording_entry(hass, entry_id)
+        if entry is None:
+            return web.json_response({"error": "camera not found"}, status=404)
+        host = entry.runtime_data.camera.host
+        session = async_get_clientsession(hass)
+        try:
+            upstream = session.get(
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
+                f"{quote(recording_id, safe='')}/download",
+                timeout=None,
+            )
+            response = await upstream.__aenter__()
+        except (ClientError, TimeoutError):
+            return web.json_response(
+                {"error": "recording service unavailable"}, status=502
+            )
+        if response.status != 200:
+            data = await response.read()
+            await upstream.__aexit__(None, None, None)
+            return web.Response(
+                body=data,
+                status=response.status,
+                content_type=response.headers.get("Content-Type", "application/json"),
+            )
+        output = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Disposition": response.headers.get(
+                    "Content-Disposition",
+                    f'attachment; filename="netvue-{recording_id}.mp4"',
+                ),
+                "Content-Type": response.headers.get("Content-Type", "video/mp4"),
+            },
+        )
+        await output.prepare(request)
+        try:
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                await output.write(chunk)
+            await output.write_eof()
+        finally:
+            await upstream.__aexit__(None, None, None)
+        return output
+
+    async def delete(self, request, entry_id, recording_id):
+        hass = request.app["hass"]
+        entry = _recording_entry(hass, entry_id)
+        if entry is None:
+            return web.json_response({"error": "camera not found"}, status=404)
+        host = entry.runtime_data.camera.host
+        session = async_get_clientsession(hass)
+        try:
+            async with session.delete(
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
+                f"{quote(recording_id, safe='')}",
+                timeout=5,
+            ) as response:
+                data = await response.json()
+                return web.json_response(data, status=response.status)
+        except (ClientError, TimeoutError):
+            return web.json_response(
+                {"error": "recording service unavailable"}, status=502
+            )
 
 
 async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None:
@@ -44,6 +217,8 @@ async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the Netvue Lovelace card once per Home Assistant instance."""
+    hass.http.register_view(NetvueRecordingListView())
+    hass.http.register_view(NetvueRecordingDeleteView())
     if not hass.data.get(_STATIC_PATH_KEY):
         version = (await async_get_integration(hass, DOMAIN)).version
         await hass.http.async_register_static_paths(

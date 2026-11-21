@@ -31,6 +31,7 @@ async def async_setup_entry(
     async_add_entities([
         NetvueSessionSensor(entry, entry.runtime_data),
         NetvueDiagnosticSensor(entry, entry.runtime_data),
+        NetvueRecordingSensor(entry, entry.runtime_data),
     ])
 
 
@@ -136,3 +137,45 @@ def _diagnostic_state(data: CameraData) -> str:
     if not data.rtsp_available:
         return "stream_unavailable"
     return "healthy"
+
+
+class NetvueRecordingSensor(NetvueEntity, SensorEntity):
+    _attr_has_entity_name = True
+    _attr_translation_key = "recording"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_options = ["inactive", "manual", "continuous"]
+
+    def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_recording"
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data
+        return super().available and data is not None and data.recording is not None
+
+    @property
+    def native_value(self) -> str:
+        data = self.coordinator.data
+        if not data or not data.recording:
+            return "inactive"
+        if data.recording.manual:
+            return "manual"
+        if data.recording.continuous:
+            return "continuous"
+        return "inactive"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        if not data or not data.recording:
+            return {}
+        return {
+            "netvue_entry_id": self.coordinator._entry.entry_id,
+            "netvue_host": self.coordinator.camera.host,
+            "active": data.recording.active,
+            "manual": data.recording.manual,
+            "continuous": data.recording.continuous,
+            "error": data.recording.error,
+        }

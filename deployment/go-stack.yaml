@@ -21,12 +21,26 @@ services:
       MTX_WEBRTC: "false"
       MTX_SRT: "false"
       MTX_MOQ: "false"
-      MTX_API: "false"
+      MTX_API: "true"
+      MTX_APIADDRESS: "127.0.0.1:9997"
       MTX_METRICS: "false"
       MTX_PPROF: "false"
-      MTX_PLAYBACK: "false"
+      MTX_PLAYBACK: "true"
+      MTX_PLAYBACKADDRESS: "127.0.0.1:9996"
       MTX_PATHDEFAULTS_RECORD: "false"
+      MTX_PATHDEFAULTS_RECORDFORMAT: "fmp4"
+      MTX_PATHDEFAULTS_RECORDPATH: "/recordings/%path/%Y-%m-%d_%H-%M-%S-%f"
+      MTX_PATHDEFAULTS_RECORDPARTDURATION: "1s"
+      MTX_PATHDEFAULTS_RECORDSEGMENTDURATION: "10m"
+      MTX_PATHDEFAULTS_RECORDMAXPARTSIZE: "50M"
+      MTX_PATHDEFAULTS_RECORDDELETEAFTER: "0s"
       MTX_PATHDEFAULTS_OVERRIDEPUBLISHER: "false"
+    volumes:
+      - type: bind
+        source: ${NETVUE_RECORDINGS_DIR:?set the persistent recordings directory}
+        target: /recordings
+        bind:
+          create_host_path: true
     stop_grace_period: 15s
     deploy:
       replicas: 1
@@ -62,6 +76,15 @@ services:
     environment:
       NETVUE_CLOUDFLARE_TURN_KEY_ID: "${NETVUE_CLOUDFLARE_TURN_KEY_ID:-}"
       NETVUE_CLOUDFLARE_TURN_API_TOKEN: "${NETVUE_CLOUDFLARE_TURN_API_TOKEN:-}"
+      NETVUE_RECORDINGS_DIR: "/recordings"
+      NETVUE_RECORDING_RETENTION: "${NETVUE_RECORDING_RETENTION:-168h}"
+      NETVUE_RECORDING_LIMIT_BYTES: "${NETVUE_RECORDING_LIMIT_BYTES:-0}"
+    volumes:
+      - type: bind
+        source: ${NETVUE_RECORDINGS_DIR:?set the persistent recordings directory}
+        target: /recordings
+        bind:
+          create_host_path: true
     stop_signal: SIGTERM
     stop_grace_period: 30s
     deploy:

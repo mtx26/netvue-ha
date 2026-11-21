@@ -81,10 +81,23 @@
           "session_failed": "Échec de la session",
           "session_unknown": "État de session inconnu"
         }
+      },
+      "recording": {
+        "name": "Enregistrement",
+        "state": {
+          "inactive": "Inactif",
+          "manual": "Manuel",
+          "continuous": "Continu"
+        }
       }
     },
     "button": {
-      "restart_session": {"name": "Redémarrer la session"}
+      "restart_session": {"name": "Redémarrer la session"},
+      "start_recording": {"name": "Démarrer l'enregistrement"},
+      "stop_recording": {"name": "Arrêter l'enregistrement"}
+    },
+    "switch": {
+      "continuous_recording": {"name": "Enregistrement continu"}
     }
   }
 }

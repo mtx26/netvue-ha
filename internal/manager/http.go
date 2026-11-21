@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -28,6 +29,13 @@ func (manager *Manager) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cameras/{host}/start", manager.handleStartCamera)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/stop", manager.handleStopCamera)
 	mux.HandleFunc("DELETE /api/v1/cameras/{host}", manager.handleDeleteCamera)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/recording", manager.handleRecordingStatus)
+	mux.HandleFunc("POST /api/v1/cameras/{host}/recording/start", manager.handleRecordingStart)
+	mux.HandleFunc("POST /api/v1/cameras/{host}/recording/stop", manager.handleRecordingStop)
+	mux.HandleFunc("PUT /api/v1/cameras/{host}/recording/continuous", manager.handleRecordingContinuous)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings", manager.handleRecordingsList)
+	mux.HandleFunc("GET /api/v1/cameras/{host}/recordings/{id}/download", manager.handleRecordingDownload)
+	mux.HandleFunc("DELETE /api/v1/cameras/{host}/recordings/{id}", manager.handleRecordingDelete)
 	mux.HandleFunc("GET /api/v1/webrtc/ice", manager.handleWebRTCICE)
 	mux.HandleFunc("PUT /api/v1/cameras/{host}/webrtc/{session_id}", manager.handleWebRTCOffer)
 	mux.HandleFunc("POST /api/v1/cameras/{host}/webrtc/{session_id}/candidates", manager.handleWebRTCCandidate)
@@ -145,6 +153,164 @@ func (manager *Manager) handleDeleteCamera(w http.ResponseWriter, r *http.Reques
 	}
 	if !deleted {
 		writeAPIError(w, http.StatusNotFound, ErrCameraNotFound.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+type continuousRecordingRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (manager *Manager) recordingCamera(w http.ResponseWriter, r *http.Request) (*Camera, bool) {
+	host, err := normalizeCameraHost(r.PathValue("host"))
+	if err != nil {
+		writeManagerError(w, err)
+		return nil, false
+	}
+	camera, found := manager.Camera(host)
+	if !found {
+		writeAPIError(w, http.StatusNotFound, ErrCameraNotFound.Error())
+		return nil, false
+	}
+	return &camera, true
+}
+
+func (manager *Manager) handleRecordingStatus(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, manager.recordings.status(camera.StreamName))
+}
+
+func (manager *Manager) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	status, err := manager.recordings.setMode(camera.StreamName, "manual", true)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (manager *Manager) handleRecordingStop(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	status, err := manager.recordings.setMode(camera.StreamName, "manual", false)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (manager *Manager) handleRecordingContinuous(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	var request continuousRecordingRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid recording request")
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, "request must contain one JSON object")
+		return
+	}
+	status, err := manager.recordings.setMode(camera.StreamName, "continuous", request.Enabled)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (manager *Manager) handleRecordingsList(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	var start, end time.Time
+	if value := r.URL.Query().Get("start"); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid start time")
+			return
+		}
+		start = parsed
+	}
+	if value := r.URL.Query().Get("end"); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid end time")
+			return
+		}
+		end = parsed
+	}
+	if !end.IsZero() && !start.IsZero() && end.Before(start) {
+		writeAPIError(w, http.StatusBadRequest, "end time precedes start time")
+		return
+	}
+	segments, err := manager.recordings.list(camera.StreamName, start, end)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"recordings": segments})
+}
+
+func (manager *Manager) handleRecordingDownload(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	segment, found, err := manager.recordings.findSegment(camera.StreamName, r.PathValue("id"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !found {
+		writeAPIError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	playback, err := manager.recordings.playbackRequest(camera.StreamName, segment)
+	if err == nil {
+		defer playback.Body.Close()
+		if playback.StatusCode == http.StatusOK {
+			w.Header().Set("Content-Type", playback.Header.Get("Content-Type"))
+			w.Header().Set("Content-Disposition",
+				fmt.Sprintf(`attachment; filename="netvue-%s-%s.mp4"`,
+					camera.StreamName, segment.Start.UTC().Format("20060102T150405Z")))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.Copy(w, playback.Body)
+			return
+		}
+		err = fmt.Errorf("MediaMTX playback returned HTTP %d", playback.StatusCode)
+	}
+	writeAPIError(w, http.StatusBadGateway, err.Error())
+}
+
+func (manager *Manager) handleRecordingDelete(w http.ResponseWriter, r *http.Request) {
+	camera, ok := manager.recordingCamera(w, r)
+	if !ok {
+		return
+	}
+	if err := manager.recordings.deleteSegment(camera.StreamName, r.PathValue("id")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeAPIError(w, http.StatusNotFound, "recording not found")
+			return
+		}
+		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})

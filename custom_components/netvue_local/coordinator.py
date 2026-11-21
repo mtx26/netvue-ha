@@ -10,7 +10,13 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
-from .bridge_api import BridgeError, CameraMetadata, ManagedCamera, SessionStatus
+from .bridge_api import (
+    BridgeError,
+    CameraMetadata,
+    ManagedCamera,
+    RecordingStatus,
+    SessionStatus,
+)
 from .const import CONF_STREAM_URL, DOMAIN, UPDATE_INTERVAL
 from .rtsp import async_probe_stream
 
@@ -21,6 +27,7 @@ class CameraData(NamedTuple):
     session: SessionStatus | None
     rtsp_available: bool
     manager_error: str | None = None
+    recording: RecordingStatus | None = None
 
 
 class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
@@ -62,14 +69,27 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
     async def _async_update_data(self) -> CameraData:
         session = None
         manager_error = None
+        recording = None
         try:
             session = await self.camera.async_reconcile()
         except BridgeError as exc:
             manager_error = str(exc)
             _LOGGER.warning("Unable to reconcile the bridge camera: %s", exc)
+        if session is not None:
+            try:
+                recording = await self.camera.async_recording_status()
+            except BridgeError as exc:
+                if manager_error is None:
+                    manager_error = str(exc)
+                _LOGGER.warning("Unable to read bridge recording status: %s", exc)
         if session is not None and session.metadata is not None:
             self._update_device_metadata(session.metadata)
-        return CameraData(session, await async_probe_stream(self.url), manager_error)
+        return CameraData(
+            session,
+            await async_probe_stream(self.url),
+            manager_error,
+            recording,
+        )
 
 
 class NetvueEntity(CoordinatorEntity[NetvueCoordinator]):

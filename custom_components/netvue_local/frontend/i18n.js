@@ -47,6 +47,10 @@ const STRINGS = {
     srv_failed: "Talking failed",
     srv_timeout: "Maximum talking time reached",
     srv_unsupported: "This camera does not support talking",
+    recordingError: "Recording operation failed",
+    startRecording: "Start recording",
+    stopRecording: "Stop recording",
+    recordingHistory: "Recording history",
   },
   fr: {
     connecting: "Connexion…",
@@ -96,6 +100,10 @@ const STRINGS = {
     srv_failed: "Échec de la prise de parole",
     srv_timeout: "Durée maximale de parole atteinte",
     srv_unsupported: "Cette caméra ne gère pas la parole",
+    recordingError: "Échec de l'opération d'enregistrement",
+    startRecording: "Démarrer l'enregistrement",
+    stopRecording: "Arrêter l'enregistrement",
+    recordingHistory: "Historique des enregistrements",
   },
 };
 

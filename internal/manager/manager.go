@@ -72,6 +72,7 @@ type Manager struct {
 	closeOnce     sync.Once
 	closeComplete chan struct{}
 	wg            sync.WaitGroup
+	recordings    *recordingManager
 }
 
 func New(ctx context.Context, source string) (*Manager, error) {
@@ -113,7 +114,7 @@ func newManager(
 	source = sourceIP.To4().String()
 
 	managerCtx, cancel := context.WithCancel(ctx)
-	return &Manager{
+	manager := &Manager{
 		ctx:           managerCtx,
 		cancel:        cancel,
 		source:        source,
@@ -126,7 +127,9 @@ func newManager(
 		adapters:      make(map[string]*webRTCVideoAdapter),
 		tombstones:    make(map[string]time.Time),
 		closeComplete: make(chan struct{}),
-	}, nil
+	}
+	manager.recordings = newRecordingManager(managerCtx)
+	return manager, nil
 }
 
 // AddCamera registers a camera. added is false for an existing identical camera.
@@ -169,6 +172,9 @@ func (manager *Manager) AddCamera(host, streamName string) (Camera, bool, error)
 	}
 	manager.cameras[host] = session
 	manager.startLocked(session)
+	if manager.recordings != nil {
+		_ = manager.recordings.apply(streamName)
+	}
 	return session.Camera, true, nil
 }
 

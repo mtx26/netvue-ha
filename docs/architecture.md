@@ -76,6 +76,19 @@ workers ; les candidats sont limités à l'IPv4 source configurée. Les callback
 RTSP audio et vidéo sont configurés séparément avant la lecture, en conservant
 le même cycle de vie que le pair.
 
+## Enregistrement local
+
+MediaMTX réalise l'enregistrement fMP4 directement depuis le flux RTSP publié
+par Go, sans seconde connexion à la caméra ni transcodage. Les chemins sont
+séparés par nom de chemin sous `/recordings`; les segments durent dix minutes
+et sont découpés en parties fMP4 d'une seconde. Les modes manuel et continu
+sont contrôlés par l'API Go, puis persistés dans
+`NETVUE_RECORDINGS_DIR/.netvue-recordings.json`.
+
+Le service Playback MediaMTX reste limité à `127.0.0.1:9996`. Le pont expose
+la liste, le téléchargement et la suppression via son API loopback. Home
+Assistant vérifie l'authentification avant de servir ces opérations.
+
 ## Intégration Home Assistant
 
 L'entrée HA crée un coordinateur qui réconcilie la caméra auprès de l'API Go

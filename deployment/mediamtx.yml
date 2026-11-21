@@ -10,12 +10,20 @@ hls: false
 webrtc: false
 srt: false
 moq: false
-api: false
+api: true
+apiAddress: 127.0.0.1:9997
 metrics: false
 pprof: false
-playback: false
+playback: true
+playbackAddress: 127.0.0.1:9996
 pathDefaults:
   record: false
+  recordFormat: fmp4
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordPartDuration: 1s
+  recordSegmentDuration: 10m
+  recordMaxPartSize: 50M
+  recordDeleteAfter: 0s
   overridePublisher: false
 paths:
   all_others:
