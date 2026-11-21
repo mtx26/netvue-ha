@@ -4,7 +4,6 @@ Run from the repository root; see tests/ha/harness.py for the isolation model.
 """
 
 import asyncio
-import json
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,7 +81,7 @@ class ConfigFlowTests(HassTestCase):
             "ai_confidence": 0.65,
             "ai_fps": 5,
             "ai_confirmation_frames": 4,
-            "ai_zones": '{"garden":[0.1,0.2,0.8,0.9]}',
+            "ai_zones": {"garden": [0.1, 0.2, 0.8, 0.9]},
         })
         self.assertEqual(result["type"], "create_entry")
         entry = result["result"]
@@ -209,7 +208,7 @@ class OptionsFlowTests(HassTestCase):
             ai_confidence=0.65,
             ai_fps=5,
             ai_confirmation_frames=4,
-            ai_zones=json.dumps(zones),
+            ai_zones=zones,
         )
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
