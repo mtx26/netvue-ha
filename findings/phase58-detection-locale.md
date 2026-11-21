@@ -25,6 +25,10 @@ existants, puis exposer son état et ses événements dans Home Assistant.
   minimale.
 - Intégration HA : capteur de détection, switch d'activation et événements
   `netvue_local_event`.
+- Configuration IA : activation, seuil de confiance, cadence, confirmation
+  et zones JSON disponibles directement lors de l'ajout manuel ou découverte
+  de la caméra, puis modifiables dans les options de l'intégration.
+  L'éditeur de carte Lovelace ne contient plus ces paramètres.
 - Roadmap et architecture mises à jour.
 
 ## Tests

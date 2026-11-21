@@ -55,7 +55,7 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 💡 | Détection de mouvement | Comparer Netvue, Go et Frigate |
 | ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
-| 🧪 | Zones de détection | Service YOLO/IoU avec zones normalisées ; intégration hors ligne initiale, validation réelle nécessaire |
+| 🧪 | Zones de détection | Service YOLO/IoU avec zones normalisées, configurées lors de l'ajout de la caméra puis dans les paramètres HA ; intégration hors ligne initiale, validation réelle nécessaire |
 | 🧪 | Notifications HA | Événements `netvue_local_event` et capteur/switch IA ; validation réelle nécessaire |
 | ⬜ | Statistiques | Suivre événements et disponibilité |
 | 🧪 | Détection d'objets | YOLOv8n COCO CPU pour personnes, animaux, véhicules ; accélération AMD et colis non validés |

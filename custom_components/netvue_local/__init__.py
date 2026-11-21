@@ -297,12 +297,23 @@ class NetvueDetectionConfigView(HomeAssistantView):
             CONF_STREAM_NAME, entry.data[CONF_STREAM_NAME]
         )
         config = {
-            CONF_AI_ENABLED: entry.options.get(CONF_AI_ENABLED, True),
-            CONF_AI_CONFIDENCE: entry.options.get(CONF_AI_CONFIDENCE, 0.45),
-            CONF_AI_FPS: entry.options.get(CONF_AI_FPS, 3),
+            CONF_AI_ENABLED: entry.options.get(
+                CONF_AI_ENABLED, entry.data.get(CONF_AI_ENABLED, True)
+            ),
+            CONF_AI_CONFIDENCE: entry.options.get(
+                CONF_AI_CONFIDENCE, entry.data.get(CONF_AI_CONFIDENCE, 0.45)
+            ),
+            CONF_AI_FPS: entry.options.get(
+                CONF_AI_FPS, entry.data.get(CONF_AI_FPS, 3)
+            ),
             CONF_AI_CONFIRMATION_FRAMES:
-                entry.options.get(CONF_AI_CONFIRMATION_FRAMES, 3),
-            CONF_AI_ZONES: entry.options.get(CONF_AI_ZONES, {}),
+                entry.options.get(
+                    CONF_AI_CONFIRMATION_FRAMES,
+                    entry.data.get(CONF_AI_CONFIRMATION_FRAMES, 3),
+                ),
+            CONF_AI_ZONES: entry.options.get(
+                CONF_AI_ZONES, entry.data.get(CONF_AI_ZONES, {})
+            ),
         }
         try:
             status = await async_get_detection_status(hass, stream_name)

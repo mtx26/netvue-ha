@@ -9,7 +9,15 @@
       "manual": {
         "title": "Saisir une adresse",
         "description": "Indiquez le nom affiché et l'adresse IPv4. L'intégration crée un flux unique et demande au pont de le démarrer.",
-        "data": {"name": "Nom affiché", "host": "Adresse IPv4 de la caméra"}
+        "data": {
+          "name": "Nom affiché",
+          "host": "Adresse IPv4 de la caméra",
+          "ai_enabled": "Détection IA activée",
+          "ai_confidence": "Confiance minimale",
+          "ai_fps": "Images analysées par seconde",
+          "ai_confirmation_frames": "Images de confirmation",
+          "ai_zones": "Zones JSON normalisées"
+        }
       },
       "discovery": {
         "title": "Recherche de caméras",
@@ -19,7 +27,16 @@
       "select": {
         "title": "Sélectionner une caméra",
         "description": "Choisissez une adresse et un nom, ou cochez la saisie manuelle.",
-        "data": {"name": "Nom affiché", "host": "Caméra découverte", "manual": "Saisir une adresse manuellement"}
+        "data": {
+          "name": "Nom affiché",
+          "host": "Caméra découverte",
+          "manual": "Saisir une adresse manuellement",
+          "ai_enabled": "Détection IA activée",
+          "ai_confidence": "Confiance minimale",
+          "ai_fps": "Images analysées par seconde",
+          "ai_confirmation_frames": "Images de confirmation",
+          "ai_zones": "Zones JSON normalisées"
+        }
       }
     },
     "error": {
@@ -37,12 +54,20 @@
     "step": {
       "init": {
         "title": "Options de la caméra",
-        "description": "Le pont arrêtera l'ancien flux et démarrera celui de cette adresse.",
-        "data": {"host": "Adresse IPv4 de la caméra"}
+        "description": "Configurez l'adresse, le flux et la détection IA locale.",
+        "data": {
+          "host": "Adresse IPv4 de la caméra",
+          "ai_enabled": "Détection IA activée",
+          "ai_confidence": "Confiance minimale",
+          "ai_fps": "Images analysées par seconde",
+          "ai_confirmation_frames": "Images de confirmation",
+          "ai_zones": "Zones JSON normalisées"
+        }
       }
     },
     "error": {
       "invalid_input": "Adresse IPv4 invalide.",
+      "invalid_ai_zones": "Les zones doivent être un objet JSON valide avec les coordonnées normalisées entre 0 et 1.",
       "already_configured": "Cette caméra est déjà configurée.",
       "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée."
     },

@@ -101,15 +101,28 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
             stream_name = self._entry.options.get(
                 CONF_STREAM_NAME, self._entry.data[CONF_STREAM_NAME]
             )
-            if CONF_AI_ENABLED in self._entry.options:
+            ai_enabled = self._entry.options.get(
+                CONF_AI_ENABLED, self._entry.data.get(CONF_AI_ENABLED, True)
+            )
+            if ai_enabled is not None:
                 await async_set_detection_config(
                     self.hass,
                     stream_name,
-                    enabled=self._entry.options[CONF_AI_ENABLED],
-                    confidence=self._entry.options[CONF_AI_CONFIDENCE],
-                    fps=self._entry.options[CONF_AI_FPS],
-                    confirmation_frames=self._entry.options[CONF_AI_CONFIRMATION_FRAMES],
-                    zones=self._entry.options[CONF_AI_ZONES],
+                    enabled=ai_enabled,
+                    confidence=self._entry.options.get(
+                        CONF_AI_CONFIDENCE,
+                        self._entry.data.get(CONF_AI_CONFIDENCE, 0.45),
+                    ),
+                    fps=self._entry.options.get(
+                        CONF_AI_FPS, self._entry.data.get(CONF_AI_FPS, 3)
+                    ),
+                    confirmation_frames=self._entry.options.get(
+                        CONF_AI_CONFIRMATION_FRAMES,
+                        self._entry.data.get(CONF_AI_CONFIRMATION_FRAMES, 3),
+                    ),
+                    zones=self._entry.options.get(
+                        CONF_AI_ZONES, self._entry.data.get(CONF_AI_ZONES, {})
+                    ),
                 )
             detection = await async_get_detection_status(self.hass, stream_name)
         except (BridgeError, KeyError) as exc:

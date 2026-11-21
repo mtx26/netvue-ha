@@ -9,7 +9,15 @@
       "manual": {
         "title": "Enter an address",
         "description": "Enter a display name and IPv4 address. The integration creates a unique stream and asks the bridge to start it.",
-        "data": {"name": "Display name", "host": "Camera IPv4 address"}
+        "data": {
+          "name": "Display name",
+          "host": "Camera IPv4 address",
+          "ai_enabled": "AI detection enabled",
+          "ai_confidence": "Minimum confidence",
+          "ai_fps": "Analyzed frames per second",
+          "ai_confirmation_frames": "Confirmation frames",
+          "ai_zones": "Normalized JSON zones"
+        }
       },
       "discovery": {
         "title": "Discover cameras",
@@ -19,7 +27,16 @@
       "select": {
         "title": "Select a camera",
         "description": "Choose an address and name, or check manual entry.",
-        "data": {"name": "Display name", "host": "Discovered camera", "manual": "Enter an address manually"}
+        "data": {
+          "name": "Display name",
+          "host": "Discovered camera",
+          "manual": "Enter an address manually",
+          "ai_enabled": "AI detection enabled",
+          "ai_confidence": "Minimum confidence",
+          "ai_fps": "Analyzed frames per second",
+          "ai_confirmation_frames": "Confirmation frames",
+          "ai_zones": "Normalized JSON zones"
+        }
       }
     },
     "error": {
@@ -37,12 +54,20 @@
     "step": {
       "init": {
         "title": "Camera options",
-        "description": "The bridge will stop the old stream and start one for this address.",
-        "data": {"host": "Camera IPv4 address"}
+        "description": "Configure the address, stream, and local AI detection.",
+        "data": {
+          "host": "Camera IPv4 address",
+          "ai_enabled": "AI detection enabled",
+          "ai_confidence": "Minimum confidence",
+          "ai_fps": "Analyzed frames per second",
+          "ai_confirmation_frames": "Confirmation frames",
+          "ai_zones": "Normalized JSON zones"
+        }
       }
     },
     "error": {
       "invalid_input": "Invalid IPv4 address.",
+      "invalid_ai_zones": "Zones must be a valid JSON object with normalized coordinates between 0 and 1.",
       "already_configured": "This camera is already configured.",
       "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed."
     },

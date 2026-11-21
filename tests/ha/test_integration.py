@@ -4,6 +4,7 @@ Run from the repository root; see tests/ha/harness.py for the isolation model.
 """
 
 import asyncio
+import json
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,11 +60,39 @@ class ConfigFlowTests(HassTestCase):
         self.assertEqual(result["data"], {
             "host": HOST, "stream_name": STREAM_NAME,
             "stream_url": f"rtsp://127.0.0.1:8554/{STREAM_NAME}",
+            "ai_enabled": True,
+            "ai_confidence": 0.45,
+            "ai_fps": 3.0,
+            "ai_confirmation_frames": 3,
+            "ai_zones": {},
         })
         await self.hass.async_block_till_done()
         entry = result["result"]
         self.assertEqual(entry.state, ConfigEntryState.LOADED)
         self.assertEqual(self.bridge.cameras[HOST]["stream_name"], STREAM_NAME)
+
+    async def test_manual_flow_saves_ai_settings_at_creation(self):
+        flow = self.hass.config_entries.flow
+        result = await flow.async_init(DOMAIN, context={"source": "user"})
+        result = await flow.async_configure(result["flow_id"], {"next_step_id": "manual"})
+        result = await flow.async_configure(result["flow_id"], {
+            "name": "Salon",
+            "host": HOST,
+            "ai_enabled": True,
+            "ai_confidence": 0.65,
+            "ai_fps": 5,
+            "ai_confirmation_frames": 4,
+            "ai_zones": '{"garden":[0.1,0.2,0.8,0.9]}',
+        })
+        self.assertEqual(result["type"], "create_entry")
+        entry = result["result"]
+        self.assertEqual(entry.data["ai_enabled"], True)
+        self.assertEqual(entry.data["ai_confidence"], 0.65)
+        self.assertEqual(entry.data["ai_fps"], 5)
+        self.assertEqual(entry.data["ai_confirmation_frames"], 4)
+        self.assertEqual(entry.data["ai_zones"], {
+            "garden": [0.1, 0.2, 0.8, 0.9],
+        })
 
     async def test_manual_flow_rejects_invalid_input_without_touching_bridge(self):
         flow = self.hass.config_entries.flow
@@ -169,6 +198,26 @@ class OptionsFlowTests(HassTestCase):
         self.assertEqual(list(self.bridge.cameras), [OTHER_HOST])
         self.assertEqual(self.bridge.cameras[OTHER_HOST]["stream_name"], "netvue_192_168_10_3")
         self.assertEqual(self.entity_id(entry, "camera"), camera_entity)
+
+    async def test_ai_options_are_saved_from_integration_settings(self):
+        entry = await self.create_entry()
+        zones = {"garden": [0.1, 0.2, 0.8, 0.9]}
+        result = await self._init(
+            entry,
+            host=HOST,
+            ai_enabled=True,
+            ai_confidence=0.65,
+            ai_fps=5,
+            ai_confirmation_frames=4,
+            ai_zones=json.dumps(zones),
+        )
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        self.assertTrue(entry.options["ai_enabled"])
+        self.assertEqual(entry.options["ai_confidence"], 0.65)
+        self.assertEqual(entry.options["ai_fps"], 5)
+        self.assertEqual(entry.options["ai_confirmation_frames"], 4)
+        self.assertEqual(entry.options["ai_zones"], zones)
 
     async def test_host_change_preserves_ai_options_when_service_is_unavailable(self):
         entry = await self.create_entry()
