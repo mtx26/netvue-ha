@@ -243,6 +243,81 @@ test("timeline seeks across recordings, reports gaps and follows a growing segme
   assert.equal(card._video.hidden, false);
 });
 
+test("timeline graduations follow the available recording bounds across days", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const start = new Date(2026, 11, 31, 12).getTime();
+  const end = new Date(2027, 0, 1, 11).getTime();
+  const recordings = [
+    { id: "a".repeat(32), start: new Date(start).toISOString(), duration: 60 },
+    { id: "b".repeat(32), start: new Date(end - 60000).toISOString(), duration: 60 },
+  ];
+  card.hass = {
+    locale: { language: "fr-FR" },
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi() { return { recordings }; },
+    async callWS(message) { return { path: message.path }; },
+  };
+  await card._openHistory();
+  assert.equal(card._historyRange.min, String(start));
+  assert.equal(card._historyRange.max, String(end - 1));
+  assert.equal(card._historyTicks.hidden, false);
+  assert.equal(card._historyTicks.children.length, 5);
+  const dateFormat = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const timeFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  for (const [index, time] of [start, start + (end - 1 - start) / 2, end - 1].entries()) {
+    assert.equal(card._historyTickLabels[index].time.textContent, timeFormat.format(time));
+    assert.equal(card._historyTickLabels[index].date.textContent, dateFormat.format(time));
+  }
+  card._historyRange.value = String(start + 30000);
+  card._historyRange.dispatch("input");
+  assert.equal(card._historyRange.getAttribute("aria-valuetext"),
+    new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "medium" }).format(start + 30000));
+  recordings.splice(1);
+  await card._refreshHistory("entry1", card._historyGeneration);
+  const shortTimeFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  assert.equal(card._historyTickLabels[0].time.textContent, shortTimeFormat.format(start));
+  assert.equal(card._historyTickLabels[0].date.textContent, "");
+  recordings.splice(0);
+  await card._refreshHistory("entry1", card._historyGeneration);
+  assert.equal(card._historyTicks.hidden, true);
+  assert.equal(card._historyRange.disabled, true);
+  card._closeHistory(false);
+});
+
+test("timeline shows at most 24 hours and moves to older recordings without deleting them", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const start = Date.parse("2026-11-18T12:00:00Z");
+  const day = 24 * 60 * 60 * 1000;
+  const recordings = [
+    { id: "a".repeat(32), start: new Date(start).toISOString(), duration: 600 },
+    { id: "b".repeat(32), start: new Date(start + 3 * day).toISOString(), duration: 600 },
+  ];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi(method) { assert.equal(method, "GET"); return { recordings }; },
+    async callWS(message) { return { path: message.path }; },
+  };
+  await card._openHistory();
+  const latest = start + 3 * day + 600000 - 1;
+  assert.equal(Number(card._historyRange.max), latest);
+  assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), day);
+  const older = start + 300000;
+  await card._historySeek(older);
+  assert.ok(Number(card._historyRange.min) <= older);
+  assert.ok(Number(card._historyRange.max) >= older);
+  assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), day);
+  assert.equal(card._historySegment.id, "a".repeat(32));
+  assert.equal(recordings.length, 2);
+  await card._historySeek(start + 3 * day + 300000);
+  assert.equal(Number(card._historyRange.max), latest);
+  assert.equal(card._historySegment.id, "b".repeat(32));
+  card._closeHistory(false);
+});
+
 test("timeline ignores a late resolution after returning to live", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
@@ -299,6 +374,52 @@ test("timeline waits for more footage only while recording and cancels on exit",
   assert.notEqual(card._historyFollowTimer, null);
   card._closeHistory(false);
   assert.equal(card._historyFollowTimer, null);
+});
+
+test("seeking in the video cancels a pending follow refresh", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const recording = { id: "a".repeat(32), start: "2026-11-20T12:00:00Z", duration: 60 };
+  let resolveRefresh;
+  let blockRefresh = false;
+  let signed = 0;
+  card.hass = {
+    states: {
+      "camera.test": { attributes: { netvue_entry_id: "entry1" } },
+      "sensor.recording": {
+        state: "continuous",
+        attributes: { netvue_entry_id: "entry1", manual: false, continuous: true, active: true },
+      },
+    },
+    async callApi() {
+      if (blockRefresh) return new Promise((resolve) => { resolveRefresh = resolve; });
+      return { recordings: [recording] };
+    },
+    async callWS(message) { signed++; return { path: message.path }; },
+  };
+  await card._openHistory();
+  card._historyVideo.currentTime = 60;
+  await card._historyEnded();
+  assert.notEqual(card._historyFollowTimer, null);
+  card._historyVideo.currentTime = 20;
+  card._historyVideo.dispatch("seeking");
+  assert.equal(card._historyFollowTimer, null);
+  assert.equal(card._historyMessage.textContent, "");
+
+  card._historyVideo.currentTime = 60;
+  blockRefresh = true;
+  const following = card._historyEnded();
+  const before = signed;
+  card._historyVideo.currentTime = 20;
+  card._historyVideo.dispatch("seeking");
+  recording.duration = 90;
+  resolveRefresh({ recordings: [recording] });
+  await following;
+  assert.equal(signed, before);
+  assert.equal(card._historyVideo.currentTime, 20);
+  assert.equal(card._historyFollowTimer, null);
+  card._closeHistory(false);
 });
 
 test("the full-screen button enters and exits across shadow DOM retargeting", async () => {

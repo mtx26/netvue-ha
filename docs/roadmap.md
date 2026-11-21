@@ -44,7 +44,8 @@ fiable, performante, modulaire et simple à installer.
 | ⬜ | Mesures de capacité | Débit, stockage et ressources |
 | 🧪 | Enregistrement manuel et continu | Contrôle Go/HA, fMP4 MediaMTX et réglages persistants implémentés ; validation réelle nécessaire |
 | 🧪 | Rétention | Rétention temporelle, limite globale et volume persistant configurés ; validation synthétique nécessaire |
-| 🧪 | Historique | Chronologie dans la carte, segment en cours, miniatures et navigation par plages testés hors ligne ; parcours HA et caméra réelle à valider |
+| 🧪 | Historique | Chronologie limitée à 24 h par fenêtre, segment en cours et navigation testés hors ligne ; avance dans le lecteur signalée défaillante en conditions réelles, à diagnostiquer |
+| 💡 | Conservation sélective | Permettre de garder certains enregistrements au-delà de la rétention automatique ; conception à définir |
 | 🧪 | Exportation | Téléchargement MP4 authentifié avec taille connue, limité à 1 Gio par export ; validation réelle nécessaire |
 | ⬜ | Captures | Enregistrer des images |
 

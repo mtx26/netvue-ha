@@ -13,6 +13,7 @@ const HIDDEN_PAUSE_MS = 60000;
 const ERROR_TOAST_MS = 4000;
 const HISTORY_FOLLOW_POLL_MS = 5000;
 const HISTORY_FOLLOW_BUFFER_MS = 10000;
+const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ENTITY_RE = /^camera\.[a-z0-9_]+$/;
 
 const STYLE = `
@@ -38,7 +39,7 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 44px; }
 .bar button[hidden] { display: none; }
 .wrap[data-history] .bar { display: none; }
-.history-panel { position: relative; margin: 8px; padding: 8px; border-radius: 8px;
+.history-panel { position: relative; margin: 8px; padding: 12px; border-radius: 8px;
   background: rgba(0,0,0,.9); color: #fff; line-height: 1.4; }
 .wrap:fullscreen[data-history], :host([wall-active]) .wrap[data-history] { flex-direction: column; }
 .wrap:fullscreen[data-history] video, :host([wall-active]) .wrap[data-history] video {
@@ -48,11 +49,27 @@ button { font: inherit; color: #fff; background: rgba(0,0,0,.8); border: 1px sol
   flex: 0 0 auto; width: calc(100% - 32px);
 }
 .history-panel[hidden], video[hidden] { display: none; }
-.history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.history-panel button, .history-panel a { min-height: 36px; padding: 5px 10px; }
-.history-panel a { color: #fff; }
-.history-panel input[type="range"] { width: 100%; }
-.history-panel input[type="datetime-local"] { max-width: 100%; }
+.history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.history-panel button, .history-panel a { box-sizing: border-box; min-height: 36px; padding: 5px 10px;
+  font-size: 13px; }
+.history-panel a { display: inline-flex; align-items: center; color: #fff; background: rgba(0,0,0,.8);
+  border: 1px solid rgba(255,255,255,.5); border-radius: 20px; text-decoration: none; }
+.history-panel a[hidden] { display: none; }
+.history-panel input[type="datetime-local"] { box-sizing: border-box; max-width: 100%; min-height: 36px;
+  padding: 4px 8px; color: #fff; background: #222; border: 1px solid #888; border-radius: 6px;
+  color-scheme: dark; font: inherit; font-size: 13px; }
+.history-panel input[type="range"] { display: block; box-sizing: border-box; width: 100%; height: 24px;
+  margin: 0; cursor: pointer; accent-color: var(--primary-color, #03a9f4); }
+.history-panel input[type="range"]:disabled { cursor: default; }
+.history-ticks { position: relative; display: flex; justify-content: space-between; margin: 0 8px;
+  min-height: 35px; color: #ddd; font-size: 11px; line-height: 1.25; }
+.history-ticks[hidden] { display: none; }
+.history-tick { position: relative; width: 1px; height: 5px; background: #aaa; }
+.history-tick-label { position: absolute; top: 8px; left: 0; transform: translateX(-50%);
+  text-align: center; white-space: nowrap; }
+.history-tick:first-child .history-tick-label { transform: none; text-align: left; }
+.history-tick:last-child .history-tick-label { transform: translateX(-100%); text-align: right; }
+.history-tick-date { display: block; color: #aaa; }
 .history-message { min-height: 1.4em; font-size: 13px; }
 .history-preview { display: block; max-width: 160px; max-height: 90px; margin-bottom: 4px; }
 .history-preview[hidden] { display: none; }
@@ -135,6 +152,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyCursor = null;
     this._historyScrubbing = false;
     this._historyFollowTimer = null;
+    this._historyFollowPending = false;
     this._onRelease = () => this._releasePtt();
     this._onVisibility = () => this._visibilityChanged();
     this._onWindowPointer = (event) => this._pointerEnded(event);
@@ -428,6 +446,13 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyVideo.addEventListener("loadedmetadata", () => this._historyMetadata());
     this._historyVideo.addEventListener("timeupdate", () => this._historyTimeUpdate());
     this._historyVideo.addEventListener("ended", () => this._historyEnded());
+    this._historyVideo.addEventListener("seeking", () => {
+      if (!this._historyFollowPending) return;
+      this._historyFollowPending = false;
+      this._historyGeneration++;
+      this._clearTimer("_historyFollowTimer");
+      this._historyMessage.textContent = "";
+    });
     this._historyVideo.addEventListener("error", () => {
       if (this._history) this._historyMessage.textContent = this._t("historyPlaybackError");
     });
@@ -464,6 +489,29 @@ export class NetvueCameraCard extends HTMLElement {
       this._historyPreview.hidden = true;
       if (this._history) this._historyMessage.textContent = this._t("historyPreviewError");
     });
+    this._historyRange = el("input", { type: "range", step: "1000" }, this._historyPanel);
+    this._historyRange.addEventListener("input", () => {
+      this._historyScrubbing = true;
+      const time = Number(this._historyRange.value);
+      this._historyDate.value = localDateTime(time);
+      this._historyRange.setAttribute("aria-valuetext", this._historyTimeLabel(time));
+    });
+    this._historyRange.addEventListener("change", () => {
+      this._historyScrubbing = false;
+      this._historySeek(Number(this._historyRange.value));
+    });
+    this._historyTicks = el("div", { class: "history-ticks", "aria-hidden": "true" }, this._historyPanel);
+    this._historyTickLabels = [];
+    for (let index = 0; index < 5; index++) {
+      const tick = el("span", { class: "history-tick" }, this._historyTicks);
+      if (index % 2 === 0) {
+        const label = el("span", { class: "history-tick-label" }, tick);
+        this._historyTickLabels.push({
+          time: el("span", {}, label),
+          date: el("span", { class: "history-tick-date" }, label),
+        });
+      }
+    }
     const historyControls = el("div", { class: "history-controls" }, this._historyPanel);
     this._historyLiveButton = el("button", { type: "button" }, historyControls);
     this._historyLiveButton.addEventListener("click", () => this._closeHistory(true));
@@ -479,15 +527,6 @@ export class NetvueCameraCard extends HTMLElement {
       if (Number.isFinite(time)) this._historySeek(time);
     });
     this._historyDownload = el("a", { download: "netvue-recording.mp4", hidden: "" }, historyControls);
-    this._historyRange = el("input", { type: "range", step: "1000" }, this._historyPanel);
-    this._historyRange.addEventListener("input", () => {
-      this._historyScrubbing = true;
-      this._historyDate.value = localDateTime(Number(this._historyRange.value));
-    });
-    this._historyRange.addEventListener("change", () => {
-      this._historyScrubbing = false;
-      this._historySeek(Number(this._historyRange.value));
-    });
     this._historyMessage = el("div", { class: "history-message", role: "status" }, this._historyPanel);
     this._live = el("div", { class: "sr", role: "status", "aria-live": "polite" }, wrap);
     this._render();
@@ -588,6 +627,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._history = true;
     this._historySegments = [];
     this._historyRange.disabled = true;
+    this._historyTicks.hidden = true;
     const generation = ++this._historyGeneration;
     this._releasePtt();
     this._stopSession();
@@ -619,15 +659,59 @@ export class NetvueCameraCard extends HTMLElement {
     if (!this._history || generation !== this._historyGeneration) return;
     this._historySegments = segments;
     this._historyRange.disabled = !segments.length;
+    this._historyTicks.hidden = !segments.length;
     if (segments.length) {
-      this._historyRange.min = String(segments[0].start);
-      this._historyRange.max = String(segments.at(-1).end - 1);
+      this._setHistoryWindow(this._historyCursor);
     }
+  }
+
+  _setHistoryWindow(time) {
+    if (!this._historySegments.length) return;
+    const first = this._historySegments[0].start;
+    const last = this._historySegments.at(-1).end - 1;
+    let end = last;
+    if (Number.isFinite(time) && time < last - HISTORY_WINDOW_MS) {
+      end = Math.min(last, Math.max(first + HISTORY_WINDOW_MS, time + HISTORY_WINDOW_MS / 2));
+    }
+    this._historyRange.min = String(Math.max(first, end - HISTORY_WINDOW_MS));
+    this._historyRange.max = String(end);
+    this._renderHistoryTicks();
+  }
+
+  _historyTimeLabel(time) {
+    const language = this._hass?.locale?.language || this._hass?.language || undefined;
+    if (!this._historyTimeFormatter || this._historyTimeLanguage !== language) {
+      this._historyTimeLanguage = language;
+      this._historyTimeFormatter = new Intl.DateTimeFormat(language, { dateStyle: "short", timeStyle: "medium" });
+    }
+    return this._historyTimeFormatter.format(time);
+  }
+
+  _renderHistoryTicks() {
+    const start = Number(this._historyRange.min);
+    const end = Number(this._historyRange.max);
+    const language = this._hass?.locale?.language || this._hass?.language || undefined;
+    const first = new Date(start);
+    const last = new Date(end);
+    const showDate = first.toDateString() !== last.toDateString();
+    const showYear = first.getFullYear() !== last.getFullYear();
+    const timeFormat = new Intl.DateTimeFormat(language, {
+      hour: "2-digit", minute: "2-digit", ...(end - start < 120000 ? { second: "2-digit" } : {}),
+    });
+    const dateFormat = new Intl.DateTimeFormat(language, {
+      day: "2-digit", month: "2-digit", ...(showYear ? { year: "numeric" } : {}),
+    });
+    this._historyTickLabels.forEach((label, index) => {
+      const time = start + (end - start) * index / 2;
+      label.time.textContent = timeFormat.format(time);
+      label.date.textContent = showDate ? dateFormat.format(time) : "";
+    });
   }
 
   async _historySeek(time) {
     if (!this._history || !Number.isFinite(time)) return;
     this._clearTimer("_historyFollowTimer");
+    this._historyFollowPending = false;
     const generation = ++this._historyGeneration;
     const entryId = this._entryId();
     this._historyVideo.pause();
@@ -636,7 +720,11 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyPreview.hidden = true;
     this._historyPreview.removeAttribute("src");
     this._historyCursor = time;
+    if (time < Number(this._historyRange.min) || time > Number(this._historyRange.max)) {
+      this._setHistoryWindow(time);
+    }
     this._historyRange.value = String(time);
+    this._historyRange.setAttribute("aria-valuetext", this._historyTimeLabel(time));
     this._historyDate.value = localDateTime(time);
     let segment = segmentAt(this._historySegments, time);
     if (!segment) {
@@ -715,12 +803,18 @@ export class NetvueCameraCard extends HTMLElement {
   _historyTimeUpdate() {
     if (!this._history || !this._historySegment || this._historyScrubbing) return;
     this._historyCursor = this._historySegment.start + this._historyVideo.currentTime * 1000;
+    if (this._historyCursor < Number(this._historyRange.min)
+        || this._historyCursor > Number(this._historyRange.max)) {
+      this._setHistoryWindow(this._historyCursor);
+    }
     this._historyRange.value = String(this._historyCursor);
+    this._historyRange.setAttribute("aria-valuetext", this._historyTimeLabel(this._historyCursor));
     this._historyDate.value = localDateTime(this._historyCursor);
   }
 
   async _historyEnded() {
     if (!this._history || !this._historySegment) return;
+    this._historyFollowPending = true;
     const generation = ++this._historyGeneration;
     const previous = this._historySegment;
     const cursor = previous.start + this._historyVideo.currentTime * 1000;
@@ -745,10 +839,12 @@ export class NetvueCameraCard extends HTMLElement {
           this._historyEnded();
         }, HISTORY_FOLLOW_POLL_MS);
       } else {
+        this._historyFollowPending = false;
         this._historyMessage.textContent = next ? this._t("historyGap") : this._t("historyEnd");
       }
     } catch {
       if (this._history && generation === this._historyGeneration) {
+        this._historyFollowPending = false;
         this._historyMessage.textContent = this._t("historyLoadError");
       }
     }
@@ -766,6 +862,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyPendingSeek = null;
     this._historyCursor = null;
     this._historyScrubbing = false;
+    this._historyFollowPending = false;
     this._clearTimer("_historyFollowTimer");
     this._historyVideo.pause();
     this._historyVideo.removeAttribute("src");

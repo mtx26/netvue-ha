@@ -103,8 +103,12 @@ le mode continu se règle avec l'interrupteur de la caméra dans Home Assistant.
 Sinon, le bouton permet de démarrer ou d'arrêter l'enregistrement manuel.
 L'icône d'historique ouvre une chronologie dans la carte : sélectionner une
 date ou déplacer le curseur, revenir de 10 minutes ou d'une heure, puis utiliser
-les commandes du lecteur. Les segments contigus s'enchaînent ; une coupure
-est signalée. Le segment en cours devient lisible après écriture d'une partie
+les commandes du lecteur. La frise graduée affiche au maximum 24 heures,
+coupures comprises ; une date plus ancienne déplace cette fenêtre sans effacer
+les enregistrements. La conservation dépend de la rétention configurée (sept
+jours par défaut), de la limite de stockage et des enregistrements
+effectivement présents. Les segments contigus s'enchaînent ;
+une coupure est signalée. Le segment en cours devient lisible après écriture d'une partie
 complète, puis le lecteur attend environ dix secondes de nouvelles images
 avant de reprendre. **Retour au direct**
 réouvre le flux en direct. **Télécharger** exporte le segment sélectionné ;

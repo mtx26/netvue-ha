@@ -5,6 +5,10 @@
 Consulter les enregistrements dans la carte sans sélectionner de fichier :
 frise, date et heure, retours rapides et retour au direct. Les coupures sont
 signalées ; le segment en cours est consultable dès qu'une partie est lisible.
+La frise affiche au maximum 24 heures ; une autre date déplace la fenêtre sans
+modifier la conservation.
+Une recherche manuelle dans le lecteur annule la reprise automatique en
+attente afin qu'une réponse tardive ne replace pas le curseur.
 
 ## Modifications
 
@@ -24,10 +28,15 @@ Tests frontend et proxy HA isolé ; test synthétique avec MediaMTX et FFmpeg,
 incluant un fichier ouvert en cours de croissance, les plages, une miniature et
 le décodage MP4. L'affichage et la recherche dans une vidéo synthétique ont
 été vérifiés dans un navigateur local.
+La recherche dans la barre du lecteur a aussi été vérifiée sur un MP4
+fragmenté exporté par MediaMTX, avec plages HTTP locales.
+Un test frontend vérifie l'annulation d'une reprise programmée ou déjà en cours
+lors d'une recherche manuelle.
 
 ## Limites
 
-Pas de validation sur caméra ni installation HA réelle. Deux préparations
+L'avance dans la barre du lecteur reste signalée défaillante sur l'installation
+réelle ; sa cause n'est pas encore identifiée. Deux préparations
 simultanées au maximum, limitées chacune à 1 Gio et deux minutes ; chaque
 requête de plage régénère l'export, ce qui peut augmenter la latence et la
 charge disque. La miniature peut manquer si les images demandées ne sont pas
