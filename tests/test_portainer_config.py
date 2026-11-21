@@ -27,6 +27,30 @@ def require_integration(case: unittest.TestCase, reason: str) -> None:
 
 
 class PortainerConfigTest(unittest.TestCase):
+    def test_ai_service_is_isolated_and_loopback_only(self):
+        stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
+        service = stack["services"]["netvue-ai"]
+        self.assertEqual(service["user"], "10001:10001")
+        self.assertTrue(service["read_only"])
+        self.assertEqual(service["cap_drop"], ["ALL"])
+        self.assertNotIn("ports", service)
+        self.assertNotIn("devices", service)
+        self.assertEqual(service["environment"]["NETVUE_AI_CONFIG_DIR"], "/data")
+        limits = service["deploy"]["resources"]["limits"]
+        self.assertEqual(limits["memory"], "768M")
+        self.assertIn("netvue-ai-config", stack["volumes"])
+        self.assertEqual(
+            service["volumes"][0]["target"],
+            "/data",
+        )
+        init = stack["services"]["netvue-ai-init"]
+        self.assertEqual(init["user"], "0:0")
+        self.assertEqual(init["volumes"], service["volumes"])
+        self.assertEqual(
+            init["deploy"]["placement"],
+            service["deploy"]["placement"],
+        )
+
     def test_services_keep_container_security_settings(self):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
 

@@ -250,7 +250,7 @@ func connectTranscodedBrowser(t *testing.T, ctx context.Context, api http.Handle
 	t.Helper()
 	browser := newLocalTestPeerConnection(t)
 	t.Cleanup(func() { _ = browser.Close() })
-	received := make(chan *rtp.Packet, 32)
+	received := make(chan *rtp.Packet, 512)
 	browser.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		defer close(received)
 		for {
@@ -262,7 +262,6 @@ func connectTranscodedBrowser(t *testing.T, ctx context.Context, api http.Handle
 			case <-ctx.Done():
 				return
 			case received <- packet:
-			default:
 			}
 		}
 	})

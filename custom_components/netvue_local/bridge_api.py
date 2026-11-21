@@ -47,6 +47,141 @@ class RecordingStatus(NamedTuple):
     error: str | None = None
 
 
+class DetectionStatus(NamedTuple):
+    enabled: bool
+    state: str
+    detections: list[dict]
+    last_frame_at: float | None
+    last_event_at: float | None
+
+
+AI_API_URL = "http://127.0.0.1:8766/api/v1"
+
+
+def _detection_status(data) -> DetectionStatus:
+    if not isinstance(data, dict):
+        raise BridgeError("AI service returned invalid detection status")
+    if type(data.get("enabled")) is not bool:
+        raise BridgeError("AI service returned invalid detection status")
+    if not isinstance(data.get("state"), str):
+        raise BridgeError("AI service returned invalid detection status")
+    detections = data.get("detections")
+    if not isinstance(detections, list):
+        raise BridgeError("AI service returned invalid detection status")
+    if not all(isinstance(item, dict) for item in detections):
+        raise BridgeError("AI service returned invalid detection status")
+    last_frame = data.get("last_frame_at")
+    last_event = data.get("last_event_at")
+    return DetectionStatus(
+        data["enabled"],
+        data["state"],
+        detections,
+        last_frame if type(last_frame) in (int, float) else None,
+        last_event if type(last_event) in (int, float) else None,
+    )
+
+
+async def async_get_detection_status(hass: HomeAssistant, stream_name: str) -> DetectionStatus:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.get(
+                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/status"
+            ) as response:
+                if response.status == 404:
+                    return DetectionStatus(False, "not_configured", [], None, None)
+                if response.status != 200:
+                    raise BridgeError(f"AI service returned HTTP {response.status}")
+                try:
+                    data = await response.json()
+                except (ValueError, ClientError) as exc:
+                    raise BridgeError("AI service returned invalid detection JSON") from exc
+                return _detection_status(data)
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot reach the local AI service") from exc
+
+
+async def async_set_detection_enabled(
+    hass: HomeAssistant, stream_name: str, enabled: bool
+) -> DetectionStatus:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.put(
+                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/enabled",
+                json={"enabled": enabled},
+            ) as response:
+                if response.status not in (200, 404):
+                    raise BridgeError(f"AI service returned HTTP {response.status}")
+                try:
+                    data = await response.json()
+                except (ValueError, ClientError) as exc:
+                    raise BridgeError("AI service returned invalid detection JSON") from exc
+                if response.status == 404:
+                    raise BridgeError("AI service has no matching camera")
+                return _detection_status(data)
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot reach the local AI service") from exc
+
+
+async def async_set_detection_config(
+    hass: HomeAssistant,
+    stream_name: str,
+    *,
+    enabled: bool,
+    confidence: float,
+    fps: float,
+    confirmation_frames: int,
+    zones: dict[str, list[float]],
+) -> DetectionStatus:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.put(
+                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/config",
+                json={
+                    "enabled": enabled,
+                    "confidence": confidence,
+                    "fps": fps,
+                    "confirmation_frames": confirmation_frames,
+                    "zones": zones,
+                },
+            ) as response:
+                if response.status not in (200, 404):
+                    raise BridgeError(f"AI service returned HTTP {response.status}")
+                try:
+                    data = await response.json()
+                except (ValueError, ClientError) as exc:
+                    raise BridgeError("AI service returned invalid detection JSON") from exc
+                if response.status == 404:
+                    raise BridgeError("AI service has no matching camera")
+                return _detection_status(data)
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot reach the local AI service") from exc
+
+
+async def async_get_detection_events(
+    hass: HomeAssistant, stream_name: str, since: str | None = None
+) -> list[dict]:
+    session = async_get_clientsession(hass)
+    params = {"since": since} if since else None
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.get(
+                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/events",
+                params=params,
+            ) as response:
+                if response.status == 404:
+                    return []
+                if response.status != 200:
+                    raise BridgeError(f"AI service returned HTTP {response.status}")
+                data = await response.json()
+                events = data.get("events") if isinstance(data, dict) else None
+                return events if isinstance(events, list) else []
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot reach the local AI service") from exc
+
+
 def _recording_status(data) -> RecordingStatus:
     if not isinstance(data, dict):
         raise BridgeError("Bridge returned invalid recording status")

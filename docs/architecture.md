@@ -91,6 +91,22 @@ Assistant expose les archives dans son navigateur multimédia et signe les URL
 de lecture ; ses vues restent authentifiées. Le proxy transmet la vidéo en flux,
 sans prise en charge spécifique des requêtes HTTP Range.
 
+## Détection locale
+
+Le service optionnel `netvue-ai` lit les chemins RTSP déjà publiés par
+MediaMTX. Il ne parle pas directement aux caméras et ne duplique aucun
+enregistrement. Une seule instance CPU YOLOv8n ONNX est chargée ; chaque caméra
+possède un lecteur vidéo, un suivi IoU borné et une file d'événements limitée.
+L'inférence démarre à 3 images/s par caméra, avec une limite globale de
+ressources Docker configurable.
+
+Le détecteur COCO couvre les personnes, chats, chiens, oiseaux et véhicules
+courants. Il ne déclare pas les colis tant qu'une classe ou un modèle fiable
+n'est pas validé. Les zones sont définies en coordonnées normalisées. Les
+événements locaux sont exposés sur `127.0.0.1:8766`; l'intégration HA les
+sonde toutes les 30 s et émet `netvue_local_event` pour les nouvelles
+confirmations.
+
 ## Intégration Home Assistant
 
 L'entrée HA crée un coordinateur qui réconcilie la caméra auprès de l'API Go

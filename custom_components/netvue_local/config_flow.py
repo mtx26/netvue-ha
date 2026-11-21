@@ -1,5 +1,6 @@
 """Configuration for managed camera publishers."""
 
+import json
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -8,8 +9,11 @@ from homeassistant.core import callback
 
 from .bridge_api import BridgeError, async_discover_cameras, async_stop_camera
 from .const import (
-    CONF_HOST, CONF_STREAM_NAME, CONF_STREAM_URL, DEFAULT_NAME, DOMAIN,
+    CONF_AI_CONFIDENCE, CONF_AI_CONFIRMATION_FRAMES, CONF_AI_ENABLED,
+    CONF_AI_FPS, CONF_AI_ZONES, CONF_HOST, CONF_STREAM_NAME,
+    CONF_STREAM_URL, DEFAULT_NAME, DOMAIN,
 )
+from .bridge_api import async_set_detection_config
 from .rtsp import (
     stream_name_for_host, stream_url_from_name, validate_host,
 )
@@ -118,11 +122,28 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input=None):
         entry = self.config_entry
         default_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
+        default_enabled = entry.options.get(CONF_AI_ENABLED, True)
+        default_confidence = entry.options.get(CONF_AI_CONFIDENCE, 0.45)
+        default_fps = entry.options.get(CONF_AI_FPS, 3)
+        default_confirmation = entry.options.get(CONF_AI_CONFIRMATION_FRAMES, 3)
+        default_zones = entry.options.get(CONF_AI_ZONES, {})
         errors = {}
         if user_input is not None:
             try:
                 host = validate_host(user_input[CONF_HOST])
-            except (ValueError, KeyError):
+                zones = user_input[CONF_AI_ZONES]
+                if isinstance(zones, str):
+                    zones = json.loads(zones) if zones.strip() else {}
+                if not isinstance(zones, dict):
+                    raise ValueError
+                for name, rect in zones.items():
+                    if name not in ("entrance", "doorstep", "garden", "driveway"):
+                        raise ValueError
+                    if (not isinstance(rect, list) or len(rect) != 4
+                            or not all(type(value) in (int, float)
+                                       and 0 <= value <= 1 for value in rect)):
+                        raise ValueError
+            except (ValueError, KeyError, json.JSONDecodeError):
                 errors["base"] = "invalid_input"
             else:
                 stream_name = stream_name_for_host(host)
@@ -131,23 +152,54 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                     errors["base"] = "already_configured"
                 else:
                     old_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
-                    try:
-                        await async_stop_camera(self.hass, old_host)
-                    except BridgeError:
-                        errors["base"] = "bridge_unavailable"
-                        default_host = host
-                    else:
-                        return self.async_create_entry(
-                            title="",
-                            data={
-                                CONF_HOST: host,
-                                CONF_STREAM_NAME: stream_name,
-                                CONF_STREAM_URL: url,
-                            },
-                        )
+                    if host != old_host:
+                        try:
+                            await async_stop_camera(self.hass, old_host)
+                        except BridgeError:
+                            errors["base"] = "bridge_unavailable"
+                            default_host = host
+                        else:
+                            old_host = host
+                    if not errors:
+                        try:
+                            await async_set_detection_config(
+                                self.hass,
+                                stream_name,
+                                enabled=user_input[CONF_AI_ENABLED],
+                                confidence=user_input[CONF_AI_CONFIDENCE],
+                                fps=user_input[CONF_AI_FPS],
+                                confirmation_frames=user_input[CONF_AI_CONFIRMATION_FRAMES],
+                                zones=zones,
+                            )
+                        except BridgeError:
+                            errors["base"] = "ai_unavailable"
+                        else:
+                            return self.async_create_entry(
+                                title="",
+                                data={
+                                    CONF_HOST: host,
+                                    CONF_STREAM_NAME: stream_name,
+                                    CONF_STREAM_URL: url,
+                                    CONF_AI_ENABLED: user_input[CONF_AI_ENABLED],
+                                    CONF_AI_CONFIDENCE: user_input[CONF_AI_CONFIDENCE],
+                                    CONF_AI_FPS: user_input[CONF_AI_FPS],
+                                    CONF_AI_CONFIRMATION_FRAMES:
+                                        user_input[CONF_AI_CONFIRMATION_FRAMES],
+                                    CONF_AI_ZONES: zones,
+                                },
+                            )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
                 vol.Required(CONF_HOST, default=default_host): str,
+                vol.Required(CONF_AI_ENABLED, default=default_enabled): bool,
+                vol.Required(CONF_AI_CONFIDENCE, default=default_confidence):
+                    vol.All(vol.Coerce(float), vol.Range(min=0.1, max=0.95)),
+                vol.Required(CONF_AI_FPS, default=default_fps):
+                    vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
+                vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=default_confirmation):
+                    vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
+                vol.Required(CONF_AI_ZONES, default=json.dumps(default_zones, ensure_ascii=False)):
+                    str,
             }), errors=errors,
         )

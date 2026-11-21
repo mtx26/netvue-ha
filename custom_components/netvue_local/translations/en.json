@@ -37,14 +37,22 @@
     "step": {
       "init": {
         "title": "Camera options",
-        "description": "The bridge will stop the old stream and start one for this address.",
-        "data": {"host": "Camera IPv4 address"}
+        "description": "Configure the address, AI detection, confidence, rate, confirmation and zones.",
+        "data": {
+          "host": "Camera IPv4 address",
+          "ai_enabled": "AI detection enabled",
+          "ai_confidence": "Minimum confidence",
+          "ai_fps": "Analyzed frames per second",
+          "ai_confirmation_frames": "Confirmation frames",
+          "ai_zones": "Zones JSON"
+        }
       }
     },
     "error": {
       "invalid_input": "Invalid IPv4 address.",
       "already_configured": "This camera is already configured.",
-      "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed."
+      "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed.",
+      "ai_unavailable": "The local AI detection service is unavailable."
     },
     "abort": {
       "already_configured": "This camera is already configured."
@@ -53,7 +61,8 @@
   "entity": {
     "binary_sensor": {
       "rtsp_available": {"name": "RTSP H.264 stream available"},
-      "camera_unavailable": {"name": "Camera unavailable"}
+      "camera_unavailable": {"name": "Camera unavailable"},
+      "ai_detection": {"name": "AI detection"}
     },
     "sensor": {
       "session": {
@@ -97,7 +106,8 @@
       "stop_recording": {"name": "Stop recording"}
     },
     "switch": {
-      "continuous_recording": {"name": "Continuous recording"}
+      "continuous_recording": {"name": "Continuous recording"},
+      "ai_detection_enabled": {"name": "AI detection"}
     }
   }
 }

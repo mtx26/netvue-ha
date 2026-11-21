@@ -1,0 +1,50 @@
+# Phase 58 — Détection locale
+
+## Objectif
+
+Ajouter un service local isolé de détection d'objets réutilisant les flux RTSP
+existants, puis exposer son état et ses événements dans Home Assistant.
+
+## Décisions
+
+- Détecteur initial : YOLOv8n ONNX Runtime CPU.
+- Classes initiales : personnes, chats, chiens, oiseaux, bicyclettes,
+  voitures, motos, bus et camions.
+- Suivi : IoU simple avec confirmation temporelle et refroidissement.
+- Zones : rectangles normalisés configurés par nom de flux.
+- Détection de colis : non activée ; aucune classe COCO fiable n'est assimilée
+  automatiquement à un colis.
+- Accélération AMD : non déclarée. Le conteneur reste sur CPU jusqu'à mesure
+  démontrée sur le serveur.
+- Interface locale : API loopback sur le port 8766, sans publication Docker.
+
+## Modifications
+
+- Nouveau service `ai-service/` avec Dockerfile, modèle, API et tests unitaires.
+- Nouveau service Swarm `netvue-ai` avec limites CPU/mémoire et sécurité
+  minimale.
+- Intégration HA : capteur de détection, switch d'activation et événements
+  `netvue_local_event`.
+- Roadmap et architecture mises à jour.
+
+## Tests
+
+- Tests unitaires du suivi IoU et des zones.
+- Test de configuration Portainer du conteneur IA.
+- Tests Go/Python à relancer après les changements.
+
+## État
+
+Implémentation hors ligne et service déployé sur le serveur réel. Deux flux
+Netvue actifs ont été découverts; une caméra atteignait l'état `detecting`.
+Mesure stabilisée sur une charge réelle : environ 59 % CPU et 198 Mio RAM pour
+le conteneur IA, sans détection confirmée pendant la fenêtre observée.
+
+L'intégration HA 0.2.22 a été sauvegardée puis installée dans
+`custom_components/netvue_local` sans redémarrage du conteneur HA. Le
+redémarrage ou rechargement ne sera pas lancé automatiquement afin de préserver
+le lecteur WebRTC existant.
+
+Validation restante : catégories réellement visibles, précision/retard des
+événements, endurance 24 h, switch depuis HA après chargement, intégration du
+colis, accélération AMD/VAAPI et mesures multi-caméras plus longues.

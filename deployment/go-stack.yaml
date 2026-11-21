@@ -138,6 +138,58 @@ services:
       rollback_config:
         order: stop-first
 
+  netvue-ai-init:
+    image: ${NETVUE_AI_IMAGE:-ghcr.io/mtx26/netvue-ai:latest}
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    networks: [host]
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown 10001:10001 /data && chmod u+rwx /data"]
+    volumes:
+      - type: volume
+        source: netvue-ai-config
+        target: /data
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the node shared with Home Assistant}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
+  netvue-ai:
+    image: ${NETVUE_AI_IMAGE:-ghcr.io/mtx26/netvue-ai:latest}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    networks: [host]
+    environment:
+      NETVUE_AI_CONFIG_DIR: "/data"
+    volumes:
+      - type: volume
+        source: netvue-ai-config
+        target: /data
+    stop_grace_period: 15s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${NETVUE_NODE:?set the node shared with Home Assistant}
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 768M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
 networks:
   host:
     external: true
@@ -145,3 +197,4 @@ networks:
 
 volumes:
   recordings:
+  netvue-ai-config:

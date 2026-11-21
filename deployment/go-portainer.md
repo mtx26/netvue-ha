@@ -85,6 +85,7 @@ l'API du pont restent sur `127.0.0.1`.
    |---|---|
    | `NETVUE_CLOUDFLARE_TURN_KEY_ID` | ID de la clé TURN Realtime |
    | `NETVUE_CLOUDFLARE_TURN_API_TOKEN` | Jeton API de cette clé |
+   | `NETVUE_AI_IMAGE` | Facultatif : image Docker du service IA |
 
    Une seule clé suffit pour toutes les caméras. Ne colle pas le jeton
    dans le YAML, Git, des logs ou une capture d'écran. Les administrateurs

@@ -13,11 +13,19 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpda
 from .bridge_api import (
     BridgeError,
     CameraMetadata,
+    DetectionStatus,
     ManagedCamera,
     RecordingStatus,
     SessionStatus,
+    async_get_detection_events,
+    async_get_detection_status,
+    async_set_detection_config,
 )
-from .const import CONF_STREAM_URL, DOMAIN, UPDATE_INTERVAL
+from .const import (
+    CONF_AI_CONFIDENCE, CONF_AI_CONFIRMATION_FRAMES, CONF_AI_ENABLED,
+    CONF_AI_FPS, CONF_AI_ZONES, CONF_STREAM_NAME, CONF_STREAM_URL,
+    DOMAIN, UPDATE_INTERVAL,
+)
 from .rtsp import async_probe_stream
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +36,8 @@ class CameraData(NamedTuple):
     rtsp_available: bool
     manager_error: str | None = None
     recording: RecordingStatus | None = None
+    detection: DetectionStatus | None = None
+    ai_error: str | None = None
 
 
 class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
@@ -40,6 +50,7 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
         self.camera = ManagedCamera(hass, host, name)
         self._entry = entry
         self._device_metadata: dict[str, str] = {}
+        self._last_detection_event_ids: set[str] = set()
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -70,6 +81,8 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
         session = None
         manager_error = None
         recording = None
+        detection = None
+        ai_error = None
         try:
             session = await self.camera.async_reconcile()
         except BridgeError as exc:
@@ -84,12 +97,62 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
                 _LOGGER.warning("Unable to read bridge recording status: %s", exc)
         if session is not None and session.metadata is not None:
             self._update_device_metadata(session.metadata)
+        try:
+            stream_name = self._entry.options.get(
+                CONF_STREAM_NAME, self._entry.data[CONF_STREAM_NAME]
+            )
+            if CONF_AI_ENABLED in self._entry.options:
+                await async_set_detection_config(
+                    self.hass,
+                    stream_name,
+                    enabled=self._entry.options[CONF_AI_ENABLED],
+                    confidence=self._entry.options[CONF_AI_CONFIDENCE],
+                    fps=self._entry.options[CONF_AI_FPS],
+                    confirmation_frames=self._entry.options[CONF_AI_CONFIRMATION_FRAMES],
+                    zones=self._entry.options[CONF_AI_ZONES],
+                )
+            detection = await async_get_detection_status(self.hass, stream_name)
+        except (BridgeError, KeyError) as exc:
+            ai_error = str(exc)
+            _LOGGER.debug("Unable to read local AI detection status: %s", exc)
+        if detection is not None:
+            await self._async_fire_new_detection_events(detection)
         return CameraData(
             session,
             await async_probe_stream(self.url),
             manager_error,
             recording,
+            detection,
+            ai_error,
         )
+
+    async def _async_fire_new_detection_events(
+        self, detection: DetectionStatus
+    ) -> None:
+        if detection.last_event_at is None:
+            return
+        stream_name = self._entry.options.get(
+            CONF_STREAM_NAME, self._entry.data[CONF_STREAM_NAME]
+        )
+        try:
+            events = await async_get_detection_events(self.hass, stream_name)
+        except BridgeError as exc:
+            _LOGGER.debug("Unable to read local AI events: %s", exc)
+            return
+        for event in events:
+            event_id = event.get("id") if isinstance(event, dict) else None
+            if not isinstance(event_id, str) or event_id in self._last_detection_event_ids:
+                continue
+            self._last_detection_event_ids.add(event_id)
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_event",
+                {
+                    "entry_id": self._entry.entry_id,
+                    "camera": self._entry.title,
+                    "host": self.camera.host,
+                    **event,
+                },
+            )
 
 
 class NetvueEntity(CoordinatorEntity[NetvueCoordinator]):

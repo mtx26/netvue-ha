@@ -7,8 +7,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .bridge_api import BridgeError
+from .bridge_api import (
+    BridgeError,
+    async_set_detection_enabled,
+)
 from .coordinator import NetvueCoordinator, NetvueEntity
+from .const import CONF_STREAM_NAME
 
 
 async def async_setup_entry(
@@ -16,7 +20,10 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    async_add_entities([NetvueContinuousRecordingSwitch(entry, entry.runtime_data)])
+    async_add_entities([
+        NetvueContinuousRecordingSwitch(entry, entry.runtime_data),
+        NetvueAiDetectionSwitch(entry, entry.runtime_data),
+    ])
 
 
 class NetvueContinuousRecordingSwitch(NetvueEntity, SwitchEntity):
@@ -50,5 +57,45 @@ class NetvueContinuousRecordingSwitch(NetvueEntity, SwitchEntity):
         except BridgeError as exc:
             raise HomeAssistantError(
                 f"Unable to change continuous recording: {exc}"
+            ) from exc
+        await self.coordinator.async_request_refresh()
+
+
+class NetvueAiDetectionSwitch(NetvueEntity, SwitchEntity):
+    _attr_has_entity_name = True
+    _attr_translation_key = "ai_detection_enabled"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_ai_detection_enabled"
+        self._stream_name = entry.options.get(
+            CONF_STREAM_NAME, entry.data[CONF_STREAM_NAME]
+        )
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data
+        return super().available and data is not None and data.detection is not None
+
+    @property
+    def is_on(self) -> bool:
+        data = self.coordinator.data
+        return bool(data and data.detection and data.detection.enabled)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self._set_enabled(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._set_enabled(False)
+
+    async def _set_enabled(self, enabled: bool) -> None:
+        try:
+            await async_set_detection_enabled(
+                self.coordinator.hass, self._stream_name, enabled
+            )
+        except BridgeError as exc:
+            raise HomeAssistantError(
+                f"Unable to change AI detection: {exc}"
             ) from exc
         await self.coordinator.async_request_refresh()
