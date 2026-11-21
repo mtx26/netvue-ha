@@ -59,28 +59,38 @@ class PortainerConfigTest(unittest.TestCase):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
 
         self.assertIn("recordings", stack["volumes"])
-        for name in ("mediamtx", "netvue-bridge"):
+        self.assertIn("recordings-protected", stack["volumes"])
+        expected_recording_volume = [{
+            "type": "volume",
+            "source": "recordings",
+            "target": "/recordings",
+        }]
+        for name in ("mediamtx",):
             service = stack["services"][name]
             with self.subTest(service=name):
                 self.assertEqual(service["user"], "10001:10001")
                 self.assertTrue(service["read_only"])
                 self.assertEqual(service["cap_drop"], ["ALL"])
                 self.assertNotIn("ports", service)
-                self.assertEqual(
-                    service["volumes"],
-                    [{
-                        "type": "volume",
-                        "source": "recordings",
-                        "target": "/recordings",
-                    }],
-                )
+                self.assertEqual(service["volumes"], expected_recording_volume)
+
+        bridge = stack["services"]["netvue-bridge"]
+        self.assertEqual(bridge["user"], "10001:10001")
+        self.assertTrue(bridge["read_only"])
+        self.assertEqual(bridge["cap_drop"], ["ALL"])
+        self.assertNotIn("ports", bridge)
+        self.assertEqual(bridge["volumes"], expected_recording_volume + [{
+            "type": "volume",
+            "source": "recordings-protected",
+            "target": "/recordings-protected",
+        }])
 
         init = stack["services"]["recordings-init"]
         self.assertEqual(init["user"], "0:0")
         self.assertTrue(init["read_only"])
         self.assertEqual(init["cap_drop"], ["ALL"])
         self.assertEqual(init["cap_add"], ["CHOWN", "FOWNER"])
-        self.assertEqual(init["volumes"], stack["services"]["netvue-bridge"]["volumes"])
+        self.assertEqual(init["volumes"], expected_recording_volume)
         self.assertEqual(
             init["deploy"]["placement"],
             stack["services"]["netvue-bridge"]["deploy"]["placement"],
@@ -91,6 +101,17 @@ class PortainerConfigTest(unittest.TestCase):
         )
         self.assertIn("chown 10001:10001 /recordings", init["command"][0])
         self.assertIn('[ -w /recordings ]', stack["services"]["netvue-bridge"]["entrypoint"][2])
+
+        protected_init = stack["services"]["protected-recordings-init"]
+        self.assertEqual(protected_init["user"], "0:0")
+        self.assertTrue(protected_init["read_only"])
+        self.assertEqual(protected_init["cap_drop"], ["ALL"])
+        self.assertEqual(protected_init["volumes"], [{
+            "type": "volume",
+            "source": "recordings-protected",
+            "target": "/recordings-protected",
+        }])
+        self.assertIn("chown 10001:10001 /recordings-protected", protected_init["command"][0])
 
     def test_mediamtx_environment_matches_reference(self):
         stack = yaml.safe_load((ROOT / "deployment/go-stack.yaml").read_text())
