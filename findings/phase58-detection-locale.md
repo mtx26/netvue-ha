@@ -38,7 +38,10 @@ existants, puis exposer son état et ses événements dans Home Assistant.
   configurations multi-zones, la première zone est affichée et seule cette
   zone reste après enregistrement. L'interface reste à valider dans HA réel.
 - Sans zone enregistrée, toute l'image est présélectionnée ; le bouton
-  « Toute l'image » rétablit cette sélection. Boutons harmonisés avec le thème HA.
+  « Toute l'image » rétablit cette sélection. Même fond sombre et boutons
+  arrondis que la carte caméra, avec icônes et libellés blancs contrastés.
+  Une consigne et l'état de la sélection rendent le dessin explicite.
+  La zone choisie reste sans teinte ; seul l'extérieur est assombri.
 - Logs IA au niveau INFO : démarrage, modèle prêt, lecteurs vidéo,
   activation/désactivation, événements confirmés et configuration modifiée.
   Les requêtes HTTP et chaque image ne sont pas journalisées ; les erreurs
@@ -66,7 +69,10 @@ existants, puis exposer son état et ses événements dans Home Assistant.
 - Test de configuration Portainer du conteneur IA.
 - Dernières évolutions : 70 tests frontend et 9 tests IA réussis hors ligne.
   Navigateur synthétique : image entière présélectionnée, bouton de
-  resélection et enregistrement vérifiés ; boutons de 40 px adaptés au thème.
+  resélection et enregistrement vérifiés ; boutons de 40 px au style caméra.
+  Régression de contraste vérifiée avec des variables de thème clair :
+  texte blanc sur fond sombre, aperçu sélectionné transparent et masquage
+  limité à l'extérieur du rectangle.
   Démarrage IA simulé sans caméra/modèle : logs INFO visibles.
 - Corrigé le compte d'entités du test HA de rechargement (13 avec le
   nouveau capteur textuel, au lieu de 12).

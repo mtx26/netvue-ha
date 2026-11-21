@@ -102,41 +102,46 @@ class NetvueCameraCardEditor extends NetvueCardEditor {
     const root = this.shadowRoot;
     const style = document.createElement("style");
     style.textContent = `
-      .zone-editor { margin-top:12px; }
+      .zone-editor { margin-top:12px; color:#fff; font:14px sans-serif; line-height:1.4; }
+      .zone-help { margin:0 0 12px; color:#ddd; }
+      .zone-selection { margin:12px 0 0; font-weight:600; }
       ha-form[hidden] { display:none; }
       .zone-controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
       .zone-stage { position:relative; margin:12px auto 0; width:fit-content; max-width:100%; background:#111; overflow:hidden; }
       .zone-stage img { display:block; width:auto; max-width:100%; max-height:72dvh; user-select:none; }
       .zone-stage canvas { position:absolute; inset:0; width:100%; height:100%; touch-action:none; cursor:crosshair; }
-      .zone-controls button { min-height:40px; padding:8px 16px; border:1px solid var(--divider-color, #666);
-        border-radius:20px; background:transparent; color:var(--primary-text-color, #fff);
-        font:500 14px var(--paper-font-body1_-_font-family, Roboto, sans-serif); cursor:pointer; }
-      .zone-controls button:not([data-save-zones]):hover { background:var(--secondary-background-color, #333); }
-      .zone-controls [data-save-zones]:hover { filter:brightness(0.9); }
-      .zone-controls button:focus-visible { outline:2px solid var(--primary-color, #03a9f4); outline-offset:2px; }
-      .zone-controls [data-save-zones] { background:var(--primary-color, #03a9f4);
-        border-color:var(--primary-color, #03a9f4); color:var(--text-primary-color, #fff); }
+      .zone-controls button { display:inline-flex; align-items:center; gap:8px; min-height:40px;
+        padding:8px 14px; border:1px solid rgba(255,255,255,.5); border-radius:20px;
+        background:rgba(0,0,0,.8); color:#fff; font:inherit; cursor:pointer; }
+      .zone-controls button:hover { background:#333; }
+      .zone-controls button:focus-visible { outline:3px solid var(--primary-color, #03a9f4); outline-offset:2px; }
+      .zone-controls [data-save-zones] { border-color:var(--primary-color, #03a9f4); }
+      .zone-controls svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8;
+        stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
     `;
     root.appendChild(style);
     this._zoneEditor = document.createElement("section");
     this._zoneEditor.className = "zone-editor";
     this._zoneEditor.innerHTML = `
+      <p class="zone-help" data-zone-help></p>
       <div class="zone-controls">
-        <button type="button" data-full-zone></button>
-        <button type="button" data-clear-zone></button>
-        <button type="button" data-save-zones></button>
+        <button type="button" data-full-zone><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg><span data-full-zone-label></span></button>
+        <button type="button" data-clear-zone><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg><span data-clear-zone-label></span></button>
+        <button type="button" data-save-zones><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><span data-save-zones-label></span></button>
       </div>
+      <p class="zone-selection" data-zone-selection></p>
       <div class="zone-stage">
         <img data-zone-preview alt="">
         <canvas data-zone-canvas></canvas>
       </div>
-      <p data-zone-message></p>
+      <p role="status" data-zone-message></p>
     `;
     root.appendChild(this._zoneEditor);
     const t = translator(this._hass?.locale?.language || this._hass?.language);
-    this._zoneEditor.querySelector("[data-full-zone]").textContent = t("zoneFull");
-    this._zoneEditor.querySelector("[data-clear-zone]").textContent = t("zoneClear");
-    this._zoneEditor.querySelector("[data-save-zones]").textContent = t("zoneSave");
+    this._zoneEditor.querySelector("[data-zone-help]").textContent = t("zoneHelp");
+    this._zoneEditor.querySelector("[data-full-zone-label]").textContent = t("zoneFull");
+    this._zoneEditor.querySelector("[data-clear-zone-label]").textContent = t("zoneClear");
+    this._zoneEditor.querySelector("[data-save-zones-label]").textContent = t("zoneSave");
     this._canvas = this._zoneEditor.querySelector("[data-zone-canvas]");
     this._preview = this._zoneEditor.querySelector("[data-zone-preview]");
     this._canvas.addEventListener("pointerdown", (event) => this._startZone(event));
@@ -276,15 +281,20 @@ class NetvueCameraCardEditor extends NetvueCardEditor {
     const width = this._canvas.width;
     const height = this._canvas.height;
     ctx.clearRect(0, 0, width, height);
-    const colors = {
-      entrance: "#03a9f4", doorstep: "#ff9800", garden: "#4caf50", driveway: "#ab47bc",
-    };
-    for (const [name, rect] of Object.entries({ ...this._zones, ...extra })) {
+    const zones = { ...this._zones, ...extra };
+    const selection = Object.values(zones)[0];
+    this._zoneEditor.querySelector("[data-zone-selection]").textContent =
+      this._translateZone(!selection || selection.every((value, index) => value === [0, 0, 1, 1][index])
+        ? "zoneFullSelected" : "zoneCustomSelected");
+    for (const rect of Object.values(zones)) {
       const [x1, y1, x2, y2] = rect;
-      ctx.strokeStyle = colors[name] || "#fff";
-      ctx.fillStyle = `${ctx.strokeStyle}33`;
+      ctx.fillStyle = "rgba(0,0,0,.45)";
+      ctx.fillRect(0, 0, width, y1 * height);
+      ctx.fillRect(0, y2 * height, width, (1 - y2) * height);
+      ctx.fillRect(0, y1 * height, x1 * width, (y2 - y1) * height);
+      ctx.fillRect(x2 * width, y1 * height, (1 - x2) * width, (y2 - y1) * height);
+      ctx.strokeStyle = "#03a9f4";
       ctx.lineWidth = 3;
-      ctx.fillRect(x1 * width, y1 * height, (x2 - x1) * width, (y2 - y1) * height);
       ctx.strokeRect(x1 * width, y1 * height, (x2 - x1) * width, (y2 - y1) * height);
     }
   }

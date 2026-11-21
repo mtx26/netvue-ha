@@ -160,7 +160,7 @@ button[disabled] { color: rgba(255,255,255,.65); cursor: default; }
   color: #fff; background: rgba(176,0,32,.9); line-height: 1.4; font-size: 14px; }
 .settings-panel { box-sizing: border-box; width: 96vw; max-width: 1400px; max-height: 94dvh;
   margin: auto; overflow: auto; padding: 16px; border: 0; border-radius: 12px;
-  background: var(--card-background-color, #222); color: var(--primary-text-color, #fff); line-height: 1.4; }
+  background: #222; color: #fff; line-height: 1.4; }
 .settings-panel::backdrop { background: rgba(0,0,0,.75); }
 .settings-panel[hidden] { display: none; }
 .settings-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }

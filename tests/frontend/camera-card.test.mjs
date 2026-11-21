@@ -259,6 +259,8 @@ test("settings open on the selected camera and save drawn zones without changing
   assert.equal(editor._form.hidden, true);
   assert.equal(editor._preview.src, "/image");
   assert.deepEqual(editor._zones, { entrance: [0, 0, 1, 1] });
+  assert.equal(editor._zoneEditor.querySelector("[data-zone-selection]").textContent,
+    "The whole image is selected");
   assert.equal(calls.some(({ method }) => method === "PUT"), false);
   await editor._save();
   assert.deepEqual(calls.at(-1).body, { ...config, ai_zones: { entrance: [0, 0, 1, 1] } });
@@ -266,6 +268,8 @@ test("settings open on the selected camera and save drawn zones without changing
   editor._resizeCanvas();
   editor._startZone({ clientX: 20, clientY: 20, pointerId: 1 });
   editor._finishZone({ clientX: 160, clientY: 80 });
+  assert.equal(editor._zoneEditor.querySelector("[data-zone-selection]").textContent,
+    "Custom detection area selected");
   config.ai_confidence = 0.8;
   await editor._save();
   assert.deepEqual(calls.at(-1), {
@@ -332,6 +336,8 @@ test("drawing replaces the single zone and clearing removes it", async () => {
   editor._zoneEditor.querySelector("[data-full-zone]").dispatch("click");
   await editor._save();
   assert.deepEqual(saved[2].ai_zones, { garden: [0, 0, 1, 1] });
+  assert.equal(editor._zoneEditor.querySelector("[data-zone-selection]").textContent,
+    "The whole image is selected");
 });
 
 test("settings use the entry of each camera independently", async () => {
