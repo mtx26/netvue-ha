@@ -17,12 +17,17 @@ class Element {
   addEventListener(name, callback) { this.listeners[name] = callback; }
 }
 globalThis.HTMLElement = Element;
+class SelectElement extends Element {
+  get type() { return "select-one"; }
+}
 const definitions = new Map();
 globalThis.customElements = {
   get: (name) => definitions.get(name),
   define: (name, value) => definitions.set(name, value),
 };
-globalThis.document = { createElement: (tag) => new Element(tag) };
+globalThis.document = {
+  createElement: (tag) => (tag === "select" ? new SelectElement(tag) : new Element(tag)),
+};
 globalThis.window = { confirm: () => false };
 const { NetvueProtectedCard, filterProtected } = await import(
   "../../custom_components/netvue_local/frontend/netvue-protected-card.js"

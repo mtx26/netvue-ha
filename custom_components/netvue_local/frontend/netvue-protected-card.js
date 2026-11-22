@@ -114,7 +114,7 @@ export class NetvueProtectedCard extends HTMLElement {
       const wrapper = node("label", this._rules);
       node("span", wrapper, label);
       const input = node(type === "select" ? "select" : "input", wrapper);
-      input.type = type;
+      if (type !== "select") input.type = type;
       if (type === "number") input.min = "0.1", input.max = "0.95", input.step = "0.01";
       if (type === "text") input.value = value;
       if (type === "time") input.value = value;
