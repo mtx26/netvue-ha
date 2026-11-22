@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-ha/internal/netvue"
 )
 
 func TestManagerEnduranceIndependentCamerasAndFailure(t *testing.T) {
@@ -300,6 +302,40 @@ func BenchmarkManagerEnduranceLifecycle(b *testing.B) {
 		}
 		if deleted, err := manager.DeleteCamera(context.Background(), "192.168.10.20"); err != nil || !deleted {
 			b.Fatalf("DeleteCamera() = deleted %v, error %v", deleted, err)
+		}
+	}
+}
+
+func BenchmarkManagerHealthSnapshot(b *testing.B) {
+	manager, err := newManager(context.Background(), "192.168.10.2", func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := manager.Close(context.Background()); err != nil {
+			b.Error(err)
+		}
+	})
+	manager.runObserved = func(ctx context.Context, _, _, _ string, _ *netvue.LiveTalkback, _ func(netvue.SessionEvent)) error {
+		<-ctx.Done()
+		return nil
+	}
+	for i := 0; i < 16; i++ {
+		host := fmt.Sprintf("192.168.10.%d", 20+i)
+		if _, _, err := manager.AddCamera(host, fmt.Sprintf("bench_%d", i)); err != nil {
+			b.Fatal(err)
+		}
+		session := manager.cameras[host]
+		manager.observeSession(session, session.done, netvue.SessionEvent{FrameAt: time.Now()})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if len(manager.Cameras()) != 16 {
+			b.Fatal("missing cameras")
 		}
 	}
 }

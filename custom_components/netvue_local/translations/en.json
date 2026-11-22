@@ -210,6 +210,10 @@
         "name": "Camera diagnosis",
         "state": {
           "healthy": "Operating normally",
+          "degraded": "Video delayed or interrupted",
+          "reconnecting": "Reconnecting",
+          "connection_unavailable": "Camera unavailable, retrying",
+          "recovered": "Video restored",
           "stream_unavailable": "Video stream unavailable",
           "ai_unavailable": "AI service unavailable",
           "bridge_unavailable": "Netvue manager unavailable",

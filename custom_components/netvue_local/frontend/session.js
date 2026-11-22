@@ -2,14 +2,16 @@
 
 import { NetvueConnection } from "./connection.js";
 
-export const RETRY_DELAYS_MS = [1000, 2000, 4000];
+export const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 export const HEALTHY_RESET_MS = 30000;
 
 export class RecoveryPolicy {
-  constructor({ delays = RETRY_DELAYS_MS, healthyMs = HEALTHY_RESET_MS, now = () => Date.now() } = {}) {
+  constructor({ delays = RETRY_DELAYS_MS, healthyMs = HEALTHY_RESET_MS,
+    now = () => Date.now(), random = Math.random } = {}) {
     this._delays = delays;
     this._healthyMs = healthyMs;
     this._now = now;
+    this._random = random;
     this.reset();
   }
 
@@ -22,16 +24,14 @@ export class RecoveryPolicy {
     this._healthySince = this._now();
   }
 
-  // Returns the delay before the next attempt, or null once the attempts are used up.
   failed() {
     if (this._healthySince !== null && this._now() - this._healthySince >= this._healthyMs) {
       this._attempts = 0;
     }
     this._healthySince = null;
-    if (this._attempts >= this._delays.length) {
-      return null;
-    }
-    return this._delays[this._attempts++];
+    const delay = this._delays[Math.min(this._attempts, this._delays.length - 1)];
+    this._attempts = Math.min(this._attempts + 1, this._delays.length);
+    return Math.round(delay * (0.75 + 0.25 * this._random()));
   }
 
   get attempts() {
@@ -51,7 +51,7 @@ export class NetvueSession {
       ...options,
     };
     this._timers = this._o.timers;
-    this._policy = new RecoveryPolicy({ now: this._o.now });
+    this._policy = new RecoveryPolicy({ now: this._o.now, random: this._o.random });
     this._conn = null;
     this._retryTimer = null;
     this._active = false;
@@ -70,7 +70,7 @@ export class NetvueSession {
     this._connect("connecting");
   }
 
-  // Manual retry after the automatic attempts are exhausted or a fatal error.
+  // Manual retry after a fatal error.
   retry() {
     this._teardown();
     this._policy.reset();

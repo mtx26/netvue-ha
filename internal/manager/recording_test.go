@@ -17,8 +17,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mtx26/netvue-ha/internal/netvue"
 )
 
 func TestRecordingJSONReplacementAndCleanup(t *testing.T) {
@@ -83,6 +86,97 @@ func TestRecordingEndpointsReportMissingSegmentsAndControlErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRecordingConfigurationRetriesAndReappliesAfterRecovery(t *testing.T) {
+	var attempts atomic.Int32
+	applied := make(chan bool, 4)
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if attempts.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		case http.MethodPatch:
+			var payload struct {
+				Record bool `json:"record"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			applied <- payload.Record
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(control.Close)
+	t.Setenv("NETVUE_RECORDINGS_DIR", t.TempDir())
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	manager.recordings.controlURL = control.URL
+	manager.recordings.states["camera"] = recordingState{Continuous: true}
+	manager.runObserved = func(ctx context.Context, _, _, _ string, _ *netvue.LiveTalkback, _ func(netvue.SessionEvent)) error {
+		<-ctx.Done()
+		return nil
+	}
+	if _, _, err := manager.AddCamera("192.168.10.20", "camera"); err != nil {
+		t.Fatal(err)
+	}
+	waitApplied := func() {
+		t.Helper()
+		select {
+		case enabled := <-applied:
+			if !enabled {
+				t.Fatal("continuous recording was not restored")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("recording configuration was not applied")
+		}
+	}
+	waitApplied()
+	manager.mu.RLock()
+	session := manager.cameras["192.168.10.20"]
+	done := session.done
+	manager.mu.RUnlock()
+	manager.observeSession(session, done, netvue.SessionEvent{FrameAt: time.Now().Add(-time.Second)})
+	manager.observeSession(session, done, netvue.SessionEvent{Error: "Connection error"})
+	manager.observeSession(session, done, netvue.SessionEvent{FrameAt: time.Now()})
+	waitApplied()
+	if attempts.Load() < 3 {
+		t.Fatalf("configuration attempts = %d, want initial failure, retry and recovery", attempts.Load())
+	}
+}
+
+func TestRecordingStatusRequiresEnabledMediaMTXConfiguration(t *testing.T) {
+	var enabled atomic.Bool
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v3/paths/get/camera":
+			_, _ = io.WriteString(w, `{"available":true}`)
+		case "/v3/config/paths/get/camera":
+			_ = json.NewEncoder(w).Encode(map[string]bool{"record": enabled.Load()})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(control.Close)
+	t.Setenv("NETVUE_RECORDINGS_DIR", t.TempDir())
+	manager := newRecordingManager(t.Context())
+	manager.controlURL = control.URL
+	manager.states["camera"] = recordingState{Continuous: true}
+
+	status := manager.status("camera")
+	if status.Active || status.Error == "" {
+		t.Fatalf("disabled MediaMTX recording must not appear active: %+v", status)
+	}
+	enabled.Store(true)
+	status = manager.status("camera")
+	if !status.Active || status.Error != "" {
+		t.Fatalf("enabled recording and available path: %+v", status)
 	}
 }
 

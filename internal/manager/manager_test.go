@@ -66,6 +66,53 @@ func TestManagerRunsFiveIndependentCameras(t *testing.T) {
 	}
 }
 
+func TestCameraHealthTracksMediaRecoveryWithoutAffectingOtherCameras(t *testing.T) {
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	manager.runObserved = func(ctx context.Context, _, _, _ string, _ *netvue.LiveTalkback, _ func(netvue.SessionEvent)) error {
+		<-ctx.Done()
+		return nil
+	}
+	for _, host := range []string{"192.168.10.20", "192.168.10.21"} {
+		if _, _, err := manager.AddCamera(host, "camera_"+host[len(host)-2:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager.mu.RLock()
+	first := manager.cameras["192.168.10.20"]
+	second := manager.cameras["192.168.10.21"]
+	firstDone, secondDone := first.done, second.done
+	manager.mu.RUnlock()
+	now := time.Now()
+	manager.observeSession(first, firstDone, netvue.SessionEvent{FrameAt: now.Add(-15 * time.Second)})
+	manager.observeSession(second, secondDone, netvue.SessionEvent{FrameAt: now})
+	camera, _ := manager.Camera(first.Host)
+	if camera.Health.State != "degraded" || camera.Health.DowntimeSeconds < 15 {
+		t.Fatalf("stalled camera = %+v", camera.Health)
+	}
+	for range 3 {
+		manager.observeSession(first, firstDone, netvue.SessionEvent{Error: "Connection error"})
+	}
+	camera, _ = manager.Camera(first.Host)
+	other, _ := manager.Camera(second.Host)
+	if camera.Health.State != "unavailable" || camera.Health.ReconnectionCount != 3 ||
+		camera.Health.LastError != "Connection error" || other.Health.State != "connected" {
+		t.Fatalf("health after retries = %+v; other camera = %+v", camera.Health, other.Health)
+	}
+	manager.observeSession(first, firstDone, netvue.SessionEvent{FrameAt: time.Now()})
+	camera, _ = manager.Camera(first.Host)
+	if camera.Health.State != "recovered" || camera.Health.DowntimeSeconds < 15 || camera.Health.LastFrameAt == nil {
+		t.Fatalf("health after recovery = %+v", camera.Health)
+	}
+	manager.observeSession(first, make(chan struct{}), netvue.SessionEvent{Error: "obsolete"})
+	camera, _ = manager.Camera(first.Host)
+	if camera.Health.LastError != "Connection error" || camera.Health.ReconnectionCount != 3 {
+		t.Fatalf("obsolete callback changed health: %+v", camera.Health)
+	}
+}
+
 func TestManagerCanonicalizesCameraAddressAcrossOperations(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
 		<-ctx.Done()

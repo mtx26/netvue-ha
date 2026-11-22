@@ -204,6 +204,31 @@ function findByClass(node, className) {
   return null;
 }
 
+test("camera card shows reconnecting while its camera recovers and starts again", () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  let stopped = 0;
+  let started = 0;
+  card._session = { active: true, stop() { stopped++; } };
+  card._startSession = () => { started++; };
+  const camera = { state: "unavailable", attributes: { netvue_entry_id: "entry1" } };
+  const diagnostic = {
+    state: "reconnecting",
+    attributes: { netvue_entry_id: "entry1", connection_state: "reconnecting" },
+  };
+  card.hass = { states: { "camera.test": camera, "sensor.diag": diagnostic } };
+  card._sync();
+  assert.equal(stopped, 1);
+  assert.equal(card._view.state, "reconnecting");
+  camera.state = "idle";
+  card._sync();
+  assert.equal(started, 1);
+  camera.state = "unavailable";
+  diagnostic.state = "authentication_failed";
+  card._sync();
+  assert.equal(card._view.state, "unavailable");
+});
+
 test("manual recording controls and the REC indicator reflect continuous mode", async () => {
   const calls = [];
   const card = new NetvueCameraCard();

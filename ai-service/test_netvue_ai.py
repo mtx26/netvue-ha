@@ -346,6 +346,35 @@ class AiUnitTest(unittest.TestCase):
         self.assertEqual(snapshots[3]["detections"], [])
         self.assertFalse(persist.call_args_list[1].args[2])
 
+    def test_worker_ignores_duplicate_pts_and_pixels_but_accepts_static_new_frames(self):
+        detector = MagicMock(confidence=0.45)
+        detector.detect.return_value = [Detection(0, "person", 0.9, (10, 10, 20, 20))]
+        worker = CameraWorker("test", {}, detector, fps=1, confirmation=1)
+        snapshots = []
+
+        def frames():
+            for pts in (1, 1, 2):
+                frame = av.VideoFrame.from_ndarray(
+                    np.zeros((48, 64, 3), dtype=np.uint8), format="bgr24"
+                )
+                frame.pts = pts
+                frame.time_base = Fraction(1, 1000)
+                yield frame
+                snapshots.append(worker.snapshot())
+            worker.running = False
+
+        with (
+            patch("netvue_ai.video_frames", side_effect=lambda _url: frames()),
+            patch("netvue_ai.time.monotonic", side_effect=[1.0, 2.0, 3.0]),
+            patch("netvue_ai.time.sleep"),
+            patch.object(worker, "persist_metadata"),
+        ):
+            worker.run()
+        self.assertEqual(detector.detect.call_count, 2)
+        self.assertEqual(snapshots[0]["last_frame_at"], snapshots[1]["last_frame_at"])
+        self.assertEqual(snapshots[2]["frames_skipped"], 1)
+        self.assertEqual(snapshots[2]["inference_count"], 2)
+
     def test_worker_resets_confirmation_after_resolution_change(self):
         detector = MagicMock(confidence=0.45)
         worker = CameraWorker("test", {}, detector, fps=1, confirmation=2)

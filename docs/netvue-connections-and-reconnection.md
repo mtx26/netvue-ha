@@ -34,25 +34,29 @@ plus un an.
 | Situation | Délai | Effet |
 |---|---:|---|
 | Première image publiable | 15 s | Fermeture : démarrage vidéo impossible. |
-| Après la première image | 10 s | Fermeture : flux vidéo interrompu. |
+| Après la première image | 30 s | Fermeture : flux vidéo interrompu. |
 | Changement SPS/PPS | 15 s | Attente de la prochaine IDR. |
 
-La détection porte sur une image H.264 publiée, pas sur la réception brute ou
-l'audio. L'audio ne prolonge pas les deadlines vidéo. Ces marges couvrent les
-retransmissions TCP d'un Wi-Fi à pertes (répéteur, observé en phase 40) ;
-l'APK tolère 30 s d'inactivité en LAN. Les lecteurs WebRTC (ffmpeg, gortsplib)
-attendent 12 s.
+La détection porte sur la réception et la publication vidéo, pas sur l'audio.
+Un paquet vidéo exactement répété avec le même PTS n'est pas republié ; un PTS
+invariant pendant 30 s interrompt la session. Une collision ponctuelle ou un
+retour de PTS reste accepté. L'APK tolère 30 s d'inactivité de lecture en LAN,
+mais cela ne démontre pas son watchdog vidéo. Les lecteurs WebRTC (ffmpeg,
+gortsplib) attendent 12 s et peuvent donc se reconnecter avant la caméra.
 
 ## Reconnexion
 
-La supervision essaye séquentiellement les étapes complètes caméra :
-découverte, TCP, LOGIN, LIVE.
+La supervision découvre la caméra puis conserve en mémoire les informations
+d'une authentification réussie. Après une coupure, elle tente d'abord TCP et
+LOGIN directement ; en cas d'erreur réseau ou de refus du login, elle
+redécouvre avant de réessayer. Une découverte fraîche suivie d'un refus de
+login reste fatale. La clé n'est ni persistée ni journalisée.
 
 ```text
 2 s -> 4 s -> 8 s -> 16 s -> 30 s -> 30 s...
 ```
 
-- Maximum : 30 s.
+- Maximum : 30 s, avec une variation aléatoire entre 75 % et 100 % du délai.
 - Après au moins 5 min de fonctionnement stable : retour à 2 s.
 - Erreurs récupérables : discovery, réseau, EOF, interruption, timeout,
   première vidéo absente et réponse RTSP 503.
@@ -62,6 +66,28 @@ découverte, TCP, LOGIN, LIVE.
 - Annulation explicite : fermeture immédiate des sockets.
 
 Pendant les reprises récupérables, l'état HA reste `supervising`.
+
+### Santé par caméra
+
+L'API expose séparément `health` : `connected` après publication vidéo,
+`degraded` après 10 s sans image publiée, `reconnecting` pendant les essais,
+`unavailable` après trois échecs consécutifs ou une erreur fatale, et
+`recovered` pendant 35 s après la reprise. La dégradation ne ferme pas la
+session. La carte HA affiche la reconnexion lorsque le diagnostic est connu.
+
+La dernière image publiée est échantillonnée au plus une fois par seconde.
+Le compteur compte les sessions récupérables échouées, pas les connexions
+réussies. La durée d'indisponibilité est celle de la coupure en cours ou de
+la dernière coupure, estimée depuis la dernière image observée ; elle n'est
+donc pas une mesure exacte des trous d'enregistrement. Les compteurs sont
+réinitialisés au redémarrage manuel de la supervision. La dernière erreur est
+un diagnostic assaini.
+
+La configuration d'enregistrement MediaMTX est réappliquée après une reprise
+vidéo et réessayée après échec avec backoff. Son indicateur actif exige une
+source disponible et une configuration MediaMTX activée ; il ne prouve pas
+que les fichiers ont été écrits. Les trous restent établis à partir des
+segments réellement disponibles.
 
 ## Audio
 
@@ -114,9 +140,10 @@ préparation. Les autres erreurs échouent immédiatement. Chaque lecteur RTSP
 Une caméra réellement injoignable reste en erreur : attendre plus ne la
 rend pas accessible.
 
-La carte réessaie une négociation récupérable après 1, 2 puis 4 s, avec un
-nouvel identifiant ; après ces trois reprises, elle propose une reprise
-manuelle. Aucun nouveau budget de reprise n'est ajouté côté HA.
+La carte réessaie une négociation récupérable avec un nouvel identifiant :
+1, 2, 4, 8, 16 puis 30 s, avec la même variation aléatoire. Les essais
+continuent au maximum de 30 s tant que la carte est active ; les erreurs
+classées fatales exigent toujours une reprise manuelle.
 
 ### Audio caméra vers navigateur
 

@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 
 from custom_components.netvue_local import async_setup_entry, async_unload_entry
 from custom_components.netvue_local.bridge_api import (
-    BridgeError, ManagedCamera, RecordingStatus, SessionStatus,
+    BridgeError, CameraHealth, ManagedCamera, RecordingStatus, SessionStatus,
     async_discover_cameras, async_set_detection_config, async_set_detection_enabled, async_stop_camera,
 )
 from custom_components.netvue_local.binary_sensor import NetvueCameraUnavailableSensor
@@ -500,6 +500,12 @@ class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
         coordinator.data = CameraData(SessionStatus("supervising", None), False)
         self.assertTrue(unavailable.is_on)
         self.assertEqual(diagnostic.native_value, "stream_unavailable")
+
+        health = CameraHealth("reconnecting", "2026-01-01T00:00:00Z", 2, 12.5, "Connection error")
+        coordinator.data = CameraData(SessionStatus("supervising", None, health=health), False)
+        self.assertEqual(diagnostic.native_value, "reconnecting")
+        self.assertEqual(diagnostic.extra_state_attributes["reconnection_count"], 2)
+        self.assertEqual(diagnostic.extra_state_attributes["downtime_seconds"], 12.5)
 
         cases = [
             (CameraData(None, False, "Cannot reach the local bridge manager"),

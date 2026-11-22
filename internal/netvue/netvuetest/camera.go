@@ -109,14 +109,15 @@ type Camera struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu       sync.Mutex
-	changed  chan struct{}
-	snapshot Snapshot
-	conns    map[net.Conn]struct{}
-	pending  map[string]string
-	video    []Frame
-	videoVer int
-	talk     []TalkFrame
+	mu            sync.Mutex
+	changed       chan struct{}
+	snapshot      Snapshot
+	conns         map[net.Conn]struct{}
+	pending       map[string]string
+	video         []Frame
+	videoVer      int
+	talk          []TalkFrame
+	dropDiscovery atomic.Bool
 }
 
 // Listen starts a camera. The caller must Close it.
@@ -308,6 +309,11 @@ func (c *Camera) Drop() {
 	}
 }
 
+// DropDiscoveryReplies simulates a camera whose UDP replies are lost.
+func (c *Camera) DropDiscoveryReplies(drop bool) {
+	c.dropDiscovery.Store(drop)
+}
+
 // SetVideo replaces the looping video; frames must be non-empty. The slice and
 // frame data are retained without copying, and PTS is not reset.
 func (c *Camera) SetVideo(frames []Frame) {
@@ -369,6 +375,9 @@ func (c *Camera) discoveryLoop() {
 		unit, ok := firstUnit(buffer[headerSize:n])
 		if !ok || unit.Q != 8 || unit.V != 2 {
 			c.protocolError("unexpected discovery request")
+			continue
+		}
+		if c.dropDiscovery.Load() {
 			continue
 		}
 		capabilities := []any{c.opts.Audio, c.opts.Flip, c.opts.Light, c.opts.SDCard}

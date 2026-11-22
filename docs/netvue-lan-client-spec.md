@@ -368,9 +368,10 @@ son test média FFmpeg a été ignoré dans l'environnement de cette phase.
   LAN de heartbeat ni envoi de fermeture `Q=13` n'a été démontré. `Q=15`
   existe et peut être reçu ; son existence ne justifie pas un timer inventé.
 - Distinguer une **politique d'application** du protocole : dans Go, le
-  délai première image est de 15 s, puis 10 s de silence vidéo ; le superviseur
-  réessaie les erreurs récupérables avec backoff 2–30 s, réinitialisé après
-  5 minutes de stabilité. L'APK configure un délai d'inactivité de lecture
+  délai première image est de 15 s, puis 30 s de silence vidéo ; le superviseur
+  réessaie les erreurs récupérables avec backoff variable de 2–30 s,
+  réinitialisé après 5 minutes de stabilité. Après authentification, il essaie
+  d'abord l'endpoint mémorisé avant la découverte. L'APK configure un délai d'inactivité de lecture
   de 30 s. Aucun de ces nombres n'est démontré obligatoire pour tous modèles.
 - Annuler les lectures et écritures bloquées en fermant la socket ; libérer
   l'encodeur, les processus, les goroutines et le lecteur RTSP à l'arrêt.

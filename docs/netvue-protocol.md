@@ -129,11 +129,13 @@ confirmé. Les réponses et codecs peuvent varier selon le modèle.
   réponse examiné ne référence que la version 1. Cette incohérence DEX ne
   prouve pas qu'une fermeture protocolaire soit utilisée.
 - Go n'envoie pas de heartbeat applicatif. Il traite l'absence de vidéo
-  pendant 10 secondes comme une interruption (15 secondes pour la première
+  pendant 30 secondes comme une interruption (15 secondes pour la première
   image), ferme la session et la remet au superviseur. `RunContinuous` réessaie
-  séquentiellement avec un délai exponentiel de 2 à 30 secondes; l'attente
-  repart du début après 5 minutes de session stable. L'annulation ferme les
-  sockets et interrompt les lectures/écritures bloquées.
+  séquentiellement avec un délai exponentiel de 2 à 30 secondes et une
+  variation aléatoire ; l'attente repart du début après 5 minutes de session
+  stable. Après une authentification réussie, une reconnexion tente d'abord
+  l'endpoint et la clé gardés en mémoire avant de redécouvrir. L'annulation
+  ferme les sockets et interrompt les lectures/écritures bloquées.
 - Le choix Android entre LAN, Agora et relais ainsi que les reconnexions
   dépendent de l'état de login, du transport et du compteur d'échecs; les délais
   de `TCP_TRAN_RING` ne doivent pas être généralisés au LAN classique. La

@@ -69,6 +69,7 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 	if microphone || cameraAudio {
 		ffmpeg, err = manager.webRTCFFmpeg()
 		if err != nil {
+			slog.Warn("Netvue WebRTC offer unavailable", "camera", host, "reason", "audio_encoder_unavailable")
 			writeAPIError(w, http.StatusServiceUnavailable, "audio encoder unavailable")
 			return
 		}
@@ -76,6 +77,7 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 	manager.mu.Lock()
 	if manager.closed || manager.ctx.Err() != nil {
 		manager.mu.Unlock()
+		slog.Warn("Netvue WebRTC offer unavailable", "camera", host, "reason", "manager_unavailable")
 		writeAPIError(w, http.StatusServiceUnavailable, "manager unavailable")
 		return
 	}
@@ -108,13 +110,13 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 		manager.removePeer(p)
 		switch {
 		case errors.Is(err, errWebRTCCodecMismatch):
-			slog.Warn("Netvue WebRTC negotiation failed", "reason", "codec_mismatch")
+			slog.Warn("Netvue WebRTC negotiation failed", "camera", host, "reason", "codec_mismatch")
 			writeAPIError(w, http.StatusBadRequest, "incompatible WebRTC codecs")
 		case errors.Is(err, errWebRTCVideoEncoderMissing):
-			slog.Warn("Netvue WebRTC negotiation failed", "reason", "video_encoder_unavailable")
+			slog.Warn("Netvue WebRTC negotiation failed", "camera", host, "reason", "video_encoder_unavailable")
 			writeAPIError(w, http.StatusServiceUnavailable, "video encoder unavailable")
 		default:
-			slog.Warn("Netvue WebRTC negotiation failed", "camera", host, "error", err)
+			slog.Warn("Netvue WebRTC negotiation failed", "camera", host, "reason", "preparation_failed", "error", err)
 			writeAPIError(w, http.StatusServiceUnavailable, "WebRTC session unavailable")
 		}
 		return

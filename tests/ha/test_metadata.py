@@ -8,7 +8,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.netvue_local.bridge_api import (
-    SessionStatus, _camera_response, async_discover_cameras,
+    BridgeError, CameraHealth, SessionStatus, _camera_response, async_discover_cameras,
 )
 from custom_components.netvue_local.const import DOMAIN
 from harness import HOST, STREAM_NAME, HassTestCase
@@ -179,6 +179,22 @@ class MetadataTests(HassTestCase):
 
 
 class MetadataParsingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_camera_health_is_parsed_and_invalid_counters_rejected(self):
+        response = AsyncMock()
+        response.json.return_value = camera_record()
+        response.json.return_value["health"] = {
+            "state": "reconnecting", "last_frame_at": "2026-01-01T00:00:00Z",
+            "reconnection_count": 2, "downtime_seconds": 12.5,
+            "last_error": "Connection error",
+        }
+        session = await _camera_response(response, HOST, STREAM_NAME)
+        self.assertEqual(session.health, CameraHealth(
+            "reconnecting", "2026-01-01T00:00:00Z", 2, 12.5, "Connection error",
+        ))
+        response.json.return_value["health"]["reconnection_count"] = True
+        with self.assertRaises(BridgeError):
+            await _camera_response(response, HOST, STREAM_NAME)
+
     async def test_legacy_response_preserves_session_status_defaults(self):
         response = AsyncMock()
         response.json.return_value = camera_record()

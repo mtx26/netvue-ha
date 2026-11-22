@@ -271,14 +271,14 @@ func writeRecordingJSON(path string, data []byte) error {
 	return os.Rename(tempName, path)
 }
 
-func (manager *recordingManager) apply(streamName string) error {
+func (manager *recordingManager) apply(ctx context.Context, streamName string) error {
 	if !manager.enabled() {
 		return nil
 	}
 	manager.mu.RLock()
+	defer manager.mu.RUnlock()
 	state := manager.states[streamName]
-	manager.mu.RUnlock()
-	return manager.setMediaMTXRecording(streamName, state.Manual || state.Continuous)
+	return manager.setMediaMTXRecording(ctx, streamName, state.Manual || state.Continuous)
 }
 
 func (manager *recordingManager) setMode(streamName string, mode string, enabled bool) (RecordingStatus, error) {
@@ -292,7 +292,7 @@ func (manager *recordingManager) setMode(streamName string, mode string, enabled
 	} else {
 		state.Manual = enabled
 	}
-	if err := manager.setMediaMTXRecording(streamName, state.Manual || state.Continuous); err != nil {
+	if err := manager.setMediaMTXRecording(manager.ctx, streamName, state.Manual || state.Continuous); err != nil {
 		manager.mu.Unlock()
 		return RecordingStatus{}, err
 	}
@@ -325,23 +325,50 @@ func (manager *recordingManager) statusLocked(streamName string, state recording
 		Available bool `json:"available"`
 	}
 	res, err := manager.controlRequest(http.MethodGet, "/v3/paths/get/"+url.PathEscape(streamName), nil)
-	if err == nil {
-		defer res.Body.Close()
-		if res.StatusCode == http.StatusOK {
-			if json.NewDecoder(res.Body).Decode(&path) == nil {
-				status.Active = path.Available
-			}
-		}
+	if err != nil {
+		status.Error = "MediaMTX path status unavailable"
+		return status
 	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		status.Error = fmt.Sprintf("MediaMTX path status HTTP %d", res.StatusCode)
+		return status
+	}
+	if err := json.NewDecoder(res.Body).Decode(&path); err != nil {
+		status.Error = "MediaMTX returned invalid path status"
+		return status
+	}
+	config, err := manager.controlRequest(http.MethodGet, "/v3/config/paths/get/"+url.PathEscape(streamName), nil)
+	if err != nil {
+		status.Error = "MediaMTX recording configuration unavailable"
+		return status
+	}
+	defer config.Body.Close()
+	if config.StatusCode != http.StatusOK {
+		status.Error = fmt.Sprintf("MediaMTX recording configuration HTTP %d", config.StatusCode)
+		return status
+	}
+	var recording struct {
+		Record *bool `json:"record"`
+	}
+	if err := json.NewDecoder(config.Body).Decode(&recording); err != nil || recording.Record == nil {
+		status.Error = "MediaMTX returned invalid recording configuration"
+		return status
+	}
+	if !*recording.Record {
+		status.Error = "MediaMTX recording is not enabled"
+		return status
+	}
+	status.Active = path.Available
 	return status
 }
 
-func (manager *recordingManager) setMediaMTXRecording(streamName string, enabled bool) error {
+func (manager *recordingManager) setMediaMTXRecording(ctx context.Context, streamName string, enabled bool) error {
 	if !manager.enabled() {
 		return nil
 	}
 	getURL := "/v3/config/paths/get/" + url.PathEscape(streamName)
-	res, err := manager.controlRequest(http.MethodGet, getURL, nil)
+	res, err := manager.controlRequestContext(ctx, http.MethodGet, getURL, nil)
 	if err != nil {
 		return err
 	}
@@ -358,10 +385,10 @@ func (manager *recordingManager) setMediaMTXRecording(streamName string, enabled
 	}
 	switch res.StatusCode {
 	case http.StatusOK:
-		err = manager.controlJSON(http.MethodPatch,
+		err = manager.controlJSONContext(ctx, http.MethodPatch,
 			"/v3/config/paths/patch/"+url.PathEscape(streamName), payload)
 	case http.StatusNotFound:
-		err = manager.controlJSON(http.MethodPost,
+		err = manager.controlJSONContext(ctx, http.MethodPost,
 			"/v3/config/paths/add/"+url.PathEscape(streamName), payload)
 	default:
 		err = fmt.Errorf("MediaMTX control API returned HTTP %d", res.StatusCode)
@@ -370,6 +397,10 @@ func (manager *recordingManager) setMediaMTXRecording(streamName string, enabled
 }
 
 func (manager *recordingManager) controlRequest(method, path string, body any) (*http.Response, error) {
+	return manager.controlRequestContext(manager.ctx, method, path, body)
+}
+
+func (manager *recordingManager) controlRequestContext(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -378,7 +409,7 @@ func (manager *recordingManager) controlRequest(method, path string, body any) (
 		}
 		reader = bytes.NewReader(data)
 	}
-	request, err := http.NewRequestWithContext(manager.ctx, method, manager.controlURL+path, reader)
+	request, err := http.NewRequestWithContext(ctx, method, manager.controlURL+path, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +420,11 @@ func (manager *recordingManager) controlRequest(method, path string, body any) (
 }
 
 func (manager *recordingManager) controlJSON(method, path string, body any) error {
-	res, err := manager.controlRequest(method, path, body)
+	return manager.controlJSONContext(manager.ctx, method, path, body)
+}
+
+func (manager *recordingManager) controlJSONContext(ctx context.Context, method, path string, body any) error {
+	res, err := manager.controlRequestContext(ctx, method, path, body)
 	if err != nil {
 		return err
 	}

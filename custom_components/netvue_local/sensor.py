@@ -15,6 +15,10 @@ from .coordinator import CameraData, NetvueCoordinator, NetvueEntity, NetvueLive
 
 _DIAGNOSTIC_OPTIONS = [
     "healthy",
+    "degraded",
+    "reconnecting",
+    "connection_unavailable",
+    "recovered",
     "stream_unavailable",
     "ai_unavailable",
     "bridge_unavailable",
@@ -134,6 +138,7 @@ class NetvueDiagnosticSensor(NetvueEntity, SensorEntity):
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_diagnostic"
+        self._entry_id = entry.entry_id
 
     @property
     def available(self) -> bool:
@@ -151,6 +156,15 @@ class NetvueDiagnosticSensor(NetvueEntity, SensorEntity):
             return {}
         attributes: dict[str, object] = {}
         if data.session:
+            if (health := data.session.health) is not None:
+                attributes.update({
+                    "netvue_entry_id": self._entry_id,
+                    "connection_state": health.state,
+                    "last_frame_at": health.last_frame_at,
+                    "reconnection_count": health.reconnection_count,
+                    "downtime_seconds": health.downtime_seconds,
+                    "last_error": health.last_error,
+                })
             if data.session.connection_port is not None:
                 attributes["connection_port"] = data.session.connection_port
             if (metadata := data.session.metadata) is not None:
@@ -194,6 +208,12 @@ def _diagnostic_state(data: CameraData) -> str:
         if "not ready" in error or "interrupted" in error:
             return "video_interrupted"
         return "session_failed"
+    if session.health is not None:
+        state = session.health.state
+        if state in ("degraded", "reconnecting", "recovered"):
+            return state
+        if state == "unavailable":
+            return "connection_unavailable"
     if not data.rtsp_available:
         return "stream_unavailable"
     if data.ai_error:

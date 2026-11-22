@@ -148,6 +148,15 @@ func TestNextBackoffDoublesAndCaps(t *testing.T) {
 	}
 }
 
+func TestJitterDelayStaysWithinBoundedBackoff(t *testing.T) {
+	for range 100 {
+		delay := jitterDelay(30 * time.Second)
+		if delay < 22500*time.Millisecond || delay > 30*time.Second {
+			t.Fatalf("jittered delay %s is outside its bounds", delay)
+		}
+	}
+}
+
 func TestSuperviseRetriesSequentiallyAndResetsAfterStableRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -102,6 +102,42 @@ func TestDiscoverLANResendsLostRequest(t *testing.T) {
 	}
 }
 
+func TestDiscoverRetriesAfterLostUnicastRequest(t *testing.T) {
+	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: discoveryPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	reply := discoveryResponse(t, "127.0.0.2", 5555, "test", 0)
+	done := make(chan error, 1)
+	go func() {
+		if err := listener.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			done <- err
+			return
+		}
+		buffer := make([]byte, 1024)
+		if _, _, err := listener.ReadFromUDP(buffer); err != nil {
+			done <- err
+			return
+		}
+		_, remote, err := listener.ReadFromUDP(buffer)
+		if err == nil {
+			_, err = listener.WriteToUDP(reply, remote)
+		}
+		done <- err
+	}()
+	result, err := discover(t.Context(), "127.0.0.1", "127.0.0.2")
+	if err != nil {
+		t.Fatalf("discovery after lost request: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if result.port != 5555 {
+		t.Fatalf("discovered port = %d, want 5555", result.port)
+	}
+}
+
 func TestDiscoverTimesOutAfterOnlyMalformedReply(t *testing.T) {
 	responderDone := startDiscoveryResponder(t, []byte("malformed"))
 

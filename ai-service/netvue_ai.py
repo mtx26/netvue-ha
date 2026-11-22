@@ -765,6 +765,8 @@ class CameraWorker:
             capture = video_frames(url)
             last_inference = 0.0
             frame_size = None
+            last_frame_key = None
+            last_frame = None
             try:
                 while self.running:
                     with self._lock:
@@ -781,8 +783,16 @@ class CameraWorker:
                         with self._lock:
                             self.status["frames_skipped"] += 1
                         continue
-                    last_inference = now
                     frame = decoded.to_ndarray(format="bgr24")
+                    frame_key = (decoded.pts, decoded.time_base) if decoded.pts is not None else None
+                    if (frame_key is not None and frame_key == last_frame_key
+                            and last_frame is not None and np.array_equal(frame, last_frame)):
+                        with self._lock:
+                            self.status["frames_skipped"] += 1
+                        continue
+                    last_inference = now
+                    last_frame_key = frame_key
+                    last_frame = frame if frame_key is not None else None
                     new_size = frame.shape[:2]
                     if new_size != frame_size:
                         _LOGGER.info("Video ready for %s: %dx%d", self.stream_name,

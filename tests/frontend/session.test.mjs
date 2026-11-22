@@ -3,16 +3,24 @@ import { test } from "node:test";
 import { HEALTHY_RESET_MS, NetvueSession, RecoveryPolicy } from "../../custom_components/netvue_local/frontend/session.js";
 import { FakeClock, FakePC, fakeSignalling, flush } from "./helpers.mjs";
 
-test("policy: 1 s, 2 s, 4 s then null", () => {
-  const policy = new RecoveryPolicy();
-  assert.deepEqual([policy.failed(), policy.failed(), policy.failed(), policy.failed(), policy.failed()], [1000, 2000, 4000, null, null]);
+test("policy keeps retrying with bounded exponential delay", () => {
+  const policy = new RecoveryPolicy({ random: () => 1 });
+  assert.deepEqual(Array.from({ length: 8 }, () => policy.failed()),
+    [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
   policy.reset();
   assert.equal(policy.failed(), 1000);
 });
 
+test("retry jitter stays between 75% and 100% of the delay", () => {
+  const minimum = new RecoveryPolicy({ random: () => 0 });
+  const maximum = new RecoveryPolicy({ random: () => 1 });
+  assert.equal(minimum.failed(), 750);
+  assert.equal(maximum.failed(), 1000);
+});
+
 test("policy: counter resets only after 30 s of healthy playback", () => {
   let now = 0;
-  const policy = new RecoveryPolicy({ now: () => now });
+  const policy = new RecoveryPolicy({ now: () => now, random: () => 1 });
   policy.failed();
   policy.failed();
   policy.live();
@@ -33,6 +41,7 @@ function harness() {
     entity: "camera.test",
     timers: clock.api,
     now: clock.now,
+    random: () => 1,
     onState: (s) => states.push(s),
     onStream: (s) => streams.push(s),
     onPtt: (p) => ptts.push(p),
@@ -57,7 +66,7 @@ function harness() {
 
 const recoverable = { code: "ice_failed", message: "", recoverable: true };
 
-test("a recoverable failure reconnects with 1 s, 2 s, 4 s then stays in error; Retry restarts", () => {
+test("a recoverable failure keeps reconnecting without a page reload", () => {
   const h = harness();
   h.session.start();
   h.conns[0].opts.onLive();
@@ -77,13 +86,12 @@ test("a recoverable failure reconnects with 1 s, 2 s, 4 s then stays in error; R
   h.clock.advance(1);
   assert.equal(h.conns.length, 4);
   h.conns[3].opts.onFailed(recoverable);
-  h.clock.advance(60000);
-  assert.equal(h.conns.length, 4);
-  assert.equal(h.states.at(-1).state, "error");
-  assert.equal(h.clock.pending, 0);
-  h.session.retry();
+  h.clock.advance(8000);
   assert.equal(h.conns.length, 5);
-  assert.equal(h.names().at(-1), "connecting");
+  h.conns[4].opts.onLive();
+  assert.equal(h.names().at(-1), "live");
+  h.session.stop();
+  assert.equal(h.clock.pending, 0);
 });
 
 test("non-recoverable errors never retry", () => {

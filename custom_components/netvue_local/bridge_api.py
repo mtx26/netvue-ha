@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
+import math
 from typing import NamedTuple
 from urllib.parse import quote
 from weakref import WeakValueDictionary
@@ -96,6 +97,15 @@ class SessionStatus(NamedTuple):
     error: str | None
     metadata: CameraMetadata | None = None
     connection_port: int | None = None
+    health: "CameraHealth | None" = None
+
+
+class CameraHealth(NamedTuple):
+    state: str
+    last_frame_at: str | None
+    reconnection_count: int
+    downtime_seconds: float
+    last_error: str | None
 
 
 class RecordingStatus(NamedTuple):
@@ -381,9 +391,29 @@ async def _camera_response(response, host: str, stream_name: str) -> SessionStat
             or ("error" in data and not isinstance(data["error"], str))):
         raise BridgeError("Bridge returned inconsistent camera settings")
     port = data.get("connection_port")
+    health = data.get("health")
+    if health is not None:
+        if (not isinstance(health, dict)
+                or health.get("state") not in (
+                    "connected", "degraded", "reconnecting", "unavailable", "recovered"
+                )
+                or (health.get("last_frame_at") is not None
+                    and not isinstance(health["last_frame_at"], str))
+                or type(health.get("reconnection_count")) is not int
+                or health["reconnection_count"] < 0
+                or type(health.get("downtime_seconds")) not in (int, float)
+                or not math.isfinite(health["downtime_seconds"])
+                or health["downtime_seconds"] < 0
+                or (health.get("last_error") is not None
+                    and not isinstance(health["last_error"], str))):
+            raise BridgeError("Bridge returned invalid camera health")
+        health = CameraHealth(
+            health["state"], health.get("last_frame_at"), health["reconnection_count"],
+            health["downtime_seconds"], health.get("last_error"),
+        )
     return SessionStatus(
         data["state"], data.get("error"), _camera_metadata(data.get("metadata")),
-        port if type(port) is int and 1 <= port <= 65535 else None,
+        port if type(port) is int and 1 <= port <= 65535 else None, health,
     )
 
 

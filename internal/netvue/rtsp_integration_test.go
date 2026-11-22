@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -275,7 +276,8 @@ func waitForPublisherRecord(t *testing.T, recorded <-chan struct{}, generation i
 
 type publisherTestRTSPHandler struct {
 	server   *gortsplib.Server
-	stream   *gortsplib.ServerStream
+	mu       sync.Mutex
+	streams  map[*gortsplib.ServerSession]*gortsplib.ServerStream
 	recorded chan struct{}
 	closed   chan struct{}
 	packets  chan observedRTP
@@ -296,10 +298,16 @@ func (handler *publisherTestRTSPHandler) OnAnnounce(
 	if handler.failAt == "ANNOUNCE" {
 		return &base.Response{StatusCode: handler.status}, nil
 	}
-	handler.stream = &gortsplib.ServerStream{Server: handler.server, Desc: ctx.Description}
-	if err := handler.stream.Initialize(); err != nil {
+	stream := &gortsplib.ServerStream{Server: handler.server, Desc: ctx.Description}
+	if err := stream.Initialize(); err != nil {
 		return &base.Response{StatusCode: base.StatusInternalServerError}, err
 	}
+	handler.mu.Lock()
+	if handler.streams == nil {
+		handler.streams = make(map[*gortsplib.ServerSession]*gortsplib.ServerStream)
+	}
+	handler.streams[ctx.Session] = stream
+	handler.mu.Unlock()
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
@@ -327,9 +335,13 @@ func (handler *publisherTestRTSPHandler) OnRecord(
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
-func (handler *publisherTestRTSPHandler) OnSessionClose(*gortsplib.ServerHandlerOnSessionCloseCtx) {
-	if handler.stream != nil {
-		handler.stream.Close()
+func (handler *publisherTestRTSPHandler) OnSessionClose(ctx *gortsplib.ServerHandlerOnSessionCloseCtx) {
+	handler.mu.Lock()
+	stream := handler.streams[ctx.Session]
+	delete(handler.streams, ctx.Session)
+	handler.mu.Unlock()
+	if stream != nil {
+		stream.Close()
 	}
 	handler.closed <- struct{}{}
 }

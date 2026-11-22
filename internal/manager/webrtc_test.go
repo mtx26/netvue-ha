@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -697,6 +698,29 @@ func TestWebRTCOfferRejectsUnsupportedAudioBeforeAllocation(t *testing.T) {
 	}
 	if manager.webRTCPeer(host, id) != nil {
 		t.Fatal("invalid offer allocated a WebRTC peer")
+	}
+}
+
+func TestWebRTCAudioEncoderFailureLogsCameraAndReason(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		<-ctx.Done()
+		return nil
+	})
+	manager.ffmpegPath = func() (string, error) { return "", errors.New("sensitive path") }
+	response := requestWebRTC(t, manager.Handler(), http.MethodPut,
+		"/api/v1/cameras/192.168.10.20/webrtc/test",
+		map[string]string{"offer": testAudioSDP("sendonly")})
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("encoder failure returned HTTP %d", response.Code)
+	}
+	if !strings.Contains(logs.String(), "camera=192.168.10.20") ||
+		!strings.Contains(logs.String(), "reason=audio_encoder_unavailable") ||
+		strings.Contains(logs.String(), "sensitive path") {
+		t.Fatalf("missing or unsafe encoder diagnostic: %s", logs.String())
 	}
 }
 

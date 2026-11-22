@@ -831,6 +831,26 @@ func TestReceiveLiveReclassifiesPushErrorWhenContextEnds(t *testing.T) {
 	}
 }
 
+func TestReceiveLiveInterruptsWhenVideoStopsWhileTCPRemainsOpen(t *testing.T) {
+	client, server := testPipe(t)
+	ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 2, "C": 0}})
+	serverDone := make(chan error, 1)
+	go func() {
+		if err := writeFull(server, ack); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- writeFull(server, mediaPacket(1, []byte{1}))
+	}()
+	err := receiveLiveWithTimeouts(t.Context(), client, &generationTestPublisher{}, time.Second, 100*time.Millisecond)
+	if !errors.Is(err, ErrStreamInterrupted) {
+		t.Fatalf("silent video on open TCP connection: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReceiveLiveRejectsInactivePublicationAtSessionEnd(t *testing.T) {
 	client, server := testPipe(t)
 	publisher := &generationTestPublisher{resetOnly: true}
@@ -903,6 +923,45 @@ type generationTestPublisher struct {
 	generation uint64
 	resetOnly  bool
 	pushed     chan struct{}
+}
+
+func TestReceiveLiveRejectsRepeatedVideoTimestampAndPayload(t *testing.T) {
+	publisher := &generationTestPublisher{}
+	var observed []SessionEvent
+	receiver := liveReceiver{
+		ctx:            context.Background(),
+		publisher:      publisher,
+		startupTimeout: time.Second,
+		silenceTimeout: time.Second,
+		observe:        func(event SessionEvent) { observed = append(observed, event) },
+	}
+	frame := videoFrame{timestamp: 42, accessUnit: []byte{1}}
+	if _, err := receiver.handleVideo(frame); err != nil {
+		t.Fatal(err)
+	}
+	firstPublished := receiver.lastPublished
+	if _, err := receiver.handleVideo(frame); err != nil {
+		t.Fatal(err)
+	}
+	if receiver.lastPublished != firstPublished {
+		t.Fatal("duplicate frame was treated as fresh video")
+	}
+	if len(observed) != 1 || observed[0].FrameAt.IsZero() {
+		t.Fatalf("frame observations = %+v, want only the published frame", observed)
+	}
+	if _, err := receiver.handleVideo(videoFrame{timestamp: 42, accessUnit: []byte{2}}); err != nil {
+		t.Fatalf("different access unit at the same timestamp: %v", err)
+	}
+	if publisher.Generation() != 2 {
+		t.Fatal("different access unit at the same timestamp was discarded")
+	}
+	receiver.timestampAt = time.Now().Add(-time.Second)
+	if _, err := receiver.handleVideo(frame); !errors.Is(err, ErrStreamInterrupted) {
+		t.Fatalf("repeated timestamp error = %v, want stream interruption", err)
+	}
+	if _, err := receiver.handleVideo(videoFrame{timestamp: 41, accessUnit: []byte{1}}); err != nil {
+		t.Fatalf("timestamp regression should be tolerated: %v", err)
+	}
 }
 
 type audioTestPublisher struct {

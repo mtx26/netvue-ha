@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"sort"
 	"sync"
@@ -36,16 +37,119 @@ type Camera struct {
 	Error          string                    `json:"error,omitempty"`
 	ConnectionPort int                       `json:"connection_port,omitempty"`
 	Metadata       *netvue.DiscoveryMetadata `json:"metadata,omitempty"`
+	Health         *CameraHealth             `json:"health,omitempty"`
+}
+
+type CameraHealth struct {
+	State             string     `json:"state"`
+	LastFrameAt       *time.Time `json:"last_frame_at,omitempty"`
+	ReconnectionCount uint64     `json:"reconnection_count"`
+	DowntimeSeconds   float64    `json:"downtime_seconds"`
+	LastError         string     `json:"last_error,omitempty"`
 }
 
 type cameraSession struct {
 	Camera
 	// Serialize lifecycle operations; recheck manager.cameras after acquiring it
 	// because the session may have been deleted while waiting.
-	operationMu sync.Mutex
-	cancel      context.CancelFunc
-	done        chan struct{}
-	talkback    *netvue.LiveTalkback
+	operationMu      sync.Mutex
+	cancel           context.CancelFunc
+	done             chan struct{}
+	talkback         *netvue.LiveTalkback
+	health           *cameraHealth
+	recordingChanged chan struct{}
+	recordingDone    chan struct{}
+}
+
+type cameraHealth struct {
+	state          string
+	lastFrame      time.Time
+	downSince      time.Time
+	recoveredUntil time.Time
+	downtime       time.Duration
+	reconnections  uint64
+	failures       int
+	lastError      string
+}
+
+func (session *cameraSession) snapshot(now time.Time) Camera {
+	camera := session.Camera
+	health := session.health
+	if health == nil {
+		return camera
+	}
+	result := &CameraHealth{
+		State: health.state, ReconnectionCount: health.reconnections,
+		DowntimeSeconds: health.downtime.Seconds(), LastError: health.lastError,
+	}
+	if !health.lastFrame.IsZero() {
+		lastFrame := health.lastFrame
+		result.LastFrameAt = &lastFrame
+	}
+	if session.State != stateSupervising {
+		result.State = "unavailable"
+	} else if health.state == "connected" || health.state == "recovered" {
+		if !health.lastFrame.IsZero() && now.Sub(health.lastFrame) >= 10*time.Second {
+			result.State = "degraded"
+			result.DowntimeSeconds = now.Sub(health.lastFrame).Seconds()
+		} else if health.state == "recovered" && !now.Before(health.recoveredUntil) {
+			result.State = "connected"
+		}
+	}
+	if !health.downSince.IsZero() {
+		result.DowntimeSeconds = now.Sub(health.downSince).Seconds()
+	}
+	camera.Health = result
+	return camera
+}
+
+func (manager *Manager) observeSession(session *cameraSession, done chan struct{}, event netvue.SessionEvent) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.cameras[session.Host] != session || session.done != done ||
+		session.State != stateSupervising || session.health == nil {
+		return
+	}
+	health := session.health
+	if event.Error != "" {
+		health.lastError = event.Error
+		health.reconnections++
+		health.failures++
+		health.state = "reconnecting"
+		if health.failures >= 3 {
+			health.state = "unavailable"
+		}
+		if health.downSince.IsZero() {
+			health.downSince = time.Now()
+			if !health.lastFrame.IsZero() {
+				health.downSince = health.lastFrame
+			}
+		}
+		return
+	}
+	if event.FrameAt.IsZero() {
+		return
+	}
+	if health.downSince.IsZero() && !health.lastFrame.IsZero() &&
+		event.FrameAt.Sub(health.lastFrame) >= 10*time.Second {
+		health.downSince = health.lastFrame
+	}
+	if !health.downSince.IsZero() {
+		health.downtime = event.FrameAt.Sub(health.downSince)
+		health.downSince = time.Time{}
+		health.state = "recovered"
+		health.recoveredUntil = event.FrameAt.Add(35 * time.Second)
+		if session.recordingChanged != nil {
+			select {
+			case session.recordingChanged <- struct{}{}:
+			default:
+			}
+		}
+	} else if health.state != "recovered" || !event.FrameAt.Before(health.recoveredUntil) {
+		health.state = "connected"
+	}
+	health.failures = 0
+	health.lastFrame = event.FrameAt
 }
 
 type sessionRunner func(context.Context, string, string, string) error
@@ -58,6 +162,7 @@ type Manager struct {
 	source        string
 	runSession    sessionRunner
 	runWithTalk   func(context.Context, string, string, string, *netvue.LiveTalkback) error
+	runObserved   func(context.Context, string, string, string, *netvue.LiveTalkback, func(netvue.SessionEvent)) error
 	openAudio     func(context.Context, string) (talkSink, error)
 	ffmpegPath    func() (string, error)
 	adaptVideo    func(context.Context, string, string, rtpTrackWriter) error
@@ -84,13 +189,14 @@ func New(ctx context.Context, source string) (*Manager, error) {
 				ctx, source, target, rtspURL, manager.updateDiscoveryMetadata,
 			)
 		}
-		manager.runWithTalk = func(
+		manager.runObserved = func(
 			ctx context.Context,
 			source, target, rtspURL string,
 			live *netvue.LiveTalkback,
+			observe func(netvue.SessionEvent),
 		) error {
-			return netvue.RunContinuousWithTalkbackAndDiscovery(
-				ctx, source, target, rtspURL, live, manager.updateDiscoveryMetadata,
+			return netvue.RunContinuousObserved(
+				ctx, source, target, rtspURL, live, manager.updateDiscoveryMetadata, observe,
 			)
 		}
 	}
@@ -181,7 +287,7 @@ func (manager *Manager) AddCamera(host, streamName string) (Camera, bool, error)
 		if existing.StreamName != streamName {
 			return Camera{}, false, ErrCameraConflict
 		}
-		return existing.Camera, false, nil
+		return existing.snapshot(time.Now()), false, nil
 	}
 	for _, existing := range manager.cameras {
 		if existing.StreamName == streamName {
@@ -198,10 +304,7 @@ func (manager *Manager) AddCamera(host, streamName string) (Camera, bool, error)
 	}
 	manager.cameras[host] = session
 	manager.startLocked(session)
-	if manager.recordings != nil {
-		_ = manager.recordings.apply(streamName)
-	}
-	return session.Camera, true, nil
+	return session.snapshot(time.Now()), true, nil
 }
 
 // OpenTalkback opens an exclusive experimental ADTS stream on the current
@@ -277,14 +380,14 @@ func (manager *Manager) StartCamera(host string) (Camera, bool, error) {
 	}
 	switch session.State {
 	case stateSupervising:
-		return session.Camera, false, nil
+		return session.snapshot(time.Now()), false, nil
 	case stateStopping:
 		return Camera{}, false, ErrCameraConflict
 	default:
 		session.State = stateSupervising
 		session.Error = ""
 		manager.startLocked(session)
-		return session.Camera, true, nil
+		return session.snapshot(time.Now()), true, nil
 	}
 }
 
@@ -320,14 +423,14 @@ func (manager *Manager) Camera(host string) (Camera, bool) {
 	if session == nil {
 		return Camera{}, false
 	}
-	return session.Camera, true
+	return session.snapshot(time.Now()), true
 }
 
 func (manager *Manager) Cameras() []Camera {
 	manager.mu.RLock()
 	cameras := make([]Camera, 0, len(manager.cameras))
 	for _, session := range manager.cameras {
-		cameras = append(cameras, session.Camera)
+		cameras = append(cameras, session.snapshot(time.Now()))
 	}
 	manager.mu.RUnlock()
 	sort.Slice(cameras, func(i, j int) bool {
@@ -419,9 +522,9 @@ func (manager *Manager) stopSession(ctx context.Context, host string, remove boo
 	session.Error = ""
 	if remove {
 		delete(manager.cameras, host)
-		return session.Camera, true, nil
+		return session.snapshot(time.Now()), true, nil
 	}
-	return session.Camera, false, nil
+	return session.snapshot(time.Now()), false, nil
 }
 
 func lockCameraOperation(ctx context.Context, mu *sync.Mutex) error {
@@ -446,6 +549,14 @@ func (manager *Manager) startLocked(session *cameraSession) {
 	done := make(chan struct{})
 	session.cancel = cancel
 	session.done = done
+	if manager.runObserved != nil {
+		session.health = &cameraHealth{state: "reconnecting"}
+	}
+	if manager.recordings != nil && manager.recordings.enabled() {
+		session.recordingChanged = make(chan struct{}, 1)
+		session.recordingDone = make(chan struct{})
+		go manager.reconcileRecording(ctx, session)
+	}
 	manager.wg.Add(1)
 	go manager.run(ctx, session, done)
 }
@@ -584,13 +695,19 @@ func mergeDiscoveryMetadata(
 
 func (manager *Manager) run(ctx context.Context, session *cameraSession, done chan struct{}) {
 	var err error
-	if manager.runWithTalk != nil {
+	if manager.runObserved != nil {
+		err = manager.runObserved(ctx, manager.source, session.Host, session.RTSPURL, session.talkback,
+			func(event netvue.SessionEvent) { manager.observeSession(session, done, event) })
+	} else if manager.runWithTalk != nil {
 		err = manager.runWithTalk(ctx, manager.source, session.Host, session.RTSPURL, session.talkback)
 	} else {
 		err = manager.runSession(ctx, manager.source, session.Host, session.RTSPURL)
 	}
 	canceled := ctx.Err() != nil
 	session.cancel()
+	if session.recordingDone != nil {
+		<-session.recordingDone
+	}
 	var diagnostic string
 	if err != nil && !canceled {
 		diagnostic = netvue.SessionDiagnostic(err)
@@ -606,6 +723,16 @@ func (manager *Manager) run(ctx context.Context, session *cameraSession, done ch
 		case err != nil:
 			session.State = stateFailed
 			session.Error = diagnostic
+			if session.health != nil {
+				session.health.state = "unavailable"
+				session.health.lastError = diagnostic
+				if session.health.downSince.IsZero() {
+					session.health.downSince = time.Now()
+					if !session.health.lastFrame.IsZero() {
+						session.health.downSince = session.health.lastFrame
+					}
+				}
+			}
 		default:
 			session.State = stateStopped
 			session.Error = ""
@@ -614,6 +741,38 @@ func (manager *Manager) run(ctx context.Context, session *cameraSession, done ch
 	close(done)
 	manager.mu.Unlock()
 	manager.wg.Done()
+}
+
+func (manager *Manager) reconcileRecording(ctx context.Context, session *cameraSession) {
+	defer close(session.recordingDone)
+	delay := 2 * time.Second
+	for {
+		err := manager.recordings.apply(ctx, session.StreamName)
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			delay = 2 * time.Second
+			select {
+			case <-ctx.Done():
+				return
+			case <-session.recordingChanged:
+				continue
+			}
+		}
+		slog.Warn("Recording configuration failed; retrying", "camera", session.Host)
+		spread := delay / 4
+		timer := time.NewTimer(delay - time.Duration(rand.Int64N(int64(spread)+1)))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-session.recordingChanged:
+			timer.Stop()
+		case <-timer.C:
+		}
+		delay = min(delay*2, 30*time.Second)
+	}
 }
 
 func normalizeCameraHost(host string) (string, error) {

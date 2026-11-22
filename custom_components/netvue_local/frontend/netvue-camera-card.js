@@ -363,6 +363,16 @@ export class NetvueCameraCard extends HTMLElement {
     return Boolean(state) && state.state !== "unavailable";
   }
 
+  _reconnecting() {
+    const entryId = this._entryId();
+    if (!entryId) return false;
+    return Object.entries(this._hass?.states || {}).some(([id, state]) =>
+      id.startsWith("sensor.") && state.attributes?.netvue_entry_id === entryId
+      && ["degraded", "reconnecting", "connection_unavailable", "recovered"].includes(state.state)
+      && typeof state.attributes?.connection_state === "string"
+    );
+  }
+
   // Start or stop the session so that it matches the entity availability.
   _sync() {
     if (!this._config || !this._hass || this._paused || this._history) {
@@ -372,7 +382,7 @@ export class NetvueCameraCard extends HTMLElement {
       if (this._session && this._session.active) {
         this._stopSession();
       }
-      this._view = { state: "unavailable" };
+      this._view = { state: this._reconnecting() ? "reconnecting" : "unavailable" };
     } else if (!this._session || (!this._session.active && this._view.state === "unavailable")) {
       this._startSession();
     }

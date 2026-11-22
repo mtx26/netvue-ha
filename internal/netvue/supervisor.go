@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"time"
@@ -14,12 +15,19 @@ type retryPolicy struct {
 	initialDelay time.Duration
 	maxDelay     time.Duration
 	stableAfter  time.Duration
+	jitter       func(time.Duration) time.Duration
 }
 
 var continuousRetryPolicy = retryPolicy{
 	initialDelay: 2 * time.Second,
 	maxDelay:     30 * time.Second,
 	stableAfter:  5 * time.Minute,
+	jitter:       jitterDelay,
+}
+
+type SessionEvent struct {
+	FrameAt time.Time
+	Error   string
 }
 
 // RunContinuous retries recoverable session failures until ctx is canceled.
@@ -48,16 +56,35 @@ func RunContinuousWithTalkbackAndDiscovery(
 	live *LiveTalkback,
 	onDiscovery func(DiscoveryResult),
 ) error {
+	return RunContinuousObserved(ctx, source, target, rtspURL, live, onDiscovery, nil)
+}
+
+func RunContinuousObserved(
+	ctx context.Context,
+	source, target, rtspURL string,
+	live *LiveTalkback,
+	onDiscovery func(DiscoveryResult),
+	observe func(SessionEvent),
+) error {
 	cameraLabel := "invalid address"
 	if ip, err := validateLANIPv4(target); err == nil {
 		cameraLabel = ip.String()
 	}
+	var cached camera
 	runSession := func(ctx context.Context) error {
-		return runSessionWithLiveTalkAndDiscovery(
-			ctx, source, target, rtspURL, 0, nil, live, onDiscovery,
+		return runSessionWithCachedCamera(
+			ctx, source, target, rtspURL, 0, nil, live, onDiscovery, &cached, observe,
 		)
 	}
-	return supervise(ctx, cameraLabel, runSession, continuousRetryPolicy, waitForRetry)
+	return superviseObserved(ctx, cameraLabel, runSession, continuousRetryPolicy, waitForRetry, observe)
+}
+
+func jitterDelay(delay time.Duration) time.Duration {
+	spread := delay / 4
+	if spread <= 0 {
+		return delay
+	}
+	return delay - time.Duration(rand.Int64N(int64(spread)+1))
 }
 
 func supervise(
@@ -66,6 +93,17 @@ func supervise(
 	runSession func(context.Context) error,
 	policy retryPolicy,
 	wait func(context.Context, time.Duration) bool,
+) error {
+	return superviseObserved(ctx, target, runSession, policy, wait, nil)
+}
+
+func superviseObserved(
+	ctx context.Context,
+	target string,
+	runSession func(context.Context) error,
+	policy retryPolicy,
+	wait func(context.Context, time.Duration) bool,
+	observe func(SessionEvent),
 ) error {
 	delay := policy.initialDelay
 	for {
@@ -83,11 +121,18 @@ func supervise(
 		if !retryableSessionError(err) {
 			return err
 		}
+		if observe != nil {
+			observe(SessionEvent{Error: SessionDiagnostic(err)})
+		}
 		if time.Since(started) >= policy.stableAfter {
 			delay = policy.initialDelay
 		}
-		slog.Warn("Camera session will retry", "camera", target, "error", SessionDiagnostic(err), "delay", delay)
-		if !wait(ctx, delay) {
+		retryDelay := delay
+		if policy.jitter != nil {
+			retryDelay = policy.jitter(delay)
+		}
+		slog.Warn("Camera session will retry", "camera", target, "error", SessionDiagnostic(err), "delay", retryDelay)
+		if !wait(ctx, retryDelay) {
 			return nil
 		}
 		delay = nextBackoff(delay, policy.maxDelay)

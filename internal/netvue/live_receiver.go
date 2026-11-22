@@ -1,6 +1,7 @@
 package netvue
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,7 +33,12 @@ type liveReceiver struct {
 	selectedAudio   *audioParameters
 	lastVideo       time.Time
 	lastPublished   time.Time
+	lastTimestamp   uint32
+	timestampAt     time.Time
+	lastAccessUnit  []byte
 	startupDeadline time.Time
+	observe         func(SessionEvent)
+	lastObserved    time.Time
 }
 
 func (receiver *liveReceiver) finishTalk(resultErr *error) {
@@ -330,6 +336,22 @@ func (receiver *liveReceiver) handleAudio(audio audioFrame) error {
 }
 
 func (receiver *liveReceiver) handleVideo(frame videoFrame) (bool, error) {
+	now := time.Now()
+	if !receiver.timestampAt.IsZero() && frame.timestamp == receiver.lastTimestamp {
+		if now.Sub(receiver.timestampAt) >= receiver.silenceTimeout {
+			return false, atStage("H.264", withReason(
+				"video timestamp stopped advancing",
+				fmt.Errorf("%w: video timestamp stopped advancing", ErrStreamInterrupted),
+			))
+		}
+		if bytes.Equal(frame.accessUnit, receiver.lastAccessUnit) {
+			return false, nil
+		}
+	} else {
+		receiver.timestampAt = now
+	}
+	receiver.lastTimestamp = frame.timestamp
+	receiver.lastAccessUnit = frame.accessUnit
 	beforeGeneration := receiver.publisher.Generation()
 	before := receiver.publisher.CurrentPublicationFrames()
 	startDeadline := receiver.startupDeadline
@@ -353,7 +375,7 @@ func (receiver *liveReceiver) handleVideo(frame videoFrame) (bool, error) {
 		return false, atStage("H.264", err)
 	}
 
-	now := time.Now()
+	now = time.Now()
 	receiver.lastVideo = now
 	current := receiver.publisher.CurrentPublicationFrames()
 	generationChanged := receiver.publisher.Generation() != beforeGeneration
@@ -365,6 +387,10 @@ func (receiver *liveReceiver) handleVideo(frame videoFrame) (bool, error) {
 		receiver.startupDeadline = time.Time{}
 		if generationChanged || current > before {
 			receiver.lastPublished = now
+			if receiver.observe != nil && (receiver.lastObserved.IsZero() || now.Sub(receiver.lastObserved) >= time.Second) {
+				receiver.observe(SessionEvent{FrameAt: now})
+				receiver.lastObserved = now
+			}
 		}
 		if !receiver.lastPublished.IsZero() &&
 			now.Sub(receiver.lastPublished) > receiver.silenceTimeout {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bluenviron/gortsplib/v5"
 	"github.com/mtx26/netvue-ha/internal/netvue/netvuetest"
 )
 
@@ -25,10 +26,16 @@ func simulatorContext(t *testing.T, limit time.Duration) context.Context {
 // runContinuousAsync runs the production supervisor against a camera and
 // stops it, waiting for its exit, at cleanup.
 func runContinuousAsync(t *testing.T, target, rtspURL string) context.CancelFunc {
+	return runContinuousObservedAsync(t, target, rtspURL, nil)
+}
+
+func runContinuousObservedAsync(
+	t *testing.T, target, rtspURL string, observe func(SessionEvent),
+) context.CancelFunc {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- RunContinuous(ctx, "127.0.0.1", target, rtspURL) }()
+	go func() { done <- RunContinuousObserved(ctx, "127.0.0.1", target, rtspURL, nil, nil, observe) }()
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
@@ -127,7 +134,166 @@ func TestSimulatorFaultsStopRunSession(t *testing.T) {
 	}
 }
 
+func TestReconnectUsesAuthenticatedEndpointWhenDiscoveryRepliesAreLost(t *testing.T) {
+	sim := netvuetest.Start(t, netvuetest.Options{Host: netvuetest.AllocHost(simulatorGroup)})
+	ctx := simulatorContext(t, 5*time.Second)
+	var cached camera
+	discoveries := 0
+	onDiscovery := func(DiscoveryResult) { discoveries++ }
+	conn, _, err := connectCamera(ctx, "127.0.0.1", sim.Host(), &cached, onDiscovery, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	sim.DropDiscoveryReplies(true)
+	conn, _, err = connectCamera(ctx, "127.0.0.1", sim.Host(), &cached, onDiscovery, false)
+	if err != nil {
+		t.Fatalf("reconnect with cached endpoint: %v", err)
+	}
+	_ = conn.Close()
+	if discoveries != 1 || sim.State().Logins != 2 {
+		t.Fatalf("discoveries = %d, logins = %d; want one discovery and two logins",
+			discoveries, sim.State().Logins)
+	}
+}
+
+func TestReconnectRediscoveryAfterCachedAuthenticationRejection(t *testing.T) {
+	sim := netvuetest.Start(t, netvuetest.Options{Host: netvuetest.AllocHost(simulatorGroup)})
+	ctx := simulatorContext(t, 5*time.Second)
+	cached := camera{host: sim.Host(), port: sim.Port(), key: "obsolete"}
+	discoveries := 0
+	conn, _, err := connectCamera(ctx, "127.0.0.1", sim.Host(), &cached, func(DiscoveryResult) {
+		discoveries++
+	}, false)
+	if err != nil {
+		t.Fatalf("rediscover after stale authentication: %v", err)
+	}
+	_ = conn.Close()
+	if discoveries != 1 || cached.key != netvuetest.DefaultKey || sim.State().Logins != 2 {
+		t.Fatalf("rediscovery did not replace the obsolete authenticated endpoint")
+	}
+}
+
+func TestSupervisorRepublishesAfterDisconnectWhenDiscoveryIsLost(t *testing.T) {
+	handler := &publisherTestRTSPHandler{
+		recorded: make(chan struct{}, 4),
+		closed:   make(chan struct{}, 4),
+	}
+	server := &gortsplib.Server{Handler: handler, RTSPAddress: "127.0.0.1:0"}
+	handler.server = server
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+	url := fmt.Sprintf("rtsp://127.0.0.1:%d/sim", server.NetListener().Addr().(*net.TCPAddr).Port)
+	sim := netvuetest.Start(t, netvuetest.Options{Host: netvuetest.AllocHost(simulatorGroup)})
+	events := make(chan SessionEvent, 32)
+	stop := runContinuousObservedAsync(t, sim.Host(), url, func(event SessionEvent) {
+		select {
+		case events <- event:
+		default:
+		}
+	})
+	ctx := simulatorContext(t, 12*time.Second)
+	if err := sim.Wait(ctx, "initial video", func(s netvuetest.Snapshot) bool {
+		return s.Streaming == 1 && s.VideoFrames > 0
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForPublisherRecord(t, handler.recorded, 1)
+	sim.DropDiscoveryReplies(true)
+	sim.Drop()
+	if err := sim.Wait(ctx, "reconnected video", func(s netvuetest.Snapshot) bool {
+		return s.Logins >= 2 && s.Streaming == 1
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForPublisherRecord(t, handler.recorded, 2)
+	var firstFrame, failure, resumed bool
+	for !resumed {
+		select {
+		case event := <-events:
+			if !event.FrameAt.IsZero() {
+				if failure {
+					resumed = true
+				} else {
+					firstFrame = true
+				}
+			} else if event.Error != "" && firstFrame {
+				failure = true
+			}
+		case <-ctx.Done():
+			t.Fatalf("missing media recovery events: first=%v failure=%v resumed=%v", firstFrame, failure, resumed)
+		}
+	}
+	stop()
+}
+
 // The supervisor sends discovery, authentication, LIVE, H.264 and AAC to MediaMTX.
+func TestSupervisorRediscoveriesAfterCameraRestartChangesPort(t *testing.T) {
+	handler := &publisherTestRTSPHandler{
+		recorded: make(chan struct{}, 4),
+		closed:   make(chan struct{}, 4),
+	}
+	server := &gortsplib.Server{Handler: handler, RTSPAddress: "127.0.0.1:0"}
+	handler.server = server
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+	url := fmt.Sprintf("rtsp://127.0.0.1:%d/sim", server.NetListener().Addr().(*net.TCPAddr).Port)
+	host := netvuetest.AllocHost(simulatorGroup)
+	first := netvuetest.Start(t, netvuetest.Options{Host: host})
+	firstPort := first.Port()
+	reserved, err := net.Listen("tcp4", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPort := reserved.Addr().(*net.TCPAddr).Port
+	if err := reserved.Close(); err != nil {
+		t.Fatal(err)
+	}
+	discoveries := make(chan DiscoveryResult, 4)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunContinuousObserved(ctx, "127.0.0.1", host, url, nil,
+			func(result DiscoveryResult) { discoveries <- result }, nil)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("supervisor stopped: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("supervisor did not stop")
+		}
+	})
+	waitForPublisherRecord(t, handler.recorded, 1)
+	first.Close()
+	second := netvuetest.Start(t, netvuetest.Options{Host: host, TCPPort: newPort})
+	restartCtx := simulatorContext(t, 12*time.Second)
+	if err := second.Wait(restartCtx, "video after restart", func(state netvuetest.Snapshot) bool {
+		return state.Logins > 0 && state.Streaming > 0
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForPublisherRecord(t, handler.recorded, 2)
+	if got := <-discoveries; got.ConnectionPort != firstPort {
+		t.Fatalf("initial discovery port = %d, want %d", got.ConnectionPort, firstPort)
+	}
+	select {
+	case got := <-discoveries:
+		if got.ConnectionPort != second.Port() {
+			t.Fatalf("rediscovery port = %d, want %d", got.ConnectionPort, second.Port())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("camera restart did not trigger rediscovery")
+	}
+}
+
 // Separate FFmpeg readers check reconnect and resolution changes.
 func TestSimulatorPublishesDecodableAudioVideoAcrossReconnects(t *testing.T) {
 	mediamtx := netvuetest.Executable(t, "NETVUE_TEST_MEDIAMTX", "mediamtx")

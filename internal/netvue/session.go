@@ -13,7 +13,7 @@ const (
 	connectTimeout = 2 * time.Second
 	// Lossy Wi-Fi links (repeaters) can stall TCP for several seconds while a
 	// lost segment is retransmitted; the Android LAN client tolerates 30 s.
-	videoSilenceTimeout = 10 * time.Second
+	videoSilenceTimeout = 30 * time.Second
 	videoStartupTimeout = 15 * time.Second
 )
 
@@ -52,6 +52,19 @@ func runSessionWithLiveTalkAndDiscovery(
 	live *LiveTalkback,
 	onDiscovery func(DiscoveryResult),
 ) error {
+	return runSessionWithCachedCamera(ctx, source, target, rtspURL, duration, talk, live, onDiscovery, nil, nil)
+}
+
+func runSessionWithCachedCamera(
+	ctx context.Context,
+	source, target, rtspURL string,
+	duration time.Duration,
+	talk *talkAudio,
+	live *LiveTalkback,
+	onDiscovery func(DiscoveryResult),
+	cached *camera,
+	observe func(SessionEvent),
+) error {
 	if err := validateSessionDuration(duration); err != nil {
 		return err
 	}
@@ -81,31 +94,13 @@ func runSessionWithLiveTalkAndDiscovery(
 		return atStage("RTSP preflight", err)
 	}
 
-	device, err := discover(sessionCtx, sourceIP.String(), targetIP.String())
-	if err != nil {
-		return atStage("discovery", fmt.Errorf("Netvue discovery failed: %w", err))
-	}
-	if onDiscovery != nil {
-		onDiscovery(device.discoveryResult())
-	}
-	if talk != nil && !device.audio {
-		return talkFailure("camera did not advertise an audio channel", ErrUnsupportedAudioParameters)
-	}
-	conn, err := (&net.Dialer{Timeout: connectTimeout}).DialContext(
-		sessionCtx, "tcp4", device.endpoint(),
+	conn, device, err := connectCamera(
+		sessionCtx, sourceIP.String(), targetIP.String(), cached, onDiscovery, talk != nil,
 	)
 	if err != nil {
-		return atStage("camera connection", fmt.Errorf("connect to discovered Netvue endpoint: %w", err))
+		return err
 	}
 	defer conn.Close()
-
-	result, err := authenticate(sessionCtx, conn, device, loginTimeout)
-	if err != nil {
-		return atStage("authentication", err)
-	}
-	if result != 0 {
-		return atStage("authentication", fmt.Errorf("%w: result_code=%d", ErrAuthenticationRejected, result))
-	}
 	if err := contextError(sessionCtx); err != nil {
 		return err
 	}
@@ -117,7 +112,59 @@ func runSessionWithLiveTalkAndDiscovery(
 		return err
 	}
 	defer publisher.Close()
-	return receiveLiveWithTalkController(sessionCtx, conn, publisher, videoStartupTimeout, videoSilenceTimeout, device.audio, talk, live)
+	return receiveLiveObserved(sessionCtx, conn, publisher, videoStartupTimeout, videoSilenceTimeout, device.audio, talk, live, observe)
+}
+
+func connectCamera(
+	ctx context.Context, source, target string, cached *camera, onDiscovery func(DiscoveryResult),
+	requireAudio bool,
+) (net.Conn, camera, error) {
+	if cached != nil && cached.key != "" {
+		if requireAudio && !cached.audio {
+			return nil, camera{}, talkFailure("camera did not advertise an audio channel", ErrUnsupportedAudioParameters)
+		}
+		conn, err := connectAndAuthenticate(ctx, *cached)
+		if err == nil {
+			return conn, *cached, nil
+		}
+		if contextError(ctx) != nil || (!errors.Is(err, ErrAuthenticationRejected) && !retryableSessionError(err)) {
+			return nil, camera{}, err
+		}
+	}
+	device, err := discover(ctx, source, target)
+	if err != nil {
+		return nil, camera{}, atStage("discovery", fmt.Errorf("Netvue discovery failed: %w", err))
+	}
+	if onDiscovery != nil {
+		onDiscovery(device.discoveryResult())
+	}
+	if requireAudio && !device.audio {
+		return nil, camera{}, talkFailure("camera did not advertise an audio channel", ErrUnsupportedAudioParameters)
+	}
+	conn, err := connectAndAuthenticate(ctx, device)
+	if err != nil {
+		return nil, camera{}, err
+	}
+	if cached != nil {
+		*cached = device
+	}
+	return conn, device, nil
+}
+
+func connectAndAuthenticate(ctx context.Context, device camera) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: connectTimeout}).DialContext(ctx, "tcp4", device.endpoint())
+	if err != nil {
+		return nil, atStage("camera connection", fmt.Errorf("connect to discovered Netvue endpoint: %w", err))
+	}
+	result, err := authenticate(ctx, conn, device, loginTimeout)
+	if err == nil && result != 0 {
+		err = fmt.Errorf("%w: result_code=%d", ErrAuthenticationRejected, result)
+	}
+	if err != nil {
+		_ = conn.Close()
+		return nil, atStage("authentication", err)
+	}
+	return conn, nil
 }
 
 func checkRTSPListener(ctx context.Context, value string) error {
@@ -281,6 +328,19 @@ func receiveLiveWithTalkController(
 	talk *talkAudio,
 	live *LiveTalkback,
 ) (resultErr error) {
+	return receiveLiveObserved(ctx, conn, publisher, startupTimeout, silenceTimeout, requestAudio, talk, live, nil)
+}
+
+func receiveLiveObserved(
+	ctx context.Context,
+	conn net.Conn,
+	publisher livePublisher,
+	startupTimeout, silenceTimeout time.Duration,
+	requestAudio bool,
+	talk *talkAudio,
+	live *LiveTalkback,
+	observe func(SessionEvent),
+) (resultErr error) {
 	if startupTimeout <= 0 || silenceTimeout <= 0 {
 		return fmt.Errorf("%w: video timeouts must be positive", ErrProtocol)
 	}
@@ -303,6 +363,7 @@ func receiveLiveWithTalkController(
 		talk:           talk,
 		live:           live,
 		audioRequested: requestAudio,
+		observe:        observe,
 	}
 	defer receiver.finishTalk(&resultErr)
 	// Control packets and non-video media cannot extend the first-video deadline.

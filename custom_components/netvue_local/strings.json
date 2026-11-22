@@ -210,6 +210,10 @@
         "name": "Diagnostic caméra",
         "state": {
           "healthy": "Fonctionnement normal",
+          "degraded": "Flux vidéo ralenti ou interrompu",
+          "reconnecting": "Reconnexion en cours",
+          "connection_unavailable": "Caméra indisponible, nouvelles tentatives en cours",
+          "recovered": "Flux vidéo rétabli",
           "stream_unavailable": "Flux vidéo indisponible",
           "ai_unavailable": "Service IA indisponible",
           "bridge_unavailable": "Gestionnaire Netvue indisponible",
