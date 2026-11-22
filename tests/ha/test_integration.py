@@ -258,7 +258,6 @@ class OptionsFlowTests(HassTestCase):
         self.assertEqual(public["retention_days"], 14)
         self.assertTrue(public["turn_token_configured"])
         self.assertNotIn("synthetic-secret", json.dumps(public))
-        self.bridge.webrtc_config.clear()
         await restored.async_restore()
         self.assertEqual(self.bridge.webrtc_config["api_token"], "synthetic-secret")
 
