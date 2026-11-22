@@ -53,6 +53,10 @@ arrêté ou en échec et ne garantit pas la disponibilité immédiate du flux. U
 supervisée peut reconnecter, sans exposer dans HA la cause de chaque erreur
 transitoire.
 
+L'interrupteur **Détection IA** et la page **Détection IA** des paramètres
+partagent le même réglage par caméra. L'état choisi est conservé après
+rechargement de l'intégration et réappliqué au service IA.
+
 ### Métadonnées locales et diagnostic
 
 Si le pont les fournit, la fiche appareil indique le fabricant **Netvue**, le

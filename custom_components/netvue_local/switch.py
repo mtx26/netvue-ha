@@ -12,7 +12,7 @@ from .bridge_api import (
     async_set_detection_enabled,
 )
 from .coordinator import NetvueCoordinator, NetvueEntity
-from .const import CONF_STREAM_NAME
+from .const import CONF_AI_ENABLED, CONF_STREAM_NAME
 
 
 async def async_setup_entry(
@@ -68,6 +68,7 @@ class NetvueAiDetectionSwitch(NetvueEntity, SwitchEntity):
 
     def __init__(self, entry: ConfigEntry, coordinator: NetvueCoordinator) -> None:
         super().__init__(coordinator)
+        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_ai_detection_enabled"
         self._stream_name = entry.options.get(
             CONF_STREAM_NAME, entry.data[CONF_STREAM_NAME]
@@ -98,4 +99,7 @@ class NetvueAiDetectionSwitch(NetvueEntity, SwitchEntity):
             raise HomeAssistantError(
                 f"Unable to change AI detection: {exc}"
             ) from exc
+        self.coordinator.hass.config_entries.async_update_entry(
+            self._entry, options={**self._entry.options, CONF_AI_ENABLED: enabled}
+        )
         await self.coordinator.async_request_refresh()

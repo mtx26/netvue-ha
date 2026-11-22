@@ -460,6 +460,70 @@ class OptionsFlowTests(HassTestCase):
 
 
 class EntityTests(HassTestCase):
+    async def test_ai_switch_persists_setting_across_refresh_and_reload(self):
+        enabled = True
+
+        async def set_enabled(_hass, _stream, value):
+            nonlocal enabled
+            enabled = value
+            return DetectionStatus(enabled, "detecting", [], None, None)
+
+        async def set_config(_hass, _stream, **config):
+            nonlocal enabled
+            enabled = config["enabled"]
+            return DetectionStatus(enabled, "detecting", [], None, None)
+
+        async def get_status(_hass, _stream):
+            return DetectionStatus(enabled, "detecting", [], None, None)
+
+        with (
+            patch("custom_components.netvue_local.switch.async_set_detection_enabled",
+                  side_effect=set_enabled),
+            patch("custom_components.netvue_local.coordinator.async_set_detection_config",
+                  side_effect=set_config),
+            patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                  side_effect=get_status),
+        ):
+            entry = await self.create_entry()
+            self.hass.config_entries.async_update_entry(
+                entry, options={"ai_confidence": 0.6}
+            )
+            entity_id = self.entity_id(entry, "switch", "ai_detection_enabled")
+            for value in (False, True):
+                await self.hass.services.async_call(
+                    "switch", "turn_on" if value else "turn_off",
+                    {"entity_id": entity_id}, blocking=True,
+                )
+                await self.refresh(entry)
+                self.assertEqual(enabled, value)
+                self.assertEqual(entry.options["ai_enabled"], value)
+                self.assertEqual(entry.options["ai_confidence"], 0.6)
+                self.assertEqual(self.hass.states.get(entity_id).state, "on" if value else "off")
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                await self.hass.async_block_till_done()
+                self.assertEqual(enabled, value)
+                self.assertEqual(self.hass.states.get(entity_id).state, "on" if value else "off")
+
+    async def test_ai_switch_failure_does_not_change_saved_setting(self):
+        status = DetectionStatus(True, "detecting", [], None, None)
+        with (
+            patch("custom_components.netvue_local.coordinator.async_set_detection_config",
+                  new_callable=AsyncMock),
+            patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                  new=AsyncMock(return_value=status)),
+            patch("custom_components.netvue_local.switch.async_set_detection_enabled",
+                  side_effect=BridgeError("AI unavailable")),
+        ):
+            entry = await self.create_entry()
+            with self.assertRaises(HomeAssistantError):
+                await self.hass.services.async_call(
+                    "switch", "turn_off",
+                    {"entity_id": self.entity_id(entry, "switch", "ai_detection_enabled")},
+                    blocking=True,
+                )
+            self.assertTrue(entry.data["ai_enabled"])
+            self.assertNotIn("ai_enabled", entry.options)
+
     async def test_zone_automation_triggers_for_car_only_when_person_is_present(self):
         entry = await self.create_entry(name="Garage")
         zones = {
