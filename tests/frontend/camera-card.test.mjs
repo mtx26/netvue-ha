@@ -273,59 +273,46 @@ test("settings open the camera settings panel for admins only", async () => {
   assert.equal(navigation.pathname, "/netvue-settings?config_entry=entry1");
 });
 
-test("Project defaults to the watched segment and picks both endpoints without seeking", async () => {
+test("the shield protects the whole watched segment immediately and marks it purple", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
-  const start = Date.parse("2026-11-20T12:00:00Z");
+  const startTime = "2026-11-20T12:00:00.123456789Z";
+  const endTime = "2026-11-20T12:10:00.123456789Z";
+  const cursor = Date.parse(startTime) + 60000;
   const posted = [];
   card.hass = {
     states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
     async callApi(method, path, body) {
       if (method === "POST") {
         posted.push({ path, body });
-        return { covered_start: body.start, covered_end: body.end };
+        return { id: "b".repeat(32), status: "saved", covered_start: body.start, covered_end: body.end };
       }
       if (path === "netvue_local/recordings/entry1") {
-        return { recordings: [{ id: "a".repeat(32), start: new Date(start).toISOString(), duration: 600 }] };
+        return { recordings: [{ id: "a".repeat(32), start: startTime, end: endTime, duration: 600 }] };
       }
       return { protected: [], live: true, replay: true, export: false };
     },
-    async callWS(message) { return { path: `/signed${message.path}` }; },
+    async callWS(message) { return { path: message.path }; },
   };
+  assert.equal(card._historyProtectButton.disabled, true);
   await card._openHistory();
-  await card._historySeek(start + 60000);
-  assert.ok(card._historySegment);
+  await card._historySeek(cursor);
+  assert.equal(card._historyProtectButton.disabled, false);
   card._historyProtectButton.dispatch("click");
-  assert.deepEqual(card._protectSelection, { start: card._historySegment.start, end: card._historySegment.end });
-  assert.equal(card._protectBar.hidden, false);
-  assert.equal(card._protectConfirm.disabled, false);
-  assert.ok(card._historyRail.children.some((node) => node.getAttribute("class") === "history-selection"));
+  assert.equal(card._historyProtectButton.disabled, true);
+  card._historyProtectButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
 
-  const min = Number(card._historyRange.min);
-  const max = Number(card._historyRange.max);
-  const clickAt = (time) => card._projectTarget.dispatch("pointerup", {
-    button: 0, clientX: 200 * (time - min) / (max - min),
-  });
-  clickAt(start + 300000);
-  assert.deepEqual(card._protectSelection, { start: start + 300000, end: null });
-  assert.equal(card._protectConfirm.disabled, true);
-  clickAt(start + 120000);
-  assert.deepEqual(card._protectSelection, { start: start + 120000, end: start + 300000 });
-  assert.equal(card._historyCursor, start + 60000);
-
-  await card._protectHistoryRange();
   assert.deepEqual(posted, [{
     path: "netvue_local/protected/entry1",
-    body: {
-      start: new Date(start + 120000).toISOString(),
-      end: new Date(start + 300000).toISOString(),
-      protection: "manual",
-    },
+    body: { start: startTime, end: endTime, protection: "manual" },
   }]);
-  assert.equal(card._protectSelection, null);
-  assert.equal(card._protectBar.hidden, true);
-  assert.match(card._protectMessage.textContent, /Video protected/);
+  assert.equal(card._historyCursor, cursor);
+  assert.match(card._protectMessage.textContent, /Segment protected/);
+  assert.ok(card._historyRail.children.some((node) => node.getAttribute("class") === "history-protected"));
+  assert.equal(card._historyProtectButton.getAttribute("aria-label"), "Segment already protected");
+  assert.equal(card._historyProtectButton.disabled, true);
 });
 
 test("volume control adjusts sound and restores it after muting", () => {
@@ -393,7 +380,7 @@ test("the calendar keeps the requested empty day when recordings exist on anothe
   assert.equal(Number(card._historyRange.max), dayEnd);
   assert.equal(card._historyCursor, selected);
   assert.equal(card._historyDatePicker.open, false);
-  assert.equal(card._protectBar.hidden, true);
+  assert.equal(card._historyProtectButton.disabled, true);
   assert.equal(card._historyMessage.textContent, "No recording at this time.");
   assert.equal(card._historyVideo.getAttribute("src"), null);
 

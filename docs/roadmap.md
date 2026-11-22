@@ -28,7 +28,7 @@ fiable, performante, modulaire et simple à installer.
 | État | Fonctionnalité | Objectif |
 |---|---|---|
 | 🔄 | Conservation sélective | Export multi-segments et détection des trous testés synthétiquement ; limites d'espace, reprise après panne et validation réelle restent à consolider ([stockage protégé](protected-recordings.md)) |
-| 🧪 | Projet depuis le replay | Le calendrier positionne la lecture à une date. Projet propose le segment courant ou deux bornes choisies sur la frise. Sélection et requête de sauvegarde testées hors ligne. Validation sur des enregistrements réels nécessaire |
+| 🧪 | Protection depuis le replay | Le bouclier enregistre le segment en cours en un appui. La frise affiche en violet le segment protégé. Tests hors ligne, validation sur caméra réelle nécessaire |
 | 🔄 | Enregistrement IA automatique | Règles persistantes, cycle confirmé/actif/terminé, pré-événement 120 s et post-événement 300 s ; protection réelle et validation caméra nécessaires |
 | 💡 | Détection de colis | Architecture temporelle et état persisté ; aucun modèle ONNX de colis fiable/licencié n'est encore validé |
 | 🧪 | Notifications intelligentes | Notifications HA locales configurables, délai anti-doublon et liens Lovelace ; snapshot/iPhone/validation production nécessaires |

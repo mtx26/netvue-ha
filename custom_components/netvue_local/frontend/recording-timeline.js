@@ -9,8 +9,22 @@ export function recordingSegments(recordings) {
         || !Number.isFinite(start) || !Number.isFinite(duration) || duration < 0) {
       throw new Error("Invalid recording segment");
     }
-    return { id: item.id, start, end: start + duration * 1000 };
+    const serverEnd = Date.parse(item.end);
+    const end = Number.isFinite(serverEnd) ? serverEnd : start + duration * 1000;
+    return {
+      id: item.id, start, end,
+      startTime: item.start,
+      endTime: Number.isFinite(serverEnd) ? item.end : new Date(end).toISOString(),
+    };
   }).filter((segment) => segment.end > segment.start).sort((a, b) => a.start - b.start);
+}
+
+export function protectedRecordingInterval(item) {
+  if (item?.status !== "saved" || typeof item.id !== "string" || !item.id) return null;
+  const start = Date.parse(item.covered_start);
+  const end = Date.parse(item.covered_end);
+  return Number.isFinite(start) && Number.isFinite(end) && end > start
+    ? { id: item.id, start, end } : null;
 }
 
 export function segmentAt(segments, time) {
