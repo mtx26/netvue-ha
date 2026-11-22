@@ -60,6 +60,7 @@ type webRTCPeer struct {
 	workers          sync.WaitGroup
 	workersStopped   chan struct{}
 	connected        chan struct{}
+	prepared         chan struct{}
 	connectOnce      sync.Once
 	talk             *talkController
 	droppedAudio     atomic.Uint64
@@ -70,7 +71,7 @@ func newWebRTCPeer(parent context.Context, host, id string) *webRTCPeer {
 	return &webRTCPeer{
 		ctx: ctx, cancel: cancel, host: host, id: id,
 		notify: make(chan struct{}), connected: make(chan struct{}),
-		workersStopped: make(chan struct{}),
+		workersStopped: make(chan struct{}), prepared: make(chan struct{}),
 	}
 }
 
@@ -153,7 +154,7 @@ func (p *webRTCPeer) fail(code string) {
 	report := !p.closed && p.eventLocked(webRTCEvent{Type: "error", Code: code})
 	p.mu.Unlock()
 	if report && code != "session_closed" {
-		slog.Warn("Netvue WebRTC session ended", "reason", code)
+		slog.Warn("Netvue WebRTC session ended", "camera", p.host, "reason", code)
 	}
 	p.close()
 }

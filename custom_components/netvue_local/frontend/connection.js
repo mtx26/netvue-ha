@@ -6,7 +6,7 @@ import { MIC_CONSTRAINTS, PttController } from "./ptt.js";
 
 export const PTT_CHANNEL = "netvue-ptt";
 export const LIMITS = {
-  answerMs: 15000,
+  answerMs: 25000,
   iceMs: 15000,
   disconnectedMs: 5000,
   stallMs: 10000,

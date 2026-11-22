@@ -114,10 +114,12 @@ func (manager *Manager) handleWebRTCOffer(w http.ResponseWriter, r *http.Request
 			slog.Warn("Netvue WebRTC negotiation failed", "reason", "video_encoder_unavailable")
 			writeAPIError(w, http.StatusServiceUnavailable, "video encoder unavailable")
 		default:
+			slog.Warn("Netvue WebRTC negotiation failed", "camera", host, "error", err)
 			writeAPIError(w, http.StatusServiceUnavailable, "WebRTC session unavailable")
 		}
 		return
 	}
+	close(p.prepared)
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -131,13 +133,25 @@ func (manager *Manager) watchPeer(p *webRTCPeer, sessionDone <-chan struct{}, es
 	case <-p.ctx.Done():
 		p.fail("session_closed")
 	case <-timer.C:
-		p.fail("connection_timeout")
-	case <-p.connected:
+		p.fail("startup_timeout")
+	case <-p.prepared:
+		timer.Reset(establishTimeout)
+	}
+	if p.ctx.Err() == nil {
 		select {
 		case <-sessionDone:
 			p.fail("camera_stopped")
 		case <-p.ctx.Done():
 			p.fail("session_closed")
+		case <-timer.C:
+			p.fail("connection_timeout")
+		case <-p.connected:
+			select {
+			case <-sessionDone:
+				p.fail("camera_stopped")
+			case <-p.ctx.Done():
+				p.fail("session_closed")
+			}
 		}
 	}
 	<-p.workersStopped

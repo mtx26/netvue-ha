@@ -14,6 +14,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
+	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
@@ -24,26 +25,49 @@ func (p *webRTCPeer) openRTSP(rawURL string) (*gortsplib.Client, *description.Se
 		return nil, nil, err
 	}
 	protocol := gortsplib.ProtocolTCP
-	client := &gortsplib.Client{
-		Scheme: u.Scheme, Host: u.Host, Protocol: &protocol,
-		ReadTimeout: 12 * time.Second, WriteTimeout: 2 * time.Second,
-	}
-	if err := client.Start(); err != nil {
-		return nil, nil, fmt.Errorf("start RTSP reader: %w", err)
-	}
-	p.mu.Lock()
-	if p.closed {
+	for attempt := 0; ; attempt++ {
+		if err := p.ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		client := &gortsplib.Client{
+			Scheme: u.Scheme, Host: u.Host, Protocol: &protocol,
+			ReadTimeout: 12 * time.Second, WriteTimeout: 2 * time.Second,
+		}
+		if err := client.Start(); err != nil {
+			return nil, nil, fmt.Errorf("start RTSP reader: %w", err)
+		}
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			client.Close()
+			return nil, nil, context.Canceled
+		}
+		p.rtsp = client
 		p.mu.Unlock()
+		desc, _, err := client.Describe(u)
+		if err == nil {
+			return client, desc, nil
+		}
 		client.Close()
-		return nil, nil, context.Canceled
+		p.mu.Lock()
+		if p.rtsp == client {
+			p.rtsp = nil
+		}
+		p.mu.Unlock()
+		var statusErr liberrors.ErrClientBadStatusCode
+		if !errors.As(err, &statusErr) ||
+			(statusErr.Code != base.StatusNotFound && statusErr.Code != base.StatusServiceUnavailable) {
+			return nil, nil, fmt.Errorf("describe RTSP stream: %w", err)
+		}
+		if attempt == 0 {
+			slog.Info("Netvue WebRTC waiting for RTSP publication", "camera", p.host, "status", statusErr.Code)
+		}
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-p.ctx.Done():
+			return nil, nil, fmt.Errorf("wait for RTSP publication: %w: %w", p.ctx.Err(), err)
+		}
 	}
-	p.rtsp = client
-	p.mu.Unlock()
-	desc, _, err := client.Describe(u)
-	if err != nil {
-		return nil, nil, fmt.Errorf("describe RTSP stream: %w", err)
-	}
-	return client, desc, nil
 }
 
 func (p *webRTCPeer) setupRTSPAudio(

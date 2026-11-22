@@ -25,6 +25,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 _EVENT_TIMEOUT = 35
+_OFFER_TIMEOUT = 20
 _MAX_SESSIONS = 4
 _MAX_EVENTS_SIZE = 256 * 1024
 _MAX_EVENTS = 128
@@ -189,7 +190,7 @@ class NetvueWebRTCProvider(CameraWebRTCProvider):
         try:
             if state.closing:
                 return
-            await self._request("PUT", url, payload={"offer": offer})
+            await self._request("PUT", url, payload={"offer": offer}, timeout=_OFFER_TIMEOUT)
             state.opened = True
             state.ready.set()
             after = 0

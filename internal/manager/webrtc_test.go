@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
@@ -30,9 +31,27 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 )
 
-type testRTSPHandler struct{ stream *gortsplib.ServerStream }
+type testRTSPHandler struct {
+	stream      *gortsplib.ServerStream
+	unavailable atomic.Int32
+	described   chan struct{}
+}
 
 func (h *testRTSPHandler) OnDescribe(*gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
+	remaining := h.unavailable.Add(-1)
+	if h.described != nil {
+		select {
+		case h.described <- struct{}{}:
+		default:
+		}
+	}
+	if remaining >= 0 {
+		status := base.StatusServiceUnavailable
+		if remaining%2 == 1 {
+			status = base.StatusNotFound
+		}
+		return &base.Response{StatusCode: status}, nil, nil
+	}
 	return &base.Response{StatusCode: base.StatusOK}, h.stream, nil
 }
 func (h *testRTSPHandler) OnSetup(*gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
@@ -591,6 +610,70 @@ func newLocalTestPeerConnection(t *testing.T) *webrtc.PeerConnection {
 	return peer
 }
 
+func TestWebRTCWaitingPublicationCanceled(t *testing.T) {
+	rtspHandler := &testRTSPHandler{described: make(chan struct{}, 1)}
+	rtspHandler.unavailable.Store(1000)
+	server := &gortsplib.Server{Handler: rtspHandler, RTSPAddress: "127.0.0.1:0"}
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	started := make(chan struct{})
+	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
+		close(started)
+		<-ctx.Done()
+		return nil
+	})
+	host, id := "192.168.10.20", "canceled_startup"
+	if _, _, err := manager.AddCamera(host, "test"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	manager.mu.Lock()
+	manager.cameras[host].RTSPURL = fmt.Sprintf("rtsp://%s/test", server.NetListener().Addr())
+	manager.mu.Unlock()
+	browser := newLocalTestPeerConnection(t)
+	defer browser.Close()
+	if _, err := browser.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := browser.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{"offer": offer.SDP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/cameras/"+host+"/webrtc/"+id,
+		bytes.NewReader(body)).WithContext(ctx)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		manager.Handler().ServeHTTP(response, req)
+		close(done)
+	}()
+	select {
+	case <-rtspHandler.described:
+	case <-time.After(2 * time.Second):
+		t.Fatal("offer did not wait for the RTSP publication")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled offer kept retrying RTSP")
+	}
+	if response.Code != http.StatusServiceUnavailable || manager.webRTCPeer(host, id) != nil {
+		t.Fatalf("canceled startup retained peer or succeeded: HTTP %d", response.Code)
+	}
+	if rtspHandler.unavailable.Load() != 999 {
+		t.Fatal("canceled offer started another RTSP attempt")
+	}
+}
+
 func TestWebRTCOfferRejectsUnsupportedAudioBeforeAllocation(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error {
 		<-ctx.Done()
@@ -717,6 +800,7 @@ func testWebRTCVideoOnly(t *testing.T, servers []webrtc.ICEServer) {
 			t.Fatal("failed ICE setup retained the camera peer")
 		}
 		manager.source = "127.0.0.1"
+		handler.unavailable.Store(2)
 	}
 	response := requestWebRTC(t, api, http.MethodPut, path, map[string]string{"offer": offer.SDP})
 	if response.Code != http.StatusCreated {
@@ -1024,6 +1108,7 @@ func TestWebRTCCandidateLimit(t *testing.T) {
 func TestWebRTCEstablishmentTimeout(t *testing.T) {
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error { <-ctx.Done(); return nil })
 	p := newWebRTCPeer(manager.ctx, "192.168.10.20", "session")
+	close(p.prepared)
 	manager.mu.Lock()
 	manager.peers[p.key()] = p
 	manager.wg.Add(1)
@@ -1039,6 +1124,51 @@ func TestWebRTCEstablishmentTimeout(t *testing.T) {
 	if len(p.events) == 0 || p.events[0].Code != "connection_timeout" {
 		t.Fatalf("timeout event: %+v", p.events)
 	}
+}
+
+func TestWebRTCStartupAndICEHaveSeparateDeadlines(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager := &Manager{peers: make(map[string]*webRTCPeer)}
+		p := newWebRTCPeer(t.Context(), "192.168.10.20", "slow")
+		manager.peers[p.key()] = p
+		manager.wg.Add(1)
+		go manager.watchPeer(p, make(chan struct{}), 15*time.Second)
+		synctest.Wait()
+		time.Sleep(14 * time.Second)
+		close(p.prepared)
+		synctest.Wait()
+		time.Sleep(14 * time.Second)
+		synctest.Wait()
+		if p.ctx.Err() != nil {
+			t.Fatal("RTSP startup consumed the ICE connection deadline")
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		manager.wg.Wait()
+		if p.ctx.Err() == nil || len(p.events) != 1 || p.events[0].Code != "connection_timeout" {
+			t.Fatalf("ICE deadline did not close peer: %+v", p.events)
+		}
+	})
+}
+
+func TestWebRTCUnreadyPublicationHasBoundedStartup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager := &Manager{peers: make(map[string]*webRTCPeer)}
+		p := newWebRTCPeer(t.Context(), "192.168.10.20", "unavailable")
+		manager.peers[p.key()] = p
+		manager.wg.Add(1)
+		go manager.watchPeer(p, make(chan struct{}), 15*time.Second)
+		synctest.Wait()
+		time.Sleep(15 * time.Second)
+		synctest.Wait()
+		manager.wg.Wait()
+		if p.ctx.Err() == nil || len(p.events) != 1 || p.events[0].Code != "startup_timeout" {
+			t.Fatalf("startup deadline did not close peer: %+v", p.events)
+		}
+		if manager.webRTCPeer(p.host, p.id) != nil {
+			t.Fatal("timed-out startup retained the peer reservation")
+		}
+	})
 }
 
 func TestWebRTCCameraIsAvailableAfterPeerWorkersStop(t *testing.T) {

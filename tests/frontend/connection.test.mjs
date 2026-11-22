@@ -118,6 +118,20 @@ test("failure paths report a recoverable error and close first", async () => {
   }
 });
 
+test("a delayed answer leaves the ICE connection its full deadline", async () => {
+  const { clock, signalling, pc, events, conn } = await started();
+  clock.advance(20000);
+  assert.equal(events.failed.length, 0);
+  signalling.last.emit({ type: "session", session_id: "slow" });
+  signalling.last.emit({ type: "answer", answer: "v=0 answer" });
+  await flush();
+  clock.advance(14000);
+  assert.equal(events.failed.length, 0);
+  pc.setState("connected");
+  assert.equal(events.live, 1);
+  conn.close();
+});
+
 test("busy is not recoverable", async () => {
   const ctx = await started();
   ctx.signalling.last.emit({ type: "error", code: "netvue_webrtc_busy", message: "x" });

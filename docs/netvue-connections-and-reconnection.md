@@ -95,7 +95,8 @@ il ne survit pas à une reconnexion.
 
 | Élément | Valeur |
 |---|---:|
-| Établissement | 15 s |
+| Préparation RTSP et SDP | 15 s maximum |
+| Établissement ICE après préparation | 15 s |
 | Durée maximale d'un pair | 12 h |
 | Pairs maximum par caméra | 4 |
 | Événements conservés | 128 |
@@ -105,6 +106,17 @@ il ne survit pas à une reconnexion.
 
 Le pair est actif après l'état Pion `connected`. Une défaillance ICE, un arrêt
 de la caméra, une fermeture ou 12 h ferme immédiatement le pair.
+
+Si le DESCRIBE RTSP retourne 404 ou 503 pendant une republication, le pont
+réessaie toutes les 500 ms dans la même offre, sans dépasser la deadline de
+préparation. Les autres erreurs échouent immédiatement. Chaque lecteur RTSP
+échoué est fermé avant la reprise ; fermer l'offre annule aussi cette attente.
+Une caméra réellement injoignable reste en erreur : attendre plus ne la
+rend pas accessible.
+
+La carte réessaie une négociation récupérable après 1, 2 puis 4 s, avec un
+nouvel identifiant ; après ces trois reprises, elle propose une reprise
+manuelle. Aucun nouveau budget de reprise n'est ajouté côté HA.
 
 ### Audio caméra vers navigateur
 
@@ -146,6 +158,8 @@ Limites :
 | Validité minimum au démarrage | 10 min |
 | Timeout API TURN | 3 s |
 | Timeout HTTP HA courant | 5 s |
+| Timeout ouverture WebRTC HA | 20 s |
+| Attente de réponse SDP dans la carte | 25 s |
 | Timeout découverte HA | 30 s |
 | Timeout sonde RTSP HA | 4 s |
 | Timeout événements HA | 35 s |

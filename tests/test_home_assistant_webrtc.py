@@ -271,6 +271,24 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r[0] for r in self.requests], ["PUT", "DELETE"])
         self.assertEqual(messages, [])
 
+    async def test_slow_offer_does_not_use_general_api_timeout(self):
+        self.block_offer = True
+        messages = []
+        with patch("custom_components.netvue_local.bridge_api.REQUEST_TIMEOUT", 0.05):
+            await self.provider.async_handle_async_webrtc_offer(
+                self.camera, "offer", "slow", messages.append)
+            await asyncio.wait_for(self.offer_started.wait(), 2)
+            await asyncio.sleep(0.1)
+            self.assertFalse(messages)
+            self.assertFalse(any(r[0] == "DELETE" for r in self.requests))
+            self.offer_continue.set()
+            await self.events.put({"events": [
+                {"seq": 1, "type": "answer", "answer": "answer-sdp"},
+            ]})
+            await self.wait_for(lambda: bool(messages))
+        self.assertEqual(messages, [WebRTCAnswer("answer-sdp")])
+        self.assertEqual(sum(r[0] == "PUT" for r in self.requests), 1)
+
     async def test_rejection_bad_events_and_shutdown(self):
         messages = []
         self.status["PUT"] = 409
