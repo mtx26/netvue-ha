@@ -168,6 +168,10 @@ class NetvueDetectionZoneEditor extends HTMLElement {
   }
 
   async _loadPreview() {
+    if (!this._entityId) {
+      this._previewFailed();
+      return;
+    }
     this._status.textContent = this._t("settingsLoading");
     const path = `/api/camera_proxy/${encodeURIComponent(this._entityId)}`;
     try {

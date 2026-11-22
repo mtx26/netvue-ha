@@ -21,7 +21,7 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 🧪 | Métadonnées LAN | Série, firmware, capacités, SSID et niveau de signal exposés et testés hors ligne ; présence réelle des champs et compatibilité d'autres modèles à vérifier |
 | 💡 | Informations appareil supplémentaires | Étudier modèle, version matérielle, MAC, IP Wi-Fi/Ethernet, propriétaire et état cloud ; sources et faisabilité locale à vérifier, sans dépendance cloud obligatoire |
-| 🧪 | Configurateur Home Assistant | Pages Caméra, Détection IA, Zones, Lecteur et Paramètres globaux (conservation, stockage et TURN). Accès depuis l’intégration et la roue dentée de la caméra. Tests HA et navigation Chrome avec données simulées validés. Essai sur l’installation réelle nécessaire |
+| 🧪 | Configurateur Home Assistant | Pages Caméra, Détection IA, Zones, Lecteur et Paramètres globaux (conservation, stockage et TURN). Les caméras restent sélectionnables sans entité disponible ; tests synthétiques validés. Essai sur l’installation réelle nécessaire |
 | 🧪 | Démarrage WebRTC résilient | Délais HA/carte alignés, préparation RTSP séparée d’ICE et reprises DESCRIBE 404/503 bornées ; tests synthétiques validés, validation réelle après mise à jour nécessaire |
 ## 2. Audio
 ## 3. Enregistrement

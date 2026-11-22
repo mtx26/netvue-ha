@@ -28,14 +28,18 @@ const STYLE = `
   [hidden] { display:none !important; }
 `;
 
-export function entityForEntry(states, entryId) {
-  const cameras = Object.entries(states || {})
+export function entityForEntry(entries, states, entryId) {
+  const entities = Object.entries(states || {})
     .filter(([entityId, state]) => entityId.startsWith("camera.") && state?.attributes?.netvue_entry_id)
-    .map(([entityId, state]) => ({
-      entityId,
-      entryId: state.attributes.netvue_entry_id,
-      name: state.attributes.friendly_name || entityId,
-    }))
+    .map(([entityId, state]) => [state.attributes.netvue_entry_id, {
+      entityId, name: state.attributes.friendly_name,
+    }]);
+  const byEntry = new Map(entities);
+  const cameras = entries.map((entry) => ({
+    entityId: byEntry.get(entry.entry_id)?.entityId || null,
+    entryId: entry.entry_id,
+    name: byEntry.get(entry.entry_id)?.name || entry.title,
+  }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const selected = entryId ? cameras.find((camera) => camera.entryId === entryId) : cameras[0];
   return { cameras, selected: selected || null };
@@ -75,7 +79,10 @@ export class NetvueSettingsPanel extends HTMLElement {
       this._save = root.querySelector("[data-save]");
       this._message = root.querySelector("[data-message]");
       this._retry = root.querySelector("[data-retry]");
-      this._retry.addEventListener("click", () => this._open());
+      this._retry.addEventListener("click", () => {
+        if (!this._entries) this._loadEntries();
+        else this._open();
+      });
       root.querySelector("form").addEventListener("submit", (event) => {
         event.preventDefault();
         this._submit();
@@ -84,6 +91,8 @@ export class NetvueSettingsPanel extends HTMLElement {
     }
     window.addEventListener("popstate", this._locationChanged);
     window.addEventListener("location-changed", this._locationChanged);
+    this._entries = null;
+    this._entriesError = false;
     this._sync();
   }
 
@@ -92,6 +101,7 @@ export class NetvueSettingsPanel extends HTMLElement {
     window.removeEventListener("location-changed", this._locationChanged);
     this._pageKey = null;
     this._request = null;
+    this._entriesRequest = null;
     this._discardFlow();
   }
 
@@ -107,9 +117,6 @@ export class NetvueSettingsPanel extends HTMLElement {
     const params = new URLSearchParams(location.search);
     const requestedPage = params.get("page");
     const page = PAGES.includes(requestedPage) ? requestedPage : "camera";
-    const { cameras, selected } = entityForEntry(
-      this._hass.states, params.get("config_entry") || params.get("entry_id"),
-    );
     const language = this._hass.locale?.language || this._hass.language || "en";
     const t = translator(language);
     root.querySelector("[data-title]").textContent = t("settingsTitle");
@@ -117,6 +124,18 @@ export class NetvueSettingsPanel extends HTMLElement {
     root.querySelector("[data-back]").textContent = t("settingsBack");
     this._save.textContent = t("zoneSave");
     this._retry.textContent = t("settingsRetry");
+    if (!this._entries) {
+      this._select.disabled = true;
+      this._nav.hidden = true;
+      this._section.hidden = true;
+      this._message.textContent = t(this._entriesError ? "zoneLoadError" : "settingsLoading");
+      this._retry.hidden = !this._entriesError;
+      if (!this._entriesError && !this._entriesRequest) this._loadEntries();
+      return;
+    }
+    const { cameras, selected } = entityForEntry(
+      this._entries, this._hass.states, params.get("config_entry") || params.get("entry_id"),
+    );
     const options = JSON.stringify(cameras);
     if (options !== this._options) {
       this._options = options;
@@ -135,6 +154,22 @@ export class NetvueSettingsPanel extends HTMLElement {
     this._t = t;
     this._updateTabs();
     this._open();
+  }
+
+  async _loadEntries() {
+    const request = this._entriesRequest = {};
+    this._entriesError = false;
+    this._sync();
+    try {
+      const entries = await this._hass.callApi("GET", "config/config_entries/entry?domain=netvue_local");
+      if (request !== this._entriesRequest) return;
+      this._entries = entries;
+    } catch {
+      if (request !== this._entriesRequest) return;
+      this._entriesError = true;
+    }
+    this._entriesRequest = null;
+    this._sync();
   }
 
   _discardFlow() {
