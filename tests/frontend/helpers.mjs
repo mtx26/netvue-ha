@@ -258,7 +258,7 @@ export function connectionOptions(extra = {}) {
       return pc;
     },
     createStream: () => fakeStream(),
-    getPlaybackTime: () => ++playback,
+    getVideoProgress: () => ++playback,
     onFailed: (e) => events.failed.push(e),
     onLive: () => events.live++,
     onStream: (s) => events.streams.push(s),

@@ -45,6 +45,54 @@ test("local candidates before the session event are buffered then sent; end-of-c
   assert.equal(signalling.candidates.length, 2);
 });
 
+test("candidate signalling failures close promptly and retain the error classification", async () => {
+  for (const [buffered, error] of [
+    [true, { code: 3 }],
+    [false, { code: "unauthorized", message: "denied" }],
+  ]) {
+    const ctx = await started();
+    ctx.signalling.addCandidate = () => Promise.reject(error);
+    if (!buffered) ctx.signalling.last.emit({ type: "session", session_id: "S1" });
+    ctx.pc.onicecandidate({ candidate: { candidate: "candidate:1" } });
+    if (buffered) ctx.signalling.last.emit({ type: "session", session_id: "S1" });
+    await flush();
+    assert.deepEqual(ctx.events.failed, [{
+      code: buffered ? "signalling" : "unauthorized",
+      message: buffered ? "" : "denied",
+      recoverable: buffered,
+    }]);
+    assert.equal(ctx.pc.closed, true);
+    assert.equal(ctx.clock.pending, 0);
+    assert.equal(ctx.signalling.unsubscribed, 1);
+  }
+});
+
+test("synchronous candidate failures stop queued sends; late rejections after close are ignored", async () => {
+  const ctx = await started();
+  let calls = 0;
+  ctx.signalling.addCandidate = () => {
+    calls++;
+    throw { code: "not_found" };
+  };
+  ctx.pc.onicecandidate({ candidate: { candidate: "candidate:1" } });
+  ctx.pc.onicecandidate({ candidate: { candidate: "candidate:2" } });
+  ctx.signalling.last.emit({ type: "session", session_id: "S1" });
+  assert.equal(calls, 1);
+  assert.equal(ctx.events.failed[0].recoverable, false);
+  assert.equal(ctx.clock.pending, 0);
+
+  const late = await started();
+  let reject;
+  late.signalling.addCandidate = () => new Promise((resolve, fail) => { reject = fail; });
+  late.signalling.last.emit({ type: "session", session_id: "S1" });
+  late.pc.onicecandidate({ candidate: { candidate: "candidate:1" } });
+  late.conn.close();
+  reject({ code: "unauthorized" });
+  await flush();
+  assert.deepEqual(late.events.failed, []);
+  assert.equal(late.clock.pending, 0);
+});
+
 test("remote candidates arriving before the answer are applied after it, in order", async () => {
   const { pc, signalling } = await started();
   const emit = signalling.last.emit;
@@ -178,7 +226,7 @@ test("ICE that never connects after the answer fails", async () => {
 test("a video that does not advance for 10 s is a stall; progress or a hidden page is not", async () => {
   let time = 0;
   let hidden = false;
-  const ctx = await started({ options: { getPlaybackTime: () => time, isHidden: () => hidden } });
+  const ctx = await started({ options: { getVideoProgress: () => time, isHidden: () => hidden } });
   ctx.signalling.last.emit({ type: "answer", answer: "a" });
   await flush();
   ctx.pc.setState("connected");

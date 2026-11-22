@@ -1,5 +1,151 @@
 # Rapport phase 1 — Netvue Vigil
 
+## Complément statique du 22 novembre 2026 — sélection et reprise
+
+Ce complément corrige les réserves initiales devenues obsolètes sur 5555 et
+le LAN : des essais réels ultérieurs sont documentés séparément ci-dessous.
+Les chemins cités désignent les artefacts locaux, non du code publié.
+
+### Artefacts et limites
+
+L'APK existante a été préservée : Netvue 5.27.0, versionCode 121868,
+`com.netviewtech`, 152 491 597 octets, SHA-256
+`9907dbd62af295dd3bb2b17209edb1f2f87172b749079c27b1d9902ba44ef2be`.
+Le rapport historique attribue son téléchargement à
+[Netvue](https://resource.netvue.com/release/Netvue_5.27.0_121868.apk).
+CRC ZIP correct ; ni le hash local ni le CRC ne prouvent une signature
+éditeur. Aucun checksum signé éditeur n'a été vérifié ici.
+
+`scripts/apk_inventory.py` a été exécuté sans fichier de sortie : 5 457
+entrées, neuf DEX, 53 bibliothèques natives ARM64/ARMv7 ; les domaines ne sont
+échantillonnés que sur 80 entrées de 4 Mio au plus. Outils : Python 3.13.1,
+Java 8 `1.8.0_513`, JADX portable 1.5.6 déjà présent. Son archive correspond
+au hash officiel déjà consigné ici. Une nouvelle décompilation hors dépôt a été
+interrompue après stagnation à 25 451/25 453 classes ; sa classe
+`NvCameraServiceCenter` est identique à l'artefact précédent. La décompilation
+précédente avait atteint 99 % avec 155 erreurs : l'analyse n'est pas exhaustive.
+Aucun APK ou code extrait n'a été exécuté ; aucune caméra, compte ou API
+privée n'a été contacté.
+
+### Choix initial de live — preuve APK, confiance forte pour le code
+
+[`LivePlayerPresenter.doStartCameraPlaying`](./decompiled/sources/com/netviewtech/mynetvue4/ui/device/player/live/LivePlayerPresenter.java#L54)
+transmet qualité et préférence à `device.live`. Puis
+[`NvCameraServiceCenter.start`](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraServiceCenter.java#L340)
+applique ces tests ordonnés :
+
+1. `isCameraII()` choisit CameraII avant tous les autres chemins. Ce test
+   dépend de motifs de version firmware, pas du nom commercial
+   ([`NvCameraFirmwareUtils`](./decompiled/sources/com/netviewtech/client/packet/camera/utils/NvCameraFirmwareUtils.java#L30)).
+2. Sinon `supportP2P()` choisit le LAN TCP classique, y compris si le nœud
+   est aussi accessible par cloud. Cette propriété signifie `LOCAL` ou
+   `BOTH_CLOUD_LOCAL`, et non WebRTC.
+3. Sinon, si `supportRelay()` : pour LIVE, Agora exige `rtsaAvailable`,
+   `supportPlayV2`, `supportRTSA` et un service Agora disponible. La
+   préférence `NETVUE_RELAY_ONLY` choisit le relais ; dans cette même branche
+   `LAN_ONLY` choisit LAN ; sinon Agora. Si les préconditions Agora ou LIVE
+   manquent, c'est le relais qui est choisi même si la préférence semble
+   demander autre chose.
+4. Sinon, aucun service. `supportRelay()` exige `online` et l'état `CLOUD`
+   ou `BOTH_CLOUD_LOCAL`
+   ([`NVLocalDeviceNode`](./decompiled/sources/com/netviewtech/client/packet/rest/local/device/NVLocalDeviceNode.java#L1037)).
+   L'objet Agora dépend aussi de l'initialisation SDK
+   ([`AgoraRTSA.blockUntilInitialized`](./decompiled/sources/com/netviewtech/client/service/camera/AgoraRTSA.java#L114)).
+
+### Bascule après échec — preuve APK, confiance forte sur les conditions
+
+[`onConnectionFailed`](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraServiceCenter.java#L640)
+ne traite que `CAMERA_CONNECTION_FAILED` hors CameraII. Il incrémente un
+compteur partagé initialisé par `start` ; un login réussi mémorise si le
+transport était `TCP_TRAN`. `z` ci-dessous désigne le succès de login
+antérieur du service actif, non l'affichage d'une image.
+
+| Échec signalé | Cible sélectionnée par le code |
+|---|---|
+| LAN, compteur ≤ 3 | LAN si `z` ; sinon Agora si disponible ; sinon relais si aucun succès de login relais mémorisé ; sinon aucune cible. |
+| LAN, compteur > 3 | Aucune cible. |
+| Agora | Agora si compteur < 3 **ou** `z` ; sinon relais si compteur = 3 ; sinon aucune cible. La condition `z` ne plafonne donc pas seule les essais à trois. |
+| TCP_TRAN, compteur ≤ 3 | Relais si aucun succès de login relais mémorisé ; sinon LAN si `supportP2P()` ; sinon Agora si disponible ; sinon aucune cible. |
+| TCP_TRAN, compteur > 3 ou autre type | Aucune cible. |
+
+Une cible TCP_TRAN passe ensuite par
+[`selectServiceByTaskType`](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraServiceCenter.java#L740) :
+en LIVE, les préférences `LAN_ONLY` et `AGORA_ONLY` peuvent substituer leur
+service ou produire `null`. Il n'existe donc pas ici de séquence universelle
+LAN → Agora → relais. `changeConnection` arrête l'ancien service et lance le
+nouveau dans un thread ; l'absence de cible laisse remonter l'échec.
+[`onCameraConnectionFailed`](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraServiceTpl.java#L425)
+notifie avant d'effacer `hasLoggedInSuccess`. La perte LAN signale un échec
+si `canReconnect()`, sinon suit la fermeture héritée
+([`NvCameraLANService`](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraLANService.java#L71)).
+Les chemins d'événements ne garantissent pas qu'une coupure déclenche
+toujours la même bascule. Les délais 2, 4, 4, 6 secondes de
+[`onCameraReconnecting`](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraServiceTpl.java#L246)
+concernent `TCP_TRAN_RING`, pas le live LAN classique.
+
+Pour CameraII,
+[`connect`](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraIIService.java#L463)
+essaie `TCP_LAN`, `UDP_PUNCH`, `TCP_TRAN` tant qu'un canal retourné est
+non connecté ; un canal `null`, notamment après interruption, termine
+immédiatement la boucle. `onConnectionLost` y est vide : une reprise complète
+après perte de média n'est pas démontrée. Le
+[socket LAN II](./decompiled/sources/com/netviewtech/client/service/camera/ii/NvCameraIILANSocket.java#L48)
+obtient un ACK de login et une session puis ouvre un socket média ; le
+[socket NAT](./decompiled/sources/com/netviewtech/client/service/camera/ii/NvCameraIINATSocket.java#L62)
+effectue une traversée UDP ; le
+[relais II](./decompiled/sources/com/netviewtech/client/service/camera/ii/NvCameraIIRelaySocket.java#L94)
+ouvre un socket TCP. Ce protocole est distinct du LAN classique.
+
+### Authentification et média — preuve APK, confiance forte pour les chemins cités
+
+- La [découverte UDP/36868](./decompiled/sources/com/netviewtech/client/discover/camera/NvCameraFinder.java#L100)
+  renseigne endpoint, clé et firmware. Le
+  [LAN classique](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraLANService.java#L39)
+  ouvre TCP sur l'endpoint fourni et utilise `makeLoginUnit`. Un ACK login
+  reconnu déclenche la sélection LIVE ; le
+  [gestionnaire](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraServiceTpl.java#L475)
+  ne vérifie pas explicitement `C`. Les paquets type 201 deviennent des
+  trames média. Aucun chiffrement applicatif du login n'est apparent.
+- `NvIoTAuthManager` → `requestPlayTicket` → `NvIoTClientImpl.getPlayTicket`
+  utilise AWS IoT/MQTT pour la signalisation, sans établir un média MQTT. Le
+  [relais classique](./decompiled/sources/com/netviewtech/client/service/camera/NvCameraRelayServiceTpl.java#L130)
+  demande un ticket, choisit hôte/port et connecteur SSL ou non selon la
+  configuration, puis utilise le ticket pour son login. La
+  [branche Agora](./decompiled/sources/com/netviewtech/client/service/camera/AgoraCameraService.java#L125)
+  demande son ticket et joint le canal SDK.
+- `CameraServiceHandler.onCameraServiceData` alimente le lecteur ;
+  [`NVVideoHandler`](./decompiled/sources/com/netviewtech/client/media/video/NVVideoHandler.java#L50)
+  analyse les NAL et décode H.264 ou HEVC via
+  [`NVVideoCodec` JNI](./decompiled/sources/com/netviewtech/client/media/NVVideoCodec.java#L4).
+  Les bibliothèques Agora, IJK/FFmpeg, RTMP, Jingle/WebRTC et propriétaires
+  sont présentes ; leur inclusion ne prouve pas leur usage pour Vigil.
+  Les marqueurs WebRTC, ICE, STUN, TURN ou RTSP ne prouvent pas de session.
+  RTP employé par le pont Go vers ses lecteurs ne prouve pas RTP entre l'APK
+  et la caméra.
+
+### Observations historiques, HA et preuve manquante
+
+Les essais réels antérieurs autorisés, distincts de cette session statique,
+documentent sur la caméra 2 une découverte annonçant TCP/5555, login et LIVE
+réussis, H.264 reçu puis décodage RTSP via le pont
+([protocole](../docs/netvue-protocol.md), [phase 36](./phase36-validation-reelle.md)).
+5555 n'est pas établi comme universel ; RTSP est la sortie du pont, pas le
+protocole natif prouvé de ce port. La caméra 1 et les choix effectifs de
+l'application Android ne sont pas validés par ces essais.
+
+Pour HA, le pont LAN existant est une possibilité déjà validée sur un
+exemplaire, non une garantie multi-firmware ni une API cloud publique. Ses
+règles de reprise et ses contrôles de réponse sont propres à Go.
+
+**Ce qui est prouvé :** les branches et conditions ci-dessus dans l'APK ;
+les échanges et le H.264 historiques sur une caméra distinctement rapportés.
+**Ce qui reste hypothétique :** choix et succession effectifs des transports
+Android sur chaque Vigil, stabilité longue et comportement des SDK natifs.
+**Prochaine action sûre :** obtenir pour chaque appareil sa référence et sa
+version firmware expurgées, ainsi que la version Android installée, sans
+identifiant ; puis comparer hors ligne. Une observation de bascule réelle
+nécessite une autorisation spécifique, une portée et des traces expurgées.
+
 ## Résumé décisionnel
 
 - **APK analysé :** Netvue **5.27.0** (versionCode **121868**), téléchargé de l’URL hébergée par Netvue. SHA-256 : `9907dbd62af295dd3bb2b17209edb1f2f87172b749079c27b1d9902ba44ef2be`.

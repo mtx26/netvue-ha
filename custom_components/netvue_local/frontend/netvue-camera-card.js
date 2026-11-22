@@ -395,7 +395,20 @@ export class NetvueCameraCard extends HTMLElement {
       signalling: createSignalling(() => this._hass),
       timers: window,
       isHidden: () => document.hidden,
-      getPlaybackTime: () => this._video.currentTime,
+      getVideoProgress: () => {
+        const video = this._video;
+        try {
+          if (typeof video.getVideoPlaybackQuality === "function") {
+            const quality = video.getVideoPlaybackQuality();
+            if (Number.isFinite(quality.totalVideoFrames) && Number.isFinite(quality.droppedVideoFrames)) {
+              return quality.totalVideoFrames - quality.droppedVideoFrames;
+            }
+          }
+        } catch {
+          // Keep the existing playback-time watchdog when frame counters are unavailable.
+        }
+        return video.currentTime;
+      },
       onState: (view) => {
         this._view = view;
         this._render();

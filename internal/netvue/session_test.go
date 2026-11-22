@@ -718,6 +718,56 @@ func TestReceiveLiveCancellationWakesBlockedRead(t *testing.T) {
 	}
 }
 
+func TestReceiveLiveHandlesVideoPacketSplitAcrossDelayedWrites(t *testing.T) {
+	client, server := testPipe(t)
+	publisher := &generationTestPublisher{pushed: make(chan struct{})}
+	ack := mustEncodeCommand(t, []map[string]any{{"A": 3, "V": 2, "C": 0}})
+	packet := mediaPacket(1, []byte{1})
+	serverDone := make(chan error, 1)
+	go func() {
+		if err := writeFull(server, ack); err != nil {
+			serverDone <- err
+			return
+		}
+		start := 0
+		for _, end := range []int{3, 11, len(packet)} {
+			if err := writeFull(server, packet[start:end]); err != nil {
+				serverDone <- err
+				return
+			}
+			start = end
+			if end < len(packet) {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		serverDone <- nil
+	}()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() {
+		result <- receiveLiveWithTimeouts(ctx, client, publisher, time.Second, time.Second)
+	}()
+	select {
+	case <-publisher.pushed:
+	case <-time.After(time.Second):
+		t.Fatal("delayed, fragmented video packet was not published")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server could not send fragmented LIVE packet: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("receive loop returned %v after cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("receive loop did not stop after cancellation")
+	}
+}
+
 func TestReceiveLiveHandlesCancellationRaceWithReadDeadline(t *testing.T) {
 	client, _ := testPipe(t)
 	conn := &readDeadlineRaceConn{

@@ -23,7 +23,7 @@ fiable, performante, modulaire et simple à installer.
 | 💡 | Informations appareil supplémentaires | Étudier modèle, version matérielle, MAC, IP Wi-Fi/Ethernet, propriétaire et état cloud ; sources et faisabilité locale à vérifier, sans dépendance cloud obligatoire |
 | 🧪 | Configurateur Home Assistant | Pages Caméra, Détection IA, Zones, Lecteur et Paramètres globaux (conservation, stockage et TURN). Les caméras restent sélectionnables sans entité disponible ; tests synthétiques validés. Essai sur l’installation réelle nécessaire |
 | 🧪 | Démarrage WebRTC résilient | Délais HA/carte alignés, préparation RTSP séparée d’ICE et reprises DESCRIBE 404/503 bornées ; tests synthétiques validés, validation réelle après mise à jour nécessaire |
-| 🔄 | Reprise réseau multi-caméra | Reconnexion directe, diagnostics de santé, reprise du lecteur et configuration d'enregistrement testés synthétiquement ; IA, tests MediaMTX/HA complets, charge réelle et validation caméra restent à consolider |
+| 🔄 | Reprise réseau multi-caméra | Supervision Go et reprise testées synthétiquement ; signalisation ICE et détection de blocage vidéo corrigées. Reprise TCP validée une fois sur Entrée ; validation navigateur réelle, pertes Wi-Fi, tests HA/IA complets, charge et déploiement restent à consolider ([phase 69](../findings/phase69-fiabilite-connexion.md)) |
 ## 2. Audio
 ## 3. Enregistrement
 

@@ -145,6 +145,12 @@ La carte réessaie une négociation récupérable avec un nouvel identifiant :
 continuent au maximum de 30 s tant que la carte est active ; les erreurs
 classées fatales exigent toujours une reprise manuelle.
 
+Un échec d’envoi de candidat ICE ferme la négociation courante et suit cette
+même classification de reprise ; il n’est plus ignoré. Le watchdog vidéo de
+la carte utilise `totalVideoFrames - droppedVideoFrames` lorsque le navigateur
+expose ces compteurs. Sans ces compteurs, il retombe sur `currentTime`, qui
+peut aussi avancer pendant que seul l’audio progresse.
+
 ### Audio caméra vers navigateur
 
 Transcodage AAC vers Opus, avec reprise après échec rapide :

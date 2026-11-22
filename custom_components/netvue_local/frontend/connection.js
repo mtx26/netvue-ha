@@ -31,7 +31,7 @@ export class NetvueConnection {
       createStream: () => new MediaStream(),
       now: () => Date.now(),
       isHidden: () => false,
-      getPlaybackTime: () => undefined,
+      getVideoProgress: () => undefined,
       onStream: () => {},
       onLive: () => {},
       onFailed: () => {},
@@ -197,9 +197,16 @@ export class NetvueConnection {
     }
   }
 
-  _sendCandidate(init) {
+  async _sendCandidate(init) {
+    if (this._closed) {
+      return;
+    }
     const o = this._o;
-    Promise.resolve(o.signalling.addCandidate(o.entity, this._sessionId, init)).catch(() => {});
+    try {
+      await o.signalling.addCandidate(o.entity, this._sessionId, init);
+    } catch (err) {
+      this._fail(describeError(err));
+    }
   }
 
   async _onEvent(pc, event) {
@@ -316,11 +323,11 @@ export class NetvueConnection {
 
   _watchStall() {
     const o = this._o;
-    let lastTime = o.getPlaybackTime();
+    let lastTime = o.getVideoProgress();
     let lastProgress = o.now();
     this._stallTimer = this._timers.setInterval(() => {
       const now = o.now();
-      const time = o.getPlaybackTime();
+      const time = o.getVideoProgress();
       if (o.isHidden() || (typeof time === "number" && time !== lastTime)) {
         lastTime = time;
         lastProgress = now;

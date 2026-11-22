@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HEALTHY_RESET_MS, NetvueSession, RecoveryPolicy } from "../../custom_components/netvue_local/frontend/session.js";
-import { FakeClock, FakePC, fakeSignalling, flush } from "./helpers.mjs";
+import { connectionOptions, FakeClock, FakePC, fakeSignalling, flush } from "./helpers.mjs";
 
 test("policy keeps retrying with bounded exponential delay", () => {
   const policy = new RecoveryPolicy({ random: () => 1 });
@@ -147,6 +147,31 @@ test("callbacks of a superseded connection are ignored", () => {
   assert.ok(!h.names().includes("live"));
 });
 
+test("candidate signalling failures use the session retry policy or stop on a fatal error", async () => {
+  for (const [error, state] of [[{ code: 3 }, "reconnecting"], [{ code: "unauthorized" }, "error"]]) {
+    const ctx = connectionOptions();
+    const states = [];
+    ctx.signalling.addCandidate = () => Promise.reject(error);
+    const session = new NetvueSession({
+      ...ctx.options,
+      random: () => 1,
+      onState: (view) => states.push(view),
+    });
+    session.start();
+    await flush();
+    ctx.signalling.last.emit({ type: "session", session_id: "S1" });
+    ctx.pcs[0].onicecandidate({ candidate: { candidate: "candidate:1" } });
+    await flush();
+    assert.equal(states.at(-1).state, state);
+    assert.equal(ctx.pcs[0].closed, true);
+    ctx.clock.advance(1000);
+    await flush();
+    assert.equal(ctx.pcs.length, state === "reconnecting" ? 2 : 1);
+    session.stop();
+    assert.equal(ctx.clock.pending, 0);
+  }
+});
+
 test("the card invokes browser timers with their window receiver", async () => {
   const clock = new FakeClock();
   const calls = [];
@@ -186,7 +211,12 @@ test("the card invokes browser timers with their window receiver", async () => {
       callWS: signalling.getClientConfig,
       connection: { subscribeMessage: (callback, message) => signalling.offer(message.entity_id, message.offer, callback) },
     };
-    card._video = { currentTime: 0 };
+    let frames = 0;
+    let dropped = 0;
+    card._video = {
+      currentTime: 0,
+      getVideoPlaybackQuality: () => ({ totalVideoFrames: frames, droppedVideoFrames: dropped }),
+    };
     card._render = () => {};
     card._setStream = () => {};
     card._startSession();
@@ -194,6 +224,7 @@ test("the card invokes browser timers with their window receiver", async () => {
     signalling.last.emit({ type: "session", session_id: "S1" });
     signalling.last.emit({ type: "answer", answer: "v=0 answer" });
     await flush();
+    card._session._conn._o.now = clock.now;
     pc.setState("connected");
     pc.setState("disconnected");
     clock.advance(5000);
@@ -204,8 +235,34 @@ test("the card invokes browser timers with their window receiver", async () => {
     signalling.last.emit({ type: "session", session_id: "S2" });
     signalling.last.emit({ type: "answer", answer: "v=0 answer" });
     await flush();
+    card._session._conn._o.now = clock.now;
     pc.setState("connected");
     assert.equal(card._view.state, "live");
+    const progress = card._session._conn._o.getVideoProgress;
+    frames = 3;
+    dropped = 1;
+    assert.equal(progress(), 2);
+    clock.advance(1000);
+    for (let i = 0; i < 10; i++) {
+      frames++;
+      card._video.currentTime++;
+      clock.advance(1000);
+    }
+    assert.equal(card._view.state, "live");
+    // Audio may advance currentTime even when no new video frame is presented.
+    for (let i = 0; i < 10; i++) {
+      frames++;
+      dropped++;
+      card._video.currentTime++;
+      clock.advance(1000);
+    }
+    assert.equal(card._view.state, "reconnecting");
+    delete card._video.getVideoPlaybackQuality;
+    assert.equal(progress(), card._video.currentTime);
+    card._video.getVideoPlaybackQuality = () => { throw new Error("unavailable"); };
+    assert.equal(progress(), card._video.currentTime);
+    card._video.getVideoPlaybackQuality = () => ({ totalVideoFrames: 0 });
+    assert.equal(progress(), card._video.currentTime);
     card._stopSession();
     assert.equal(clock.pending, 0);
     assert.deepEqual(new Set(calls.map(([name]) => name)),
