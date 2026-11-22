@@ -188,6 +188,7 @@ globalThis.window = {
 };
 
 const { NetvueCameraCard } = await import("../../custom_components/netvue_local/frontend/netvue-camera-card.js");
+const HOUR = 60 * 60 * 1000;
 const { mergeIntervals, intervalAt } = await import("../../custom_components/netvue_local/frontend/recording-timeline.js");
 
 function findByClass(node, className) {
@@ -351,7 +352,7 @@ test("timeline merges overlaps and finds protected intervals independently", () 
   assert.equal(intervalAt([{ id: "protected", start: 100, end: 500 }], 500), null);
 });
 
-test("the calendar keeps the requested empty day when recordings exist on another day", async () => {
+test("the calendar centers a 12-hour window even without footage", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -368,16 +369,13 @@ test("the calendar keeps the requested empty day when recordings exist on anothe
   };
   await card._openHistory();
   assert.equal(card._historyRange.disabled, false);
-  assert.ok(card._historySegment);
   const selected = new Date(2026, 10, 21, 14, 30).getTime();
   card._historyDatePicker.open = true;
   card._historyDate.value = "2026-11-21T14:30";
   card._historyDate.dispatch("change");
   await new Promise((resolve) => setImmediate(resolve));
-  const dayStart = new Date(2026, 10, 21, 0, 0, 0, 0).getTime();
-  const dayEnd = new Date(2026, 10, 22, 0, 0, 0, 0).getTime() - 1;
-  assert.equal(Number(card._historyRange.min), dayStart);
-  assert.equal(Number(card._historyRange.max), dayEnd);
+  assert.equal(Number(card._historyRange.min), selected - 6 * HOUR);
+  assert.equal(Number(card._historyRange.max), selected + 6 * HOUR);
   assert.equal(card._historyCursor, selected);
   assert.equal(card._historyDatePicker.open, false);
   assert.equal(card._historyProtectButton.disabled, true);
@@ -391,7 +389,7 @@ test("the calendar keeps the requested empty day when recordings exist on anothe
   assert.equal(card._historyCursor, selected + 3600000);
 });
 
-test("protected-only footage remains playable and appears after temporary expiry", async () => {
+test("protected-only footage remains playable and appears after temporary expiry", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -415,6 +413,7 @@ test("protected-only footage remains playable and appears after temporary expiry
       return { path: `/signed${message.path}` };
     },
   };
+  t.mock.method(Date, "now", () => start + HOUR);
   await card._openHistory();
   assert.equal(card._historySegment.id, "b".repeat(32));
   assert.ok(signed.includes(`/api/netvue_local/protected/entry1/${"b".repeat(32)}`));
@@ -430,7 +429,7 @@ test("protected-only footage remains playable and appears after temporary expiry
   assert.equal(card._historySegment.id, "b".repeat(32));
 });
 
-test("timeline seeks across recordings, reports gaps and follows a growing segment", async () => {
+test("timeline seeks across recordings, reports gaps and follows a growing segment", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -455,6 +454,7 @@ test("timeline seeks across recordings, reports gaps and follows a growing segme
       return { path: `/signed${message.path}` };
     },
   };
+  t.mock.method(Date, "now", () => start + HOUR);
   await card._openHistory();
   assert.equal(card._history, true);
   assert.equal(card._historyPanel.hidden, false);
@@ -519,7 +519,7 @@ test("history hides REC and the fifteen-second controls seek across segments", a
   assert.equal(card._recordingIndicator.hidden, false);
 });
 
-test("history overlay exposes jumps, date, download and a clear return to live", async () => {
+test("history overlay exposes jumps, date, download and a clear return to live", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -534,6 +534,7 @@ test("history overlay exposes jumps, date, download and a clear return to live",
     },
     async callWS(message) { return { path: `/signed${message.path}` }; },
   };
+  t.mock.method(Date, "now", () => start + 2 * HOUR);
   await card._openHistory();
   assert.equal(card._historyPlayer.hidden, false);
   assert.equal(card._historyVideo.getAttribute("controls"), "");
@@ -622,12 +623,12 @@ test("only annotated export signs a download with the temporary export override"
   assert.equal(reloaded._overlayEnabled("replay"), true);
 });
 
-test("timeline graduations follow the available recording bounds across days", async () => {
+test("timeline graduations label a 12-hour window crossing midnight", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
-  const start = new Date(2026, 11, 31, 12).getTime();
-  const end = new Date(2027, 0, 1, 11).getTime();
+  const end = new Date(2027, 0, 1, 5).getTime();
+  const start = end - 12 * HOUR;
   const recordings = [
     { id: "a".repeat(32), start: new Date(start).toISOString(), duration: 60 },
     { id: "b".repeat(32), start: new Date(end - 60000).toISOString(), duration: 60 },
@@ -638,16 +639,17 @@ test("timeline graduations follow the available recording bounds across days", a
     async callApi() { return { recordings }; },
     async callWS(message) { return { path: message.path }; },
   };
+  t.mock.method(Date, "now", () => end);
   await card._openHistory();
   assert.equal(card._historyRange.min, String(start));
-  assert.equal(card._historyRange.max, String(end - 1));
+  assert.equal(card._historyRange.max, String(end));
   assert.equal(card._historyTicks.hidden, false);
   assert.equal(card._historyTicks.children.length, 5);
   const dateFormat = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
   const timeFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" });
   for (const [index, time] of [
-    start, start + (end - 1 - start) / 4, start + (end - 1 - start) / 2,
-    start + (end - 1 - start) * 3 / 4, end - 1,
+    start, start + (end - start) / 4, start + (end - start) / 2,
+    start + (end - start) * 3 / 4, end,
   ].entries()) {
     const rounded = Math.round(time / 60000) * 60000;
     assert.equal(card._historyTickLabels[index].time.textContent, timeFormat.format(rounded));
@@ -659,9 +661,8 @@ test("timeline graduations follow the available recording bounds across days", a
     new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "medium" }).format(start + 30000));
   recordings.splice(1);
   await card._refreshHistory("entry1", card._historyGeneration);
-  const shortTimeFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  assert.equal(card._historyTickLabels[0].time.textContent, shortTimeFormat.format(start));
-  assert.equal(card._historyTickLabels[0].date.textContent, "");
+  assert.equal(card._historyRange.min, String(start));
+  assert.equal(card._historyRange.max, String(end));
   recordings.splice(0);
   await card._refreshHistory("entry1", card._historyGeneration);
   assert.equal(card._historyTicks.hidden, false);
@@ -670,7 +671,7 @@ test("timeline graduations follow the available recording bounds across days", a
   card._closeHistory(false);
 });
 
-test("timeline shows recorded intervals and the time under the moving cursor", async () => {
+test("timeline shows recorded intervals and the time under the moving cursor", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -687,18 +688,19 @@ test("timeline shows recorded intervals and the time under the moving cursor", a
     async callApi() { return { recordings }; },
     async callWS(message) { return { path: message.path }; },
   };
+  t.mock.method(Date, "now", () => start + 12 * HOUR);
   await card._openHistory();
   assert.equal(card._historyRail.children.length, 2);
   const [first, second] = card._historyRail.children;
   assert.equal(first.style.left, "0%");
-  assert.ok(Math.abs(parseFloat(first.style.width) - 20000 / 59999 * 100) < 0.001);
-  assert.ok(Math.abs(parseFloat(second.style.left) - 40000 / 59999 * 100) < 0.001);
-  assert.ok(Math.abs(parseFloat(second.style.width) - 19999 / 59999 * 100) < 0.001);
+  assert.ok(Math.abs(parseFloat(first.style.width) - 20000 / (12 * HOUR) * 100) < 0.001);
+  assert.ok(Math.abs(parseFloat(second.style.left) - 40000 / (12 * HOUR) * 100) < 0.001);
+  assert.ok(Math.abs(parseFloat(second.style.width) - 20000 / (12 * HOUR) * 100) < 0.001);
   const format = new Intl.DateTimeFormat("fr-FR", { timeStyle: "medium" });
   card._historyRange.value = String(start + 15000);
   card._historyRange.dispatch("input");
   assert.equal(card._historyPositionLabel.textContent, format.format(start + 15000));
-  assert.ok(Math.abs(parseFloat(card._historyPanel.style["--history-position"]) - 15000 / 59999 * 100) < 0.001);
+  assert.ok(Math.abs(parseFloat(card._historyPanel.style["--history-position"]) - 15000 / (12 * HOUR) * 100) < 0.001);
   assert.equal(card._historyCursorMarker.hidden, false);
   card._historyScrubbing = false;
   await card._historySeek(start + 40000);
@@ -711,12 +713,14 @@ test("timeline shows recorded intervals and the time under the moving cursor", a
   card._closeHistory(false);
 });
 
-test("timeline shows at most 24 hours and moves to older recordings without deleting them", async () => {
+test("timeline defaults to the last 12 hours and can move to older recordings", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
   const start = Date.parse("2026-11-18T12:00:00Z");
-  const day = 24 * 60 * 60 * 1000;
+  const day = 24 * HOUR;
+  const newestStart = start + 3 * day;
+  const now = newestStart + HOUR;
   const recordings = [
     { id: "a".repeat(32), start: new Date(start).toISOString(), duration: 600 },
     { id: "c".repeat(32), start: new Date(start + 2 * day - 3600000).toISOString(), duration: 7200 },
@@ -727,28 +731,29 @@ test("timeline shows at most 24 hours and moves to older recordings without dele
     async callApi(method) { assert.equal(method, "GET"); return { recordings }; },
     async callWS(message) { return { path: message.path }; },
   };
+  t.mock.method(Date, "now", () => now);
   await card._openHistory();
-  const latest = start + 3 * day + 600000 - 1;
-  assert.equal(Number(card._historyRange.max), latest);
-  assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), day);
-  assert.equal(card._historyRail.children.length, 2);
-  assert.equal(card._historyRail.children[0].style.left, "0%");
+  assert.equal(Number(card._historyRange.max), now);
+  assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), 12 * HOUR);
+  assert.equal(card._historyRail.children.length, 1);
+  assert.equal(card._historyCursor, newestStart + 600000 - 1);
   assert.ok(parseFloat(card._historyRail.children[0].style.width) > 0);
   const older = start + 300000;
   await card._historySeek(older);
   assert.ok(Number(card._historyRange.min) <= older);
   assert.ok(Number(card._historyRange.max) >= older);
-  assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), day);
+  assert.equal(Number(card._historyRange.max) - Number(card._historyRange.min), 12 * HOUR);
   assert.equal(card._historySegment.id, "a".repeat(32));
   assert.equal(recordings.length, 3);
   assert.equal(card._historyRail.children.length, 1);
   await card._historySeek(start + 3 * day + 300000);
-  assert.equal(Number(card._historyRange.max), latest);
+  assert.equal(Number(card._historyRange.max), newestStart + 300000 + 6 * HOUR);
   assert.equal(card._historySegment.id, "b".repeat(32));
   card._closeHistory(false);
 });
 
-test("timeline ignores a late resolution after returning to live", async () => {
+test("timeline ignores a late resolution after returning to live", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-11-20T13:00:00Z"));
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -769,7 +774,7 @@ test("timeline ignores a late resolution after returning to live", async () => {
   assert.notEqual(card._historyVideo.src, "/signed/late");
 });
 
-test("timeline waits for more footage only while recording and cancels on exit", async () => {
+test("timeline waits for more footage only while recording and cancels on exit", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -787,6 +792,7 @@ test("timeline waits for more footage only while recording and cancels on exit",
     },
     async callWS(message) { return { path: message.path }; },
   };
+  t.mock.method(Date, "now", () => Date.parse(recording.start) + HOUR);
   await card._openHistory();
   card._historyVideo.currentTime = 60;
   await card._historyEnded();
@@ -806,7 +812,7 @@ test("timeline waits for more footage only while recording and cancels on exit",
   assert.equal(card._historyFollowTimer, null);
 });
 
-test("seeking in the video cancels a pending follow refresh", async () => {
+test("seeking in the video cancels a pending follow refresh", async (t) => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -828,6 +834,7 @@ test("seeking in the video cancels a pending follow refresh", async () => {
     },
     async callWS(message) { signed++; return { path: message.path }; },
   };
+  t.mock.method(Date, "now", () => Date.parse(recording.start) + HOUR);
   await card._openHistory();
   card._historyVideo.currentTime = 60;
   await card._historyEnded();

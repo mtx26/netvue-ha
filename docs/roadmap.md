@@ -29,6 +29,7 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 🔄 | Conservation sélective | Export multi-segments et détection des trous testés synthétiquement ; limites d'espace, reprise après panne et validation réelle restent à consolider ([stockage protégé](protected-recordings.md)) |
 | 🧪 | Protection depuis le replay | Le bouclier enregistre le segment en cours en un appui. La frise affiche en violet le segment protégé. Tests hors ligne, validation sur caméra réelle nécessaire |
+| 🧪 | Frise du replay | Fenêtre fixe de 12 h, terminée à l’heure actuelle à l’ouverture et centrée sur l’heure choisie au calendrier. Tests hors ligne, validation sur l’installation réelle nécessaire |
 | 🔄 | Enregistrement IA automatique | Règles persistantes, cycle confirmé/actif/terminé, pré-événement 120 s et post-événement 300 s ; protection réelle et validation caméra nécessaires |
 | 💡 | Détection de colis | Architecture temporelle et état persisté ; aucun modèle ONNX de colis fiable/licencié n'est encore validé |
 | 🧪 | Notifications intelligentes | Notifications HA locales configurables, délai anti-doublon et liens Lovelace ; snapshot/iPhone/validation production nécessaires |

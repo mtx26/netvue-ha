@@ -14,7 +14,7 @@ const HIDDEN_PAUSE_MS = 60000;
 const ERROR_TOAST_MS = 4000;
 const HISTORY_FOLLOW_POLL_MS = 5000;
 const HISTORY_FOLLOW_BUFFER_MS = 10000;
-const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const HISTORY_WINDOW_MS = 12 * 60 * 60 * 1000;
 const OVERLAY_DEFAULTS = { live: true, replay: true, export: false };
 const OVERLAY_REFRESH_MS = 30000;
 const HISTORY_SAMPLE_MAX_GAP_SECONDS = 3;
@@ -1081,32 +1081,25 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyVideo.hidden = false;
     this._historyPanel.hidden = false;
     this._wrap.setAttribute("data-history", "");
+    const now = Date.now();
+    this._setHistoryWindow(now);
     this._historyMessage.textContent = this._t("historyLoading");
     this._render();
     try {
       await this._refreshHistory(entryId, generation);
       await this._refreshProtectedHistory(entryId, generation);
       if (!this._history || generation !== this._historyGeneration) return;
-      if (this._historyCursor !== null) {
-        this._setHistoryWindow(this._historyCursor);
-        await this._historySeek(this._historyCursor);
+      const intervals = mergeIntervals([...this._historySegments, ...this._historyProtected]);
+      const windowStart = now - HISTORY_WINDOW_MS;
+      const latest = intervals.findLast(({ start, end }) => start <= now && end > windowStart);
+      if (latest) {
+        await this._historySeek(Math.max(windowStart, Math.min(now, latest.end - 1)));
       } else {
-        const intervals = [
-          ...this._historySegments.map((segment) => ({ start: segment.start, end: segment.end })),
-          ...this._historyProtected,
-        ];
-        const bounds = mergeIntervals(intervals).at(-1);
-        if (bounds) {
-          await this._historySeek(bounds.end - 1);
-        } else {
-          const now = Date.now();
-          this._setHistoryWindow(now);
-          this._historyCursor = now;
-          this._historyRange.value = String(now);
-          this._historyDate.value = localDateTime(now);
-          this._renderHistoryPosition(now);
-          this._historyMessage.textContent = this._t("historyEmpty");
-        }
+        this._historyCursor = now;
+        this._historyRange.value = String(now);
+        this._historyDate.value = localDateTime(now);
+        this._renderHistoryPosition(now);
+        this._historyMessage.textContent = this._t(intervals.length ? "historyGap" : "historyEmpty");
       }
     } catch {
       if (this._history && generation === this._historyGeneration) {
@@ -1115,26 +1108,14 @@ export class NetvueCameraCard extends HTMLElement {
     }
   }
 
-  async _refreshHistory(entryId, generation, position = true) {
+  async _refreshHistory(entryId, generation) {
     const data = await this._hass.callApi("GET", `netvue_local/recordings/${encodeURIComponent(entryId)}`);
     const segments = recordingSegments(data.recordings);
     if (!this._history || generation !== this._historyGeneration) return;
     this._historySegments = segments;
     this._historyRange.disabled = false;
     this._historyTicks.hidden = false;
-    if (segments.length && position) {
-      const bounds = mergeIntervals(segments);
-      const first = bounds[0].start;
-      const last = bounds.at(-1).end - 1;
-      if (!Number.isFinite(this._historyCursor)
-          || this._historyCursor < first
-          || this._historyCursor > last) {
-        this._historyCursor = last;
-      }
-      this._setHistoryWindow(this._historyCursor);
-    } else {
-      this._renderHistoryAvailability();
-    }
+    this._renderHistoryAvailability();
   }
 
   async _refreshProtectedHistory(entryId, generation) {
@@ -1154,47 +1135,16 @@ export class NetvueCameraCard extends HTMLElement {
     }
   }
 
-  _setHistoryWindow(time) {
-    const intervals = [
-      ...this._historySegments.map((segment) => ({ start: segment.start, end: segment.end })),
-      ...this._historyProtected,
-    ];
-    const bounds = mergeIntervals(intervals);
-    if (!bounds.length || !Number.isFinite(time)) {
-      const center = Number.isFinite(time) ? time : Date.now();
-      this._historyRange.min = String(center - HISTORY_WINDOW_MS / 2);
-      this._historyRange.max = String(center + HISTORY_WINDOW_MS / 2);
-    } else {
-      const first = bounds[0].start;
-      const last = bounds.at(-1).end - 1;
-      if (time < first || time > last) {
-        this._historyRange.min = String(time - HISTORY_WINDOW_MS / 2);
-        this._historyRange.max = String(time + HISTORY_WINDOW_MS / 2);
-      } else {
-        let end = last;
-        if (time < last - HISTORY_WINDOW_MS) {
-          end = Math.min(last, Math.max(first + HISTORY_WINDOW_MS, time + HISTORY_WINDOW_MS / 2));
-        }
-        this._historyRange.min = String(Math.max(first, end - HISTORY_WINDOW_MS));
-        this._historyRange.max = String(end);
-      }
-    }
+  _setHistoryWindow(end) {
+    this._historyRange.min = String(end - HISTORY_WINDOW_MS);
+    this._historyRange.max = String(end);
     this._renderHistoryTicks();
     this._renderHistoryAvailability();
-    if (!this._historyPosition.hidden) {
-      this._renderHistoryPosition(Number(this._historyRange.value));
-    }
   }
 
   async _positionHistoryDate(time) {
     this._historyScrubbing = false;
-    const date = new Date(time);
-    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0).getTime();
-    const end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0).getTime() - 1;
-    this._historyRange.min = String(start);
-    this._historyRange.max = String(end);
-    this._renderHistoryTicks();
-    this._renderHistoryAvailability();
+    this._setHistoryWindow(time + HISTORY_WINDOW_MS / 2);
     await this._historySeek(time);
   }
 
@@ -1271,14 +1221,12 @@ export class NetvueCameraCard extends HTMLElement {
     const start = Number(this._historyRange.min);
     const end = Number(this._historyRange.max);
     const language = this._hass?.locale?.language || this._hass?.language || undefined;
-    const precision = end - start < 120000 ? 1000 : 60000;
+    const precision = 60000;
     const first = new Date(Math.round(start / precision) * precision);
     const last = new Date(Math.round(end / precision) * precision);
     const showDate = first.toDateString() !== last.toDateString();
     const showYear = first.getFullYear() !== last.getFullYear();
-    const timeFormat = new Intl.DateTimeFormat(language, {
-      hour: "2-digit", minute: "2-digit", ...(end - start < 120000 ? { second: "2-digit" } : {}),
-    });
+    const timeFormat = new Intl.DateTimeFormat(language, { hour: "2-digit", minute: "2-digit" });
     const dateFormat = new Intl.DateTimeFormat(language, {
       day: "2-digit", month: "2-digit", ...(showYear ? { year: "numeric" } : {}),
     });
@@ -1307,7 +1255,7 @@ export class NetvueCameraCard extends HTMLElement {
         || !Number.isFinite(Number(this._historyRange.max))
         || time < Number(this._historyRange.min)
         || time > Number(this._historyRange.max)) {
-      this._setHistoryWindow(time);
+      this._setHistoryWindow(time + HISTORY_WINDOW_MS / 2);
     }
     this._historyRange.value = String(time);
     this._renderHistoryPosition(Number(this._historyRange.value));
@@ -1318,7 +1266,7 @@ export class NetvueCameraCard extends HTMLElement {
       : segmentAt(this._historySegments, time);
     if (!segment) {
       try {
-        await this._refreshHistory(entryId, generation, false);
+        await this._refreshHistory(entryId, generation);
         await this._refreshProtectedHistory(entryId, generation);
       } catch {
         if (this._history && generation === this._historyGeneration) {
@@ -1412,7 +1360,7 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyCursor = this._historySegment.start + this._historyVideo.currentTime * 1000;
     if (this._historyCursor < Number(this._historyRange.min)
         || this._historyCursor > Number(this._historyRange.max)) {
-      this._setHistoryWindow(this._historyCursor);
+      this._setHistoryWindow(this._historyCursor + HISTORY_WINDOW_MS / 2);
     }
     this._historyRange.value = String(this._historyCursor);
     this._renderHistoryPosition(Number(this._historyRange.value));
