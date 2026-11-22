@@ -27,11 +27,13 @@ le contenu de [go-stack.yaml](./go-stack.yaml).
 | `NETVUE_SOURCE` | IPv4 LAN locale de ce nœud |
 | `NETVUE_BRIDGE_IMAGE` | Facultatif : tag ou digest Go à la place de `latest` |
 | `NETVUE_AI_IMAGE` | Facultatif : image IA, `ghcr.io/mtx26/netvue-ai:latest` par défaut |
-| `NETVUE_RECORDING_RETENTION` | Facultatif : durée de conservation, `168h` par défaut |
-| `NETVUE_RECORDING_LIMIT_BYTES` | Facultatif : limite globale en octets, `0` pour désactiver |
 
 Le workflow GitHub publie l'image IA après les tests sur `main`. Le paquet
 GHCR doit être public ou accessible au registre configuré dans Portainer.
+
+La conservation temporaire, sa limite de stockage et les paramètres TURN se
+configurent dans **Home Assistant → Paramètres → Appareils et services →
+Netvue → Configurer**. Ne modifiez plus les variables Docker pour ces réglages.
 
 Un volume Docker local nommé par la stack est créé automatiquement sur le nœud
 choisi. Le service `recordings-init` prépare ses droits pour les deux services
@@ -82,19 +84,15 @@ l'API du pont restent sur `127.0.0.1`.
    pas non plus l'ID ou le jeton de Cloudflare Tunnel, ni un jeton API
    Cloudflare générique.
 2. Mets à jour la stack Portainer avec le [`go-stack.yaml`](./go-stack.yaml)
-   et une image Go contenant le support TURN. Dans **Environment
-   variables**, ajoute ces deux valeurs, puis redéploie :
+   sans entrer l'identifiant ni le jeton TURN dans Portainer. Ouvre ensuite
+   **Paramètres → Appareils et services → Netvue → Configurer**.
+   Active TURN, saisit l'**ID de la clé** et le **jeton API** dans les champs
+   masqués Home Assistant.
 
-   | Variable | Valeur |
-   |---|---|
-   | `NETVUE_CLOUDFLARE_TURN_KEY_ID` | ID de la clé TURN Realtime |
-   | `NETVUE_CLOUDFLARE_TURN_API_TOKEN` | Jeton API de cette clé |
-
-   Une seule clé suffit pour toutes les caméras. Ne colle pas le jeton
-   dans le YAML, Git, des logs ou une capture d'écran. Les administrateurs
-   Portainer/Docker peuvent lire les variables de la stack. Le pont garde
-   le jeton côté serveur et ne transmet que des identifiants temporaires
-   à Home Assistant et au navigateur.
+   Une seule clé suffit pour toutes les caméras. Ne colle pas le jeton dans
+   le YAML, Git, des logs ou une capture d'écran. Home Assistant garde le
+   secret côté serveur avec le pont et ne transmet que des identifiants
+   temporaires au navigateur.
 3. Mets aussi à jour **Netvue Local** dans HACS. Redémarre Home Assistant
    après la mise à jour ; si l'intégration était déjà à jour, recharge son
    entrée. Le lecteur WebRTC est toujours actif, sans option : ajoute la carte
