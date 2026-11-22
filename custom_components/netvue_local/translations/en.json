@@ -54,23 +54,58 @@
     "step": {
       "init": {
         "title": "Camera options",
-        "description": "Configure this camera and global settings shared by all cameras. Storage: 0 = unlimited. TURN token saved: {turn_token_status}. Leave the token blank to keep it; clear it only with TURN disabled.",
+        "description": "Choose the settings page to open.",
+        "menu_options": {
+          "camera": "Camera (IP address)",
+          "detection": "AI detection",
+          "zones": "Detection zones",
+          "player": "Player and annotations",
+          "global_settings": "Global settings (all cameras)"
+        }
+      },
+      "camera": {
+        "title": "Camera",
+        "description": "IPv4 address of the camera on the local network.",
         "data": {
-          "host": "Camera IPv4 address",
+          "host": "Camera IPv4 address"
+        }
+      },
+      "detection": {
+        "title": "AI detection",
+        "description": "Image analysis settings for this camera.",
+        "data": {
           "ai_enabled": "AI detection enabled",
           "ai_confidence": "Minimum confidence",
-          "ai_fps": "Analyzed frames per second",
-          "ai_confirmation_frames": "Confirmation frames",
-          "ai_zones": "Normalized JSON zones",
-          "overlay_live": "Default live annotations",
-          "overlay_replay": "Default replay annotations",
-          "overlay_export": "Default export annotations",
-          "retention_days": "Global recording retention (days)",
-          "storage_limit_gb": "Global storage limit (GiB)",
-          "turn_enabled": "Global TURN relay enabled",
-          "turn_key_id": "Global TURN key ID",
+          "ai_fps": "Analysed frames per second",
+          "ai_confirmation_frames": "Confirmation frames"
+        }
+      },
+      "zones": {
+        "title": "Detection zones",
+        "description": "[Open the graphical zone editor]({zones_url}) to draw the zone on the camera image. The field below allows advanced JSON input (coordinates between 0 and 1).",
+        "data": {
+          "ai_zones": "Normalised JSON zones"
+        }
+      },
+      "player": {
+        "title": "Player and annotations",
+        "description": "Default display of detection boxes.",
+        "data": {
+          "overlay_live": "Live annotations by default",
+          "overlay_replay": "Replay annotations by default",
+          "overlay_export": "Export annotations by default"
+        }
+      },
+      "global_settings": {
+        "title": "Global settings",
+        "description": "These settings apply to every camera. Storage: 0 = unlimited. Stored TURN token: {turn_token_status}. Leave the token empty to keep it; clear it only with TURN disabled.",
+        "data": {
+          "retention_days": "Recording retention (days)",
+          "storage_limit_gb": "Storage limit (GiB)",
+          "turn_enabled": "TURN relay enabled",
+          "turn_key_id": "TURN key ID",
           "turn_api_token": "New TURN API token (secret)",
-          "turn_clear_token": "Clear saved TURN token"
+          "turn_clear_token": "Clear the stored TURN token"
         }
       }
     },

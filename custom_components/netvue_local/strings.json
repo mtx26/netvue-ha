@@ -54,21 +54,56 @@
     "step": {
       "init": {
         "title": "Options de la caméra",
-        "description": "Réglez cette caméra et les paramètres globaux partagés par toutes les caméras. Stockage : 0 = illimité. Jeton TURN enregistré : {turn_token_status}. Laissez le jeton vide pour le conserver ; effacez-le uniquement avec TURN désactivé.",
+        "description": "Choisissez la page de réglages à ouvrir.",
+        "menu_options": {
+          "camera": "Caméra (adresse IP)",
+          "detection": "Détection IA",
+          "zones": "Zones de détection",
+          "player": "Lecteur et annotations",
+          "global_settings": "Paramètres globaux (toutes les caméras)"
+        }
+      },
+      "camera": {
+        "title": "Caméra",
+        "description": "Adresse IPv4 de la caméra sur le réseau local.",
         "data": {
-          "host": "Adresse IPv4 de la caméra",
+          "host": "Adresse IPv4 de la caméra"
+        }
+      },
+      "detection": {
+        "title": "Détection IA",
+        "description": "Réglages de l'analyse d'images de cette caméra.",
+        "data": {
           "ai_enabled": "Détection IA activée",
           "ai_confidence": "Confiance minimale",
           "ai_fps": "Images analysées par seconde",
-          "ai_confirmation_frames": "Images de confirmation",
-          "ai_zones": "Zones JSON normalisées",
+          "ai_confirmation_frames": "Images de confirmation"
+        }
+      },
+      "zones": {
+        "title": "Zones de détection",
+        "description": "[Ouvrir l’éditeur graphique des zones]({zones_url}) pour dessiner la zone sur l'image de la caméra. Le champ ci-dessous permet une saisie JSON avancée (coordonnées entre 0 et 1).",
+        "data": {
+          "ai_zones": "Zones JSON normalisées"
+        }
+      },
+      "player": {
+        "title": "Lecteur et annotations",
+        "description": "Affichage par défaut des cadres de détection.",
+        "data": {
           "overlay_live": "Annotations du direct par défaut",
           "overlay_replay": "Annotations du replay par défaut",
-          "overlay_export": "Annotations des exports par défaut",
-          "retention_days": "Conservation globale des enregistrements (jours)",
-          "storage_limit_gb": "Limite globale de stockage (Gio)",
-          "turn_enabled": "Relais TURN global activé",
-          "turn_key_id": "Identifiant de clé TURN global",
+          "overlay_export": "Annotations des exports par défaut"
+        }
+      },
+      "global_settings": {
+        "title": "Paramètres globaux",
+        "description": "Ces paramètres s’appliquent à toutes les caméras. Stockage : 0 = illimité. Jeton TURN enregistré : {turn_token_status}. Laissez le jeton vide pour le conserver ; effacez-le uniquement avec TURN désactivé.",
+        "data": {
+          "retention_days": "Conservation des enregistrements (jours)",
+          "storage_limit_gb": "Limite de stockage (Gio)",
+          "turn_enabled": "Relais TURN activé",
+          "turn_key_id": "Identifiant de clé TURN",
           "turn_api_token": "Nouveau jeton API TURN (secret)",
           "turn_clear_token": "Effacer le jeton TURN enregistré"
         }

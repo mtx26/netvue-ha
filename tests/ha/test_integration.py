@@ -211,7 +211,7 @@ class OptionsFlowTests(HassTestCase):
         view = netvue_local.NetvueOverlayView()
         self.assertEqual(json.loads((await view.get(request, entry.entry_id)).body),
                          {"live": True, "replay": True, "export": False})
-        result = await self._init(entry, host=HOST, overlay_live=False,
+        result = await self._init(entry, "player", overlay_live=False,
                                   overlay_replay=False, overlay_export=True)
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
@@ -225,7 +225,7 @@ class OptionsFlowTests(HassTestCase):
         entry = await self.create_entry()
         other = await self.create_entry(host=OTHER_HOST)
         result = await self._init(
-            entry, host=HOST, retention_days=14, storage_limit_gb=1.5,
+            entry, "global_settings", retention_days=14, storage_limit_gb=1.5,
             turn_enabled=True, turn_key_id="synthetic-key",
             turn_api_token="synthetic-secret",
         )
@@ -241,7 +241,7 @@ class OptionsFlowTests(HassTestCase):
             "token_configured": True,
         })
         manager = self.hass.config_entries.options
-        result = await manager.async_init(other.entry_id)
+        result = await self._open(other, "global_settings")
         fields = probatio.to_field_list(
             result["data_schema"], custom_serializer=cv.custom_serializer
         )
@@ -264,20 +264,20 @@ class OptionsFlowTests(HassTestCase):
     async def test_turn_token_preservation_clear_and_failed_update(self):
         entry = await self.create_entry()
         result = await self._init(
-            entry, host=HOST, turn_enabled=True, turn_key_id="synthetic-key",
+            entry, "global_settings", turn_enabled=True, turn_key_id="synthetic-key",
             turn_api_token="synthetic-secret",
         )
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
-        result = await self._init(entry, host=HOST, retention_days=9, turn_api_token="")
+        result = await self._init(entry, "global_settings", retention_days=9, turn_api_token="")
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
         self.assertEqual(self.bridge.webrtc_config["api_token"], "synthetic-secret")
-        result = await self._init(entry, host=HOST, turn_clear_token=True)
+        result = await self._init(entry, "global_settings", turn_clear_token=True)
         self.assertEqual(result["errors"], {"base": "invalid_global_settings"})
         self.hass.config_entries.options.async_abort(result["flow_id"])
         self.bridge.status_override = 503
-        result = await self._init(entry, host=HOST, retention_days=10)
+        result = await self._init(entry, "global_settings", retention_days=10)
         self.assertEqual(result["errors"], {"base": "bridge_unavailable"})
         self.assertEqual((await netvue_local.async_get_settings(self.hass).async_public())
                          ["retention_days"], 9)
@@ -286,13 +286,13 @@ class OptionsFlowTests(HassTestCase):
         with patch.object(netvue_local, "async_set_webrtc_config",
                           side_effect=[BridgeError("synthetic failure"), None]):
             result = await self._init(
-                entry, host=HOST, retention_days=10, turn_key_id="new-key",
+                entry, "global_settings", retention_days=10, turn_key_id="new-key",
             )
         self.assertEqual(result["errors"], {"base": "bridge_unavailable"})
         self.assertEqual(self.bridge.settings["recording_retention"], "216h")
         self.hass.config_entries.options.async_abort(result["flow_id"])
         result = await self._init(
-            entry, host=HOST, turn_enabled=False, turn_clear_token=True,
+            entry, "global_settings", turn_enabled=False, turn_clear_token=True,
         )
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
@@ -306,7 +306,7 @@ class OptionsFlowTests(HassTestCase):
             "api_token": "environment-secret", "token_configured": True,
         }
         entry = await self.create_entry()
-        result = await self._init(entry, host=HOST, retention_days=14)
+        result = await self._init(entry, "global_settings", retention_days=14)
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
         self.assertEqual(self.bridge.webrtc_config["api_token"], "environment-secret")
@@ -317,14 +317,16 @@ class OptionsFlowTests(HassTestCase):
         await restored.async_restore()
         self.assertNotIn(("PUT", "/api/v1/webrtc/config"), self.bridge.requests)
         self.assertTrue((await restored.async_public())["turn_token_configured"])
-        result = await self._init(entry, host=HOST, turn_key_id="updated-key")
+        result = await self._init(entry, "global_settings", turn_key_id="updated-key")
         self.assertEqual(result["type"], "create_entry")
         self.assertEqual(self.bridge.webrtc_config["api_token"], "environment-secret")
 
     async def test_options_form_serializes_for_frontend(self):
         entry = await self.create_entry()
         manager = self.hass.config_entries.options
-        result = await manager.async_init(entry.entry_id)
+        result = await self._open(entry, "zones")
+        self.assertEqual(result["description_placeholders"]["zones_url"],
+                         f"/netvue-settings?config_entry={entry.entry_id}&page=zones")
         fields = probatio.to_field_list(
             result["data_schema"], custom_serializer=cv.custom_serializer
         )
@@ -333,16 +335,23 @@ class OptionsFlowTests(HassTestCase):
         self.assertIn("object", zones["selector"])
         manager.async_abort(result["flow_id"])
 
-    async def _init(self, entry, **values):
+    async def _open(self, entry, step):
         manager = self.hass.config_entries.options
         result = await manager.async_init(entry.entry_id)
-        self.assertEqual(result["step_id"], "init")
-        return await manager.async_configure(result["flow_id"], values)
+        self.assertEqual(result["type"], "menu")
+        self.assertIn(step, result["menu_options"])
+        result = await manager.async_configure(result["flow_id"], {"next_step_id": step})
+        self.assertEqual(result["step_id"], step)
+        return result
+
+    async def _init(self, entry, step, **values):
+        result = await self._open(entry, step)
+        return await self.hass.config_entries.options.async_configure(result["flow_id"], values)
 
     async def test_host_change_moves_session_and_reloads_entry(self):
         entry = await self.create_entry()
         camera_entity = self.entity_id(entry, "camera")
-        result = await self._init(entry, host=OTHER_HOST)
+        result = await self._init(entry, "camera", host=OTHER_HOST)
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
         self.assertEqual(entry.state, ConfigEntryState.LOADED)
@@ -355,13 +364,18 @@ class OptionsFlowTests(HassTestCase):
         zones = {"garden": [0.1, 0.2, 0.8, 0.9]}
         result = await self._init(
             entry,
-            host=HOST,
+            "detection",
             ai_enabled=True,
             ai_confidence=0.65,
             ai_fps=5,
             ai_confirmation_frames=4,
-            ai_zones=zones,
         )
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        result = await self._init(entry, "zones", ai_zones={"garden": [0, 0, 2, 1]})
+        self.assertEqual(result["errors"], {"base": "invalid_ai_zones"})
+        self.hass.config_entries.options.async_abort(result["flow_id"])
+        result = await self._init(entry, "zones", ai_zones=zones)
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
         self.assertTrue(entry.options["ai_enabled"])
@@ -380,7 +394,7 @@ class OptionsFlowTests(HassTestCase):
             "ai_zones": {"garden": [0.1, 0.2, 0.8, 0.9]},
         }
         self.hass.config_entries.async_update_entry(entry, options=ai_options)
-        result = await self._init(entry, host=OTHER_HOST)
+        result = await self._init(entry, "camera", host=OTHER_HOST)
         self.assertEqual(result["type"], "create_entry")
         await self.hass.async_block_till_done()
         self.assertEqual({key: entry.options[key] for key in ai_options}, ai_options)
@@ -397,7 +411,7 @@ class OptionsFlowTests(HassTestCase):
 
         with patch.object(netvue_local, "async_stop_camera",
                           side_effect=stop_bridge_after_unload):
-            result = await self._init(entry, host=OTHER_HOST)
+            result = await self._init(entry, "camera", host=OTHER_HOST)
             self.assertEqual(result["type"], "create_entry")
             await self.hass.async_block_till_done()
 
@@ -426,14 +440,15 @@ class OptionsFlowTests(HassTestCase):
         }
         for error, values in cases.items():
             with self.subTest(error):
-                result = await self._init(entry, **values)
+                result = await self._init(entry, "camera", **values)
                 self.assertEqual(result["errors"], {"base": error})
+                self.hass.config_entries.options.async_abort(result["flow_id"])
         self.assertEqual(set(self.bridge.cameras), {HOST, OTHER_HOST})
 
     async def test_host_change_is_refused_while_bridge_unavailable(self):
         entry = await self.create_entry()
         self.bridge.status_override = 503
-        result = await self._init(entry, host=OTHER_HOST)
+        result = await self._init(entry, "camera", host=OTHER_HOST)
         self.assertEqual(result["errors"], {"base": "bridge_unavailable"})
         self.assertEqual(entry.options, {})
         self.assertIn(HOST, self.bridge.cameras)
@@ -900,7 +915,10 @@ class FrontendTests(HassTestCase):
         with patch("homeassistant.components.frontend.add_extra_js_url") as add_js, patch(
             "homeassistant.components.http.HomeAssistantHTTP.async_register_static_paths",
             new_callable=AsyncMock,
-        ) as register:
+        ) as register, patch(
+            "homeassistant.components.panel_custom.async_register_panel",
+            new_callable=AsyncMock,
+        ) as register_panel:
             await self.create_entry()
             await self.create_entry(host=OTHER_HOST, name="Other")
             await self.hass.async_block_till_done()
@@ -913,8 +931,18 @@ class FrontendTests(HassTestCase):
             "netvue-camera-status-card.js",
             "card-editors.js",
             "netvue-protected-card.js",
+            "netvue-settings-panel.js",
+            "detection-zone-editor.js",
         ):
             self.assertTrue((Path(config.path) / module).is_file())
+        register_panel.assert_awaited_once()
+        panel = register_panel.await_args.kwargs
+        self.assertEqual(panel["frontend_url_path"], "netvue-settings")
+        self.assertEqual(panel["webcomponent_name"], "netvue-settings-panel")
+        self.assertEqual(panel["module_url"], f"{config.url_path}/netvue-settings-panel.js")
+        self.assertTrue(panel["require_admin"])
+        self.assertEqual(panel["config_panel_domain"], DOMAIN)
+        self.assertNotIn("sidebar_title", panel)
         self.assertEqual(add_js.call_count, 2)
         self.assertEqual(
             [call.args[1] for call in add_js.call_args_list],
@@ -928,9 +956,13 @@ class FrontendTests(HassTestCase):
         with patch("homeassistant.components.frontend.add_extra_js_url") as add_js, patch(
             "homeassistant.components.http.HomeAssistantHTTP.async_register_static_paths",
             new_callable=AsyncMock,
-        ):
+        ), patch(
+            "homeassistant.components.panel_custom.async_register_panel",
+            new_callable=AsyncMock,
+        ) as register_panel:
             await self.create_entry()
             add_js.assert_not_called()
+            register_panel.assert_not_called()
 
             self.hass.config.components.add("frontend")
             self.hass.bus.async_fire(
@@ -939,6 +971,7 @@ class FrontendTests(HassTestCase):
             await self.hass.async_block_till_done()
 
         self.assertEqual(add_js.call_count, 2)
+        register_panel.assert_awaited_once()
         self.assertRegex(add_js.call_args_list[0].args[1],
                          r"^/netvue_local/frontend/\d+\.\d+\.\d+/netvue-camera-card\.js$")
         self.assertRegex(add_js.call_args_list[1].args[1],

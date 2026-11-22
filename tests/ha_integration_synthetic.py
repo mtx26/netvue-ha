@@ -269,9 +269,10 @@ async def main():
 
         options = hass.config_entries.options
         result = await options.async_init(entry.entry_id)
-        if result["step_id"] != "init":
-            raise RuntimeError("Options form missing")
+        if result["type"] != "menu" or "camera" not in result["menu_options"]:
+            raise RuntimeError("Options menu missing")
         flow_id = result["flow_id"]
+        await options.async_configure(flow_id, {"next_step_id": "camera"})
         result = await options.async_configure(flow_id, {"host": "192.168.10.2"})
         if result["type"] != "create_entry":
             raise RuntimeError("Options not saved")

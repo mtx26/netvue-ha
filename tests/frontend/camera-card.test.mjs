@@ -247,7 +247,7 @@ test("manual recording controls and the REC indicator reflect continuous mode", 
   ]);
 });
 
-test("settings open the selected camera device page", async () => {
+test("settings open the camera settings panel for admins only", async () => {
   const navigation = { pathname: "/" };
   globalThis.location = navigation;
   window.history = {
@@ -258,14 +258,74 @@ test("settings open the selected camera device page", async () => {
   card.setConfig({ entity: "camera.test" });
   card._build();
   card.hass = {
+    user: { is_admin: false },
     states: {
       "camera.test": { attributes: { netvue_entry_id: "entry1", entity_picture: "/image" } },
     },
-    entities: { "camera.test": { device_id: "device1" } },
     async callApi() { return { live: true, replay: true, export: false }; },
   };
+  assert.equal(card._settingsButton.hidden, true);
   await card._openSettings();
-  assert.equal(navigation.pathname, "/config/devices/device/device1");
+  assert.equal(navigation.pathname, "/");
+  card.hass = { ...card._hass, user: { is_admin: true } };
+  assert.equal(card._settingsButton.hidden, false);
+  await card._openSettings();
+  assert.equal(navigation.pathname, "/netvue-settings?config_entry=entry1");
+});
+
+test("Project defaults to the watched segment and picks both endpoints without seeking", async () => {
+  const card = new NetvueCameraCard();
+  card.setConfig({ entity: "camera.test" });
+  card._build();
+  const start = Date.parse("2026-11-20T12:00:00Z");
+  const posted = [];
+  card.hass = {
+    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
+    async callApi(method, path, body) {
+      if (method === "POST") {
+        posted.push({ path, body });
+        return { covered_start: body.start, covered_end: body.end };
+      }
+      if (path === "netvue_local/recordings/entry1") {
+        return { recordings: [{ id: "a".repeat(32), start: new Date(start).toISOString(), duration: 600 }] };
+      }
+      return { protected: [], live: true, replay: true, export: false };
+    },
+    async callWS(message) { return { path: `/signed${message.path}` }; },
+  };
+  await card._openHistory();
+  await card._historySeek(start + 60000);
+  assert.ok(card._historySegment);
+  card._historyProtectButton.dispatch("click");
+  assert.deepEqual(card._protectSelection, { start: card._historySegment.start, end: card._historySegment.end });
+  assert.equal(card._protectBar.hidden, false);
+  assert.equal(card._protectConfirm.disabled, false);
+  assert.ok(card._historyRail.children.some((node) => node.getAttribute("class") === "history-selection"));
+
+  const min = Number(card._historyRange.min);
+  const max = Number(card._historyRange.max);
+  const clickAt = (time) => card._projectTarget.dispatch("pointerup", {
+    button: 0, clientX: 200 * (time - min) / (max - min),
+  });
+  clickAt(start + 300000);
+  assert.deepEqual(card._protectSelection, { start: start + 300000, end: null });
+  assert.equal(card._protectConfirm.disabled, true);
+  clickAt(start + 120000);
+  assert.deepEqual(card._protectSelection, { start: start + 120000, end: start + 300000 });
+  assert.equal(card._historyCursor, start + 60000);
+
+  await card._protectHistoryRange();
+  assert.deepEqual(posted, [{
+    path: "netvue_local/protected/entry1",
+    body: {
+      start: new Date(start + 120000).toISOString(),
+      end: new Date(start + 300000).toISOString(),
+      protection: "manual",
+    },
+  }]);
+  assert.equal(card._protectSelection, null);
+  assert.equal(card._protectBar.hidden, true);
+  assert.match(card._protectMessage.textContent, /Video protected/);
 });
 
 test("volume control adjusts sound and restores it after muting", () => {
@@ -304,25 +364,36 @@ test("timeline merges overlaps and finds protected intervals independently", () 
   assert.equal(intervalAt([{ id: "protected", start: 100, end: 500 }], 500), null);
 });
 
-test("selecting a date without recordings keeps an exact empty window", async () => {
+test("the calendar keeps the requested empty day when recordings exist on another day", async () => {
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
   card.hass = {
     states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
-    async callApi() { return { recordings: [], protected: [] }; },
+    async callApi(method, path) {
+      assert.equal(method, "GET");
+      if (path === "netvue_local/recordings/entry1") {
+        return { recordings: [{ id: "a".repeat(32), start: new Date(2026, 10, 20, 14).toISOString(), duration: 600 }] };
+      }
+      return { protected: [] };
+    },
     async callWS(message) { return { path: message.path }; },
   };
   await card._openHistory();
   assert.equal(card._historyRange.disabled, false);
-  assert.equal(card._historyMessage.textContent, "No playable recording yet.");
-  const selected = new Date(2026, 10, 21, 14, 30, 0).getTime();
-  await card._positionHistoryDate(selected);
+  assert.ok(card._historySegment);
+  const selected = new Date(2026, 10, 21, 14, 30).getTime();
+  card._historyDatePicker.open = true;
+  card._historyDate.value = "2026-11-21T14:30";
+  card._historyDate.dispatch("change");
+  await new Promise((resolve) => setImmediate(resolve));
   const dayStart = new Date(2026, 10, 21, 0, 0, 0, 0).getTime();
   const dayEnd = new Date(2026, 10, 22, 0, 0, 0, 0).getTime() - 1;
   assert.equal(Number(card._historyRange.min), dayStart);
   assert.equal(Number(card._historyRange.max), dayEnd);
   assert.equal(card._historyCursor, selected);
+  assert.equal(card._historyDatePicker.open, false);
+  assert.equal(card._protectBar.hidden, true);
   assert.equal(card._historyMessage.textContent, "No recording at this time.");
   assert.equal(card._historyVideo.getAttribute("src"), null);
 
@@ -482,7 +553,8 @@ test("history overlay exposes jumps, date, download and a clear return to live",
   const actions = findByClass(card._historyPlayer, "history-actions");
   assert.deepEqual(actions.children, [
     card._historyLiveButton, card._historyHourButton, card._historyTenButton,
-    card._historyBackButton, card._historyForwardButton, card._historyDatePicker, card._historyDownload,
+    card._historyBackButton, card._historyForwardButton, card._historyDatePicker,
+    card._historyProtectButton, card._historyDownload,
     card._historySettingsButton, card._historyOverlayButton, card._historyFullscreenButton,
   ]);
   assert.equal(card._historyLiveButton.textContent, "LIVE");

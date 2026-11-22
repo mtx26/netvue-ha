@@ -46,6 +46,7 @@ from .const import (
     CONF_STREAM_URL,
     DEFAULT_AI_CONFIDENCE,
     DOMAIN,
+    SETTINGS_PANEL_PATH,
     CONF_RETENTION_DAYS,
     CONF_STORAGE_LIMIT_GB,
     CONF_TURN_ENABLED,
@@ -73,6 +74,7 @@ PLATFORMS = [
 FRONTEND_URL = "/netvue_local/frontend"
 CARD_MODULE = "netvue-camera-card.js"
 PROTECTED_CARD_MODULE = "netvue-protected-card.js"
+SETTINGS_PANEL_MODULE = "netvue-settings-panel.js"
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
 _STATIC_PATH_KEY = f"{DOMAIN}_frontend_static_path_registered"
 _FRONTEND_MODULE_REQUESTED_KEY = f"{DOMAIN}_frontend_module_requested"
@@ -819,11 +821,20 @@ async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None
     if hass.data.get(_FRONTEND_MODULE_REGISTERED_KEY):
         return
 
-    from homeassistant.components import frontend
+    from homeassistant.components import frontend, panel_custom
 
     version = (await async_get_integration(hass, DOMAIN)).version
     frontend.add_extra_js_url(hass, f"{FRONTEND_URL}/{version}/{CARD_MODULE}")
     frontend.add_extra_js_url(hass, f"{FRONTEND_URL}/{version}/{PROTECTED_CARD_MODULE}")
+    # Hidden admin page opened by the camera card settings button (no sidebar entry).
+    await panel_custom.async_register_panel(
+        hass,
+        frontend_url_path=SETTINGS_PANEL_PATH,
+        webcomponent_name="netvue-settings-panel",
+        module_url=f"{FRONTEND_URL}/{version}/{SETTINGS_PANEL_MODULE}",
+        require_admin=True,
+        config_panel_domain=DOMAIN,
+    )
     hass.data[_FRONTEND_MODULE_REGISTERED_KEY] = True
 
 

@@ -21,13 +21,14 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 🧪 | Métadonnées LAN | Série, firmware, capacités, SSID et niveau de signal exposés et testés hors ligne ; présence réelle des champs et compatibilité d'autres modèles à vérifier |
 | 💡 | Informations appareil supplémentaires | Étudier modèle, version matérielle, MAC, IP Wi-Fi/Ethernet, propriétaire et état cloud ; sources et faisabilité locale à vérifier, sans dépendance cloud obligatoire |
-| 🧪 | Paramètres globaux via Home Assistant | Conservation, limite de stockage et TURN centralisés dans les options HA et persistés dynamiquement ; tests hors ligne Go/HA nécessaires |
+| 🧪 | Configurateur Home Assistant | Pages Caméra, Détection IA, Zones, Lecteur et Paramètres globaux (conservation, stockage et TURN). Accès depuis l’intégration et la roue dentée de la caméra. Tests HA et navigation Chrome avec données simulées validés. Essai sur l’installation réelle nécessaire |
 ## 2. Audio
 ## 3. Enregistrement
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
 | 🔄 | Conservation sélective | Export multi-segments et détection des trous testés synthétiquement ; limites d'espace, reprise après panne et validation réelle restent à consolider ([stockage protégé](protected-recordings.md)) |
+| 🧪 | Projet depuis le replay | Le calendrier positionne la lecture à une date. Projet propose le segment courant ou deux bornes choisies sur la frise. Sélection et requête de sauvegarde testées hors ligne. Validation sur des enregistrements réels nécessaire |
 | 🔄 | Enregistrement IA automatique | Règles persistantes, cycle confirmé/actif/terminé, pré-événement 120 s et post-événement 300 s ; protection réelle et validation caméra nécessaires |
 | 💡 | Détection de colis | Architecture temporelle et état persisté ; aucun modèle ONNX de colis fiable/licencié n'est encore validé |
 | 🧪 | Notifications intelligentes | Notifications HA locales configurables, délai anti-doublon et liens Lovelace ; snapshot/iPhone/validation production nécessaires |
@@ -41,7 +42,7 @@ fiable, performante, modulaire et simple à installer.
 | 💡 | Détection de mouvement | Comparer Netvue, Go et Frigate |
 | 💡 | Comparaison Frigate | Tester gratuitement Frigate en local sur les flux RTSP existants, sans remplacer Netvue AI ; comparer précision, alertes et charge CPU sur le serveur actuel, sans envoi d'images ni matériel supplémentaire. Intégration HA via MQTT à étudier ; essais réels soumis à autorisation |
 | ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
-| 🧪 | Zones de détection | Une zone rectangulaire via la roue dentée de chaque carte ; toute l'image par défaut et bouton pour la resélectionner ; tests hors ligne, validation réelle nécessaire |
+| 🧪 | Zones de détection | Éditeur graphique dans le configurateur Netvue. Dessin des rectangles nommés et sauvegarde testés sur un aperçu simulé. Validation caméra réelle nécessaire |
 | 🧪 | Paramètres permanents du lecteur | Valeurs live/replay/export centralisées par caméra dans HA ; overrides temporaires conservés dans la carte ; interface graphique ajoutée, validation réelle nécessaire |
 | 🧪 | Notifications HA | Six événements voiture confirmés dans l'historique HA du Garage ; une automatisation de notification réelle reste à valider |
 | 🧪 | Statistiques | Latence, FPS, ratio d'images positives, images ignorées et erreurs par caméra dans l'API IA ; exposition HA implémentée, recharge réelle à valider ([phase 59](../findings/phase59-detection-accuracy-performance.md)) |
@@ -55,6 +56,9 @@ fiable, performante, modulaire et simple à installer.
 | 💡 | Refaire le readme | Mettre à jour le fichier README avec les informations actuelles sur le projet et les fonctionnalités implémentées |
 | 💡 | Mettre à jour la documentation | Refaire tous les fichiers de documentation pour refléter les informations actuelles sur le projet et les fonctionnalités implémentées |
 | 💡 | Vérification du changement d'heure | S'assurer que le système gère correctement les changements d'heure et que les événements et statistiques sont correctement horodatés |
+|    | pouvoir zommer                                   |                                                                                                                                      |
+|    | mettre parametre de cadre par user et pas general                                                 |                                                                                                                                      |
+|    | mettre notif si objet (humain) dasn telle zone dessiner mais pas forcement rectangulaire                                                                                                  |                                                                                                                                      |
 
 ## Règles de suivi
 
