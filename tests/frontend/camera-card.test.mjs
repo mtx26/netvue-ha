@@ -218,6 +218,7 @@ test("manual recording controls and the REC indicator reflect continuous mode", 
       "sensor.recording": recordingState,
     },
     async callApi(method, path, body) {
+      if (method === "GET") return { live: true, replay: true, export: false };
       calls.push({ method, url: `/api/${path}`, body });
     },
   };
@@ -246,12 +247,13 @@ test("manual recording controls and the REC indicator reflect continuous mode", 
   ]);
 });
 
-test("settings open on the selected camera and save drawn zones without changing other AI options", async () => {
-  const calls = [];
-  const config = {
-    ai_enabled: false, ai_confidence: 0.7, ai_fps: 2,
-    ai_confirmation_frames: 4, ai_zones: {},
+test("settings open the selected camera device page", async () => {
+  const navigation = { pathname: "/" };
+  globalThis.location = navigation;
+  window.history = {
+    pushState(_state, _title, url) { navigation.pathname = url; },
   };
+  window.dispatchEvent = () => true;
   const card = new NetvueCameraCard();
   card.setConfig({ entity: "camera.test" });
   card._build();
@@ -259,125 +261,11 @@ test("settings open on the selected camera and save drawn zones without changing
     states: {
       "camera.test": { attributes: { netvue_entry_id: "entry1", entity_picture: "/image" } },
     },
-    async callApi(method, path, body) {
-      calls.push({ method, path, body });
-      return method === "GET" ? { ...config } : body;
-    },
+    entities: { "camera.test": { device_id: "device1" } },
+    async callApi() { return { live: true, replay: true, export: false }; },
   };
-  card._settingsButton.dispatch("click");
-  assert.equal(card._settingsPanel.hidden, false);
-  assert.equal(card._settingsPanel.tagName, "dialog");
-  assert.equal(card._settingsPanel.open, true);
-  const editor = card._zoneEditor;
-  assert.equal(editor.hasAttribute("zones-only"), true);
-  editor.connectedCallback();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(editor._form.hidden, true);
-  assert.equal(editor._preview.src, "/image");
-  assert.deepEqual(editor._zones, { entrance: [0, 0, 1, 1] });
-  assert.equal(editor._zoneEditor.querySelector("[data-zone-selection]").textContent,
-    "The whole image is selected");
-  assert.equal(calls.some(({ method }) => method === "PUT"), false);
-  await editor._save();
-  assert.deepEqual(calls.at(-1).body, { ...config, ai_zones: { entrance: [0, 0, 1, 1] } });
-  assert.equal(editor._zoneEditor.querySelector("[data-zone-name]"), null);
-  editor._resizeCanvas();
-  editor._startZone({ clientX: 20, clientY: 20, pointerId: 1 });
-  editor._finishZone({ clientX: 160, clientY: 80 });
-  assert.equal(editor._zoneEditor.querySelector("[data-zone-selection]").textContent,
-    "Custom detection area selected");
-  config.ai_confidence = 0.8;
-  await editor._save();
-  assert.deepEqual(calls.at(-1), {
-    method: "PUT",
-    path: "netvue_local/detection/entry1",
-    body: { ...config, ai_zones: { entrance: [0.1, 0.2, 0.8, 0.8] } },
-  });
-  card._settingsClose.dispatch("click");
-  assert.equal(card._settingsPanel.hidden, true);
-  assert.equal(card._settingsPanel.open, false);
-  assert.equal(card._zoneEditor, null);
-});
-
-test("zone settings report a failed load without saving defaults", async () => {
-  const card = new NetvueCameraCard();
-  card.setConfig({ entity: "camera.test" });
-  card._build();
-  const methods = [];
-  card.hass = {
-    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
-    async callApi(method) { methods.push(method); throw new Error("offline"); },
-  };
-  card._settingsButton.dispatch("click");
-  const editor = card._zoneEditor;
-  editor.connectedCallback();
-  await new Promise((resolve) => setImmediate(resolve));
-  await editor._save();
-  assert.deepEqual(methods, ["GET"]);
-  assert.equal(editor._zoneEditor.querySelector("[data-zone-message]").textContent,
-    "Unable to load settings.");
-});
-
-test("drawing replaces the single zone and clearing removes it", async () => {
-  const card = new NetvueCameraCard();
-  card.setConfig({ entity: "camera.test" });
-  card._build();
-  const config = {
-    ai_enabled: true, ai_confidence: 0.45, ai_fps: 3, ai_confirmation_frames: 3,
-    ai_zones: { garden: [0, 0, 0.2, 0.2], entrance: [0.4, 0.4, 0.6, 0.6] },
-  };
-  const saved = [];
-  card.hass = {
-    states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
-    async callApi(method, _path, body) {
-      if (method === "PUT") saved.push(body);
-      return method === "GET" ? config : body;
-    },
-  };
-  card._openSettings();
-  const editor = card._zoneEditor;
-  editor.connectedCallback();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(editor._zones, { garden: [0, 0, 0.2, 0.2] });
-  editor._resizeCanvas();
-  for (const end of [{ clientX: 100, clientY: 50 }, { clientX: 160, clientY: 80 }]) {
-    editor._startZone({ clientX: 20, clientY: 20, pointerId: 1 });
-    editor._finishZone(end);
-  }
-  await editor._save();
-  assert.deepEqual(saved[0].ai_zones, { garden: [0.1, 0.2, 0.8, 0.8] });
-  editor._zoneEditor.querySelector("[data-clear-zone]").dispatch("click");
-  await editor._save();
-  assert.deepEqual(saved[1].ai_zones, {});
-  editor._zoneEditor.querySelector("[data-full-zone]").dispatch("click");
-  await editor._save();
-  assert.deepEqual(saved[2].ai_zones, { garden: [0, 0, 1, 1] });
-  assert.equal(editor._zoneEditor.querySelector("[data-zone-selection]").textContent,
-    "The whole image is selected");
-});
-
-test("settings use the entry of each camera independently", async () => {
-  const paths = [];
-  const hass = {
-    states: {
-      "camera.first": { attributes: { netvue_entry_id: "first" } },
-      "camera.second": { attributes: { netvue_entry_id: "second" } },
-    },
-    async callApi(_method, path) {
-      paths.push(path);
-      return { ai_zones: {} };
-    },
-  };
-  for (const entity of ["camera.first", "camera.second"]) {
-    const card = new NetvueCameraCard();
-    card.setConfig({ entity });
-    card._build();
-    card.hass = hass;
-    card._settingsButton.dispatch("click");
-    card._zoneEditor.connectedCallback();
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.deepEqual(paths, ["netvue_local/detection/first", "netvue_local/detection/second"]);
+  await card._openSettings();
+  assert.equal(navigation.pathname, "/config/devices/device/device1");
 });
 
 test("volume control adjusts sound and restores it after muting", () => {
@@ -580,7 +468,10 @@ test("history overlay exposes jumps, date, download and a clear return to live",
   const start = new Date(2026, 10, 20, 12).getTime();
   card.hass = {
     states: { "camera.test": { attributes: { netvue_entry_id: "entry1" } } },
-    async callApi() {
+    async callApi(_method, path) {
+      if (path.startsWith("netvue_local/overlay/")) {
+        return { live: true, replay: true, export: false };
+      }
       return { recordings: [{ id: "a".repeat(32), start: new Date(start).toISOString(), duration: 7200 }] };
     },
     async callWS(message) { return { path: `/signed${message.path}` }; },
@@ -592,7 +483,7 @@ test("history overlay exposes jumps, date, download and a clear return to live",
   assert.deepEqual(actions.children, [
     card._historyLiveButton, card._historyHourButton, card._historyTenButton,
     card._historyBackButton, card._historyForwardButton, card._historyDatePicker, card._historyDownload,
-    card._historySettingsButton, card._historyFullscreenButton,
+    card._historySettingsButton, card._historyOverlayButton, card._historyFullscreenButton,
   ]);
   assert.equal(card._historyLiveButton.textContent, "LIVE");
   assert.equal(card._historyLiveButton.getAttribute("aria-label"), "Back to live");
@@ -630,7 +521,7 @@ test("history overlay exposes jumps, date, download and a clear return to live",
   assert.equal(card._historyDownload.hidden, true);
 });
 
-test("only annotated export signs a download with the overlay option", async (t) => {
+test("only annotated export signs a download with the temporary export override", async (t) => {
   const entries = new Map();
   t.mock.method(document, "createElement", (tag) => {
     const element = new FakeElement(tag);
@@ -659,8 +550,7 @@ test("only annotated export signs a download with the overlay option", async (t)
   const event = { preventDefault() { prevented++; } };
   await card._downloadAnnotated(event);
   assert.equal(prevented, 0);
-  card._overlaySettings.export.input.checked = true;
-  card._overlaySettings.export.input.dispatch("change");
+  card._setOverlayPreference("export", true);
   await card._downloadAnnotated(event);
   assert.equal(prevented, 1);
   assert.equal(requests[0].path, `/api/netvue_local/recordings/entry1/${"a".repeat(32)}?overlay=1`);
@@ -669,8 +559,8 @@ test("only annotated export signs a download with the overlay option", async (t)
   reloaded.setConfig({ entity: "camera.test" });
   reloaded.hass = card.hass;
   reloaded._build();
-  assert.equal(reloaded._overlaySettings.export.input.checked, true);
-  assert.equal(reloaded._overlaySettings.replay.input.checked, true);
+  assert.equal(reloaded._overlayEnabled("export"), false);
+  assert.equal(reloaded._overlayEnabled("replay"), true);
 });
 
 test("timeline graduations follow the available recording bounds across days", async () => {
@@ -1025,16 +915,14 @@ test("live boxes hold until the next AI state without following unrelated update
     card._detectionOverlay.children.filter((item) => item.tagName === "text").map((item) => item.textContent),
     ["Personne 87 %", "Chien 90 %"],
   );
-  card._overlaySettings.live.input.checked = false;
-  card._overlaySettings.live.input.dispatch("change");
+  card._setOverlayPreference("live", false);
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
   card._history = true;
   card._render();
   card._history = false;
   card._render();
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), true);
-  card._overlaySettings.live.input.checked = true;
-  card._overlaySettings.live.input.dispatch("change");
+  card._setOverlayPreference("live", true);
   assert.equal(card._detectionOverlay.hasAttribute("hidden"), false);
   card._history = true;
   card._render();
@@ -1118,11 +1006,10 @@ test("replay holds the preceding sample until a clear update and ignores future 
   assert.equal(renderAt(2.9), true);
   assert.equal(renderAt(3), false);
   assert.equal(renderAt(1.5), true);
-  card._overlaySettings.replay.input.checked = false;
-  card._overlaySettings.replay.input.dispatch("change");
+  card._setOverlayPreference("replay", false);
   assert.equal(renderAt(1.5), false);
-  assert.equal(card._overlaySettings.live.input.checked, true);
-  assert.equal(card._overlaySettings.export.input.checked, false);
+  assert.equal(card._overlayEnabled("live"), true);
+  assert.equal(card._overlayEnabled("export"), false);
   card.disconnectedCallback();
 });
 

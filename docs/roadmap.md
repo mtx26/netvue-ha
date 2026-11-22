@@ -21,6 +21,7 @@ fiable, performante, modulaire et simple à installer.
 |---|---|---|
 | 🧪 | Métadonnées LAN | Série, firmware, capacités, SSID et niveau de signal exposés et testés hors ligne ; présence réelle des champs et compatibilité d'autres modèles à vérifier |
 | 💡 | Informations appareil supplémentaires | Étudier modèle, version matérielle, MAC, IP Wi-Fi/Ethernet, propriétaire et état cloud ; sources et faisabilité locale à vérifier, sans dépendance cloud obligatoire |
+| 🧪 | Paramètres globaux via Home Assistant | Conservation, limite de stockage et TURN centralisés dans les options HA et persistés dynamiquement ; tests hors ligne Go/HA nécessaires |
 ## 2. Audio
 ## 3. Enregistrement
 
@@ -41,6 +42,7 @@ fiable, performante, modulaire et simple à installer.
 | 💡 | Comparaison Frigate | Tester gratuitement Frigate en local sur les flux RTSP existants, sans remplacer Netvue AI ; comparer précision, alertes et charge CPU sur le serveur actuel, sans envoi d'images ni matériel supplémentaire. Intégration HA via MQTT à étudier ; essais réels soumis à autorisation |
 | ⬜ | Historique des événements caméra | Mouvement et alertes consultables depuis Home Assistant ; nécessite une source d'événements |
 | 🧪 | Zones de détection | Une zone rectangulaire via la roue dentée de chaque carte ; toute l'image par défaut et bouton pour la resélectionner ; tests hors ligne, validation réelle nécessaire |
+| 🧪 | Paramètres permanents du lecteur | Valeurs live/replay/export centralisées par caméra dans HA ; overrides temporaires conservés dans la carte ; interface graphique ajoutée, validation réelle nécessaire |
 | 🧪 | Notifications HA | Six événements voiture confirmés dans l'historique HA du Garage ; une automatisation de notification réelle reste à valider |
 | 🧪 | Statistiques | Latence, FPS, ratio d'images positives, images ignorées et erreurs par caméra dans l'API IA ; exposition HA implémentée, recharge réelle à valider ([phase 59](../findings/phase59-detection-accuracy-performance.md)) |
 | 🧪 | Détection d'objets | Suivi indépendant des objets, compteur par catégorie et réglages séparés pour le direct, le replay et l'export. Alignement des cadres vérifié hors ligne ; flux réel à valider et modèles nocturnes à comparer. Classes COCO seulement ([phase 60](../findings/phase60-ios-fullscreen-ai-overlay.md)) |

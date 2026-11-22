@@ -27,7 +27,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 import custom_components.netvue_local as netvue_local
 from custom_components.netvue_local import camera as camera_platform
 from custom_components.netvue_local.bridge_api import BridgeError, DetectionStatus
-from custom_components.netvue_local.const import DOMAIN
+from custom_components.netvue_local.const import DOMAIN, SETTINGS_STORAGE_KEY
 from custom_components.netvue_local.webrtc import NetvueWebRTCProvider
 from harness import HOST, STREAM_NAME, HassTestCase
 
@@ -204,6 +204,124 @@ class ConfigFlowTests(HassTestCase):
 
 
 class OptionsFlowTests(HassTestCase):
+    async def test_overlay_defaults_are_persisted_per_camera(self):
+        entry = await self.create_entry()
+        other = await self.create_entry(host=OTHER_HOST)
+        request = SimpleNamespace(app={"hass": self.hass})
+        view = netvue_local.NetvueOverlayView()
+        self.assertEqual(json.loads((await view.get(request, entry.entry_id)).body),
+                         {"live": True, "replay": True, "export": False})
+        result = await self._init(entry, host=HOST, overlay_live=False,
+                                  overlay_replay=False, overlay_export=True)
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        self.assertEqual(json.loads((await view.get(request, entry.entry_id)).body),
+                         {"live": False, "replay": False, "export": True})
+        self.assertEqual(json.loads((await view.get(request, other.entry_id)).body),
+                         {"live": True, "replay": True, "export": False})
+        self.assertEqual((await view.get(request, "missing")).status, 404)
+
+    async def test_global_settings_are_shared_restored_and_keep_token_private(self):
+        entry = await self.create_entry()
+        other = await self.create_entry(host=OTHER_HOST)
+        result = await self._init(
+            entry, host=HOST, retention_days=14, storage_limit_gb=1.5,
+            turn_enabled=True, turn_key_id="synthetic-key",
+            turn_api_token="synthetic-secret",
+        )
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        self.assertNotIn("synthetic-secret", json.dumps(dict(entry.options)))
+        self.assertNotIn("retention_days", entry.options)
+        self.assertEqual(self.bridge.settings, {
+            "recording_retention": "336h", "recording_limit_bytes": 1610612736,
+        })
+        self.assertEqual(self.bridge.webrtc_config, {
+            "enabled": True, "key_id": "synthetic-key", "api_token": "synthetic-secret",
+            "token_configured": True,
+        })
+        manager = self.hass.config_entries.options
+        result = await manager.async_init(other.entry_id)
+        fields = probatio.to_field_list(
+            result["data_schema"], custom_serializer=cv.custom_serializer
+        )
+        self.assertNotIn("synthetic-secret", json.dumps(fields))
+        self.assertEqual(next(field for field in fields if field["name"] == "retention_days")
+                         ["default"], 14)
+        token = next(field for field in fields if field["name"] == "turn_api_token")
+        self.assertEqual(token["selector"]["text"]["type"], "password")
+        self.assertNotIn("default", token)
+        manager.async_abort(result["flow_id"])
+        self.hass.data.pop(SETTINGS_STORAGE_KEY)
+        restored = netvue_local.async_get_settings(self.hass)
+        public = await restored.async_public()
+        self.assertEqual(public["retention_days"], 14)
+        self.assertTrue(public["turn_token_configured"])
+        self.assertNotIn("synthetic-secret", json.dumps(public))
+        self.bridge.webrtc_config.clear()
+        await restored.async_restore()
+        self.assertEqual(self.bridge.webrtc_config["api_token"], "synthetic-secret")
+
+    async def test_turn_token_preservation_clear_and_failed_update(self):
+        entry = await self.create_entry()
+        result = await self._init(
+            entry, host=HOST, turn_enabled=True, turn_key_id="synthetic-key",
+            turn_api_token="synthetic-secret",
+        )
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        result = await self._init(entry, host=HOST, retention_days=9, turn_api_token="")
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        self.assertEqual(self.bridge.webrtc_config["api_token"], "synthetic-secret")
+        result = await self._init(entry, host=HOST, turn_clear_token=True)
+        self.assertEqual(result["errors"], {"base": "invalid_global_settings"})
+        self.hass.config_entries.options.async_abort(result["flow_id"])
+        self.bridge.status_override = 503
+        result = await self._init(entry, host=HOST, retention_days=10)
+        self.assertEqual(result["errors"], {"base": "bridge_unavailable"})
+        self.assertEqual((await netvue_local.async_get_settings(self.hass).async_public())
+                         ["retention_days"], 9)
+        self.hass.config_entries.options.async_abort(result["flow_id"])
+        self.bridge.status_override = None
+        with patch.object(netvue_local, "async_set_webrtc_config",
+                          side_effect=[BridgeError("synthetic failure"), None]):
+            result = await self._init(
+                entry, host=HOST, retention_days=10, turn_key_id="new-key",
+            )
+        self.assertEqual(result["errors"], {"base": "bridge_unavailable"})
+        self.assertEqual(self.bridge.settings["recording_retention"], "216h")
+        self.hass.config_entries.options.async_abort(result["flow_id"])
+        result = await self._init(
+            entry, host=HOST, turn_enabled=False, turn_clear_token=True,
+        )
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        self.assertEqual(self.bridge.webrtc_config["api_token"], "")
+        self.assertFalse((await netvue_local.async_get_settings(self.hass).async_public())
+                         ["turn_token_configured"])
+
+    async def test_retention_change_preserves_existing_bridge_turn_credentials(self):
+        self.bridge.webrtc_config = {
+            "enabled": True, "key_id": "environment-key",
+            "api_token": "environment-secret", "token_configured": True,
+        }
+        entry = await self.create_entry()
+        result = await self._init(entry, host=HOST, retention_days=14)
+        self.assertEqual(result["type"], "create_entry")
+        await self.hass.async_block_till_done()
+        self.assertEqual(self.bridge.webrtc_config["api_token"], "environment-secret")
+        self.assertTrue(self.bridge.webrtc_config["enabled"])
+        self.assertNotIn(("PUT", "/api/v1/webrtc/config"), self.bridge.requests)
+        self.hass.data.pop(SETTINGS_STORAGE_KEY)
+        restored = netvue_local.async_get_settings(self.hass)
+        await restored.async_restore()
+        self.assertNotIn(("PUT", "/api/v1/webrtc/config"), self.bridge.requests)
+        self.assertTrue((await restored.async_public())["turn_token_configured"])
+        result = await self._init(entry, host=HOST, turn_key_id="updated-key")
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(self.bridge.webrtc_config["api_token"], "environment-secret")
+
     async def test_options_form_serializes_for_frontend(self):
         entry = await self.create_entry()
         manager = self.hass.config_entries.options

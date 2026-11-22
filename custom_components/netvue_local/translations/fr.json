@@ -54,14 +54,23 @@
     "step": {
       "init": {
         "title": "Options de la caméra",
-        "description": "Configurez l'adresse, le flux et la détection IA locale.",
+        "description": "Réglez cette caméra et les paramètres globaux partagés par toutes les caméras. Stockage : 0 = illimité. Jeton TURN enregistré : {turn_token_status}. Laissez le jeton vide pour le conserver ; effacez-le uniquement avec TURN désactivé.",
         "data": {
           "host": "Adresse IPv4 de la caméra",
           "ai_enabled": "Détection IA activée",
           "ai_confidence": "Confiance minimale",
           "ai_fps": "Images analysées par seconde",
           "ai_confirmation_frames": "Images de confirmation",
-          "ai_zones": "Zones JSON normalisées"
+          "ai_zones": "Zones JSON normalisées",
+          "overlay_live": "Annotations du direct par défaut",
+          "overlay_replay": "Annotations du replay par défaut",
+          "overlay_export": "Annotations des exports par défaut",
+          "retention_days": "Conservation globale des enregistrements (jours)",
+          "storage_limit_gb": "Limite globale de stockage (Gio)",
+          "turn_enabled": "Relais TURN global activé",
+          "turn_key_id": "Identifiant de clé TURN global",
+          "turn_api_token": "Nouveau jeton API TURN (secret)",
+          "turn_clear_token": "Effacer le jeton TURN enregistré"
         }
       }
     },
@@ -69,7 +78,8 @@
       "invalid_input": "Adresse IPv4 invalide.",
       "invalid_ai_zones": "Les zones doivent être un objet JSON valide avec les coordonnées normalisées entre 0 et 1.",
       "already_configured": "Cette caméra est déjà configurée.",
-      "bridge_unavailable": "Le pont Netvue est indisponible ; l'adresse n'a pas été modifiée."
+      "bridge_unavailable": "Le pont Netvue est indisponible ; réessayez l'enregistrement des options.",
+      "invalid_global_settings": "Vérifiez la conservation et le stockage. TURN activé nécessite une clé et un jeton ; désactivez TURN avant d'effacer son jeton."
     },
     "abort": {
       "already_configured": "Cette caméra est déjà configurée."

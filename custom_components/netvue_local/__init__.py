@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from urllib.parse import quote
 
 from pathlib import Path
@@ -17,6 +18,7 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 
 from .bridge_api import (
     API_URL,
@@ -26,6 +28,9 @@ from .bridge_api import (
     async_set_detection_rules,
     async_get_detection_status,
     async_stop_camera,
+    async_set_global_settings,
+    async_set_webrtc_config,
+    async_get_global_settings,
 )
 from .const import (
     CONF_AI_CONFIDENCE,
@@ -41,6 +46,16 @@ from .const import (
     CONF_STREAM_URL,
     DEFAULT_AI_CONFIDENCE,
     DOMAIN,
+    CONF_RETENTION_DAYS,
+    CONF_STORAGE_LIMIT_GB,
+    CONF_TURN_ENABLED,
+    CONF_TURN_KEY_ID,
+    CONF_TURN_API_TOKEN,
+    CONF_TURN_CLEAR_TOKEN,
+    GLOBAL_SETTINGS_DEFAULTS,
+    OVERLAY_DEFAULTS,
+    OVERLAY_OPTIONS,
+    SETTINGS_STORAGE_KEY,
 )
 from .coordinator import NetvueCoordinator
 from .rtsp import stream_url_from_name
@@ -62,6 +77,181 @@ _FRONTEND_DIR = Path(__file__).parent / "frontend"
 _STATIC_PATH_KEY = f"{DOMAIN}_frontend_static_path_registered"
 _FRONTEND_MODULE_REQUESTED_KEY = f"{DOMAIN}_frontend_module_requested"
 _FRONTEND_MODULE_REGISTERED_KEY = f"{DOMAIN}_frontend_module_registered"
+_RECORDING_KEYS = frozenset((CONF_RETENTION_DAYS, CONF_STORAGE_LIMIT_GB))
+_TURN_KEYS = frozenset((CONF_TURN_ENABLED, CONF_TURN_KEY_ID, CONF_TURN_API_TOKEN))
+_MANAGED_SECTIONS = "_managed_sections"
+_TOKEN_CONFIGURED = "turn_token_configured"
+
+
+def _retention_days(text: str) -> float:
+    units = {"h": 3600, "m": 60, "s": 1, "ms": 0.001,
+             "us": 0.000001, "µs": 0.000001, "μs": 0.000001, "ns": 0.000000001}
+    parts = list(re.finditer(r"(\d+(?:\.\d+)?)(h|ms|us|µs|μs|ns|m|s)", text))
+    if not parts or "".join(match.group() for match in parts) != text:
+        raise ValueError("Invalid bridge retention")
+    return sum(float(match.group(1)) * units[match.group(2)] for match in parts) / 86400
+
+
+class NetvueSettings:
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+        self.store = Store(
+            hass, 1, SETTINGS_STORAGE_KEY, private=True, atomic_writes=True
+        )
+        self.lock = asyncio.Lock()
+        self.values = dict(GLOBAL_SETTINGS_DEFAULTS)
+        self.managed_sections = set()
+        self.token_configured = False
+        self.loaded = False
+        self.configured = False
+
+    async def _load(self) -> None:
+        if not self.loaded:
+            saved = await self.store.async_load()
+            if saved is not None:
+                self.values.update({key: saved[key] for key in GLOBAL_SETTINGS_DEFAULTS
+                                    if key in saved})
+                self.values[CONF_TURN_API_TOKEN] = None
+                self.managed_sections = set(saved.get(_MANAGED_SECTIONS, ("recording", "turn")))
+                self.token_configured = saved.get(
+                    _TOKEN_CONFIGURED, bool(self.values[CONF_TURN_API_TOKEN])
+                )
+                self.configured = True
+            else:
+                recording, turn = await async_get_global_settings(self.hass)
+                try:
+                    if (type(recording["recording_limit_bytes"]) is not int
+                            or recording["recording_limit_bytes"] < 0
+                            or type(turn["enabled"]) is not bool
+                            or not isinstance(turn["key_id"], str)
+                            or type(turn["token_configured"]) is not bool):
+                        raise ValueError("Invalid bridge settings")
+                    self.values.update({
+                        CONF_RETENTION_DAYS: _retention_days(recording["recording_retention"]),
+                        CONF_STORAGE_LIMIT_GB: recording["recording_limit_bytes"] / 1024**3,
+                        CONF_TURN_ENABLED: turn["enabled"],
+                        CONF_TURN_KEY_ID: turn["key_id"],
+                        CONF_TURN_API_TOKEN: None,
+                    })
+                    self.token_configured = turn["token_configured"]
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise BridgeError("Bridge returned invalid settings") from exc
+            self.loaded = True
+
+    async def async_public(self) -> dict:
+        async with self.lock:
+            await self._load()
+            return {
+                key: value for key, value in self.values.items()
+                if key != CONF_TURN_API_TOKEN
+            } | {_TOKEN_CONFIGURED: self.token_configured}
+
+    async def _apply(self, values: dict, sections: set[str]) -> None:
+        if "recording" in sections:
+            await async_set_global_settings(
+                self.hass,
+                retention_days=values[CONF_RETENTION_DAYS],
+                storage_limit_gb=values[CONF_STORAGE_LIMIT_GB],
+            )
+        if "turn" in sections:
+            await async_set_webrtc_config(
+                self.hass,
+                enabled=values[CONF_TURN_ENABLED],
+                key_id=values[CONF_TURN_KEY_ID],
+                api_token=values[CONF_TURN_API_TOKEN],
+            )
+
+    async def async_restore(self) -> None:
+        async with self.lock:
+            await self._load()
+            if self.configured:
+                await self._apply(self.values, self.managed_sections)
+
+    async def async_update(self, changes: dict) -> None:
+        async with self.lock:
+            await self._load()
+            values = {**self.values, **{
+                key: value for key, value in changes.items()
+                if key in GLOBAL_SETTINGS_DEFAULTS
+                and (key != CONF_TURN_API_TOKEN or value)
+            }}
+            if changes.get(CONF_TURN_CLEAR_TOKEN):
+                values[CONF_TURN_API_TOKEN] = ""
+            token_configured = self.token_configured
+            if isinstance(values[CONF_TURN_API_TOKEN], str):
+                token_configured = bool(values[CONF_TURN_API_TOKEN].strip())
+            if (
+                type(values[CONF_RETENTION_DAYS]) not in (int, float)
+                or not 1e-9 / 86400 <= values[CONF_RETENTION_DAYS] <= 106751
+                or type(values[CONF_STORAGE_LIMIT_GB]) not in (int, float)
+                or not 0 <= values[CONF_STORAGE_LIMIT_GB] <= 1048576
+                or type(values[CONF_TURN_ENABLED]) is not bool
+                or not isinstance(values[CONF_TURN_KEY_ID], str)
+                or not (values[CONF_TURN_API_TOKEN] is None
+                        or isinstance(values[CONF_TURN_API_TOKEN], str))
+                or len(values[CONF_TURN_KEY_ID]) > 256
+                or (values[CONF_TURN_API_TOKEN] is not None
+                    and len(values[CONF_TURN_API_TOKEN]) > 4096)
+                or (values[CONF_TURN_ENABLED] and (
+                    not values[CONF_TURN_KEY_ID].strip()
+                    or not token_configured
+                ))
+            ):
+                raise ValueError("Invalid global settings")
+            if not changes or values == self.values:
+                return
+            sections = set()
+            if any(values[key] != self.values[key] for key in _RECORDING_KEYS):
+                sections.add("recording")
+            if any(values[key] != self.values[key] for key in _TURN_KEYS):
+                sections.add("turn")
+            try:
+                await self._apply(values, sections)
+            except BridgeError:
+                try:
+                    await self._apply(self.values, sections)
+                except BridgeError:
+                    pass
+                raise
+            managed = self.managed_sections | sections
+            await self.store.async_save({
+                **{
+                    key: value for key, value in values.items()
+                    if key != CONF_TURN_API_TOKEN
+                },
+                _MANAGED_SECTIONS: sorted(managed),
+                _TOKEN_CONFIGURED: token_configured,
+            })
+            self.values = {
+                **values,
+                CONF_TURN_API_TOKEN: None,
+            }
+            self.managed_sections = managed
+            self.token_configured = token_configured
+            self.configured = True
+
+
+def async_get_settings(hass: HomeAssistant) -> NetvueSettings:
+    if SETTINGS_STORAGE_KEY not in hass.data:
+        hass.data[SETTINGS_STORAGE_KEY] = NetvueSettings(hass)
+    return hass.data[SETTINGS_STORAGE_KEY]
+
+
+class NetvueOverlayView(HomeAssistantView):
+    url = "/api/netvue_local/overlay/{entry_id}"
+    name = "api:netvue_local:overlay"
+    requires_auth = True
+
+    async def get(self, request, entry_id):
+        entry = request.app["hass"].config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            return web.json_response({"error": "camera not found"}, status=404)
+        return web.json_response({
+            key.removeprefix("overlay_"): entry.options.get(
+                key, entry.data.get(key, OVERLAY_DEFAULTS[key])
+            )
+            for key in OVERLAY_OPTIONS
+        })
 
 
 def _recording_entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -640,6 +830,7 @@ async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the Netvue Lovelace card once per Home Assistant instance."""
     hass.http.register_view(NetvueDetectionConfigView())
+    hass.http.register_view(NetvueOverlayView())
     hass.http.register_view(NetvueDetectionRulesView())
     hass.http.register_view(NetvueRecordingListView())
     hass.http.register_view(NetvueRecordingDeleteView())
@@ -699,6 +890,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = NetvueCoordinator(hass, entry, *camera)
     await coordinator.async_load_event_history()
     try:
+        await async_get_settings(hass).async_restore()
         await coordinator.camera.async_reconcile()
     except BridgeError as exc:
         raise ConfigEntryNotReady("Netvue Bridge session manager is unavailable") from exc

@@ -63,6 +63,7 @@ func TestCloudflareTURNLocalCredentials(t *testing.T) {
 		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
 	manager := newTestManager(t, func(ctx context.Context, _, _, _ string) error { return nil })
+	manager.turn = newCloudflareTURN(turnSettings{})
 	handler := manager.Handler()
 	const path = "/api/v1/webrtc/ice"
 	if got := requestWebRTC(t, handler, "GET", path, nil); got.Code != 204 {

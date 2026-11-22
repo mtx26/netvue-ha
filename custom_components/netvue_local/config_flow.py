@@ -7,13 +7,16 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
-from homeassistant.helpers.selector import ObjectSelector
+from homeassistant.helpers.selector import ObjectSelector, TextSelector, TextSelectorConfig, TextSelectorType
 
 from .bridge_api import BridgeError, async_discover_cameras, async_stop_camera
 from .const import (
     CONF_AI_CONFIDENCE, CONF_AI_CONFIRMATION_FRAMES, CONF_AI_ENABLED,
     CONF_AI_FPS, CONF_AI_ZONES, CONF_HOST, CONF_STREAM_NAME,
     CONF_STREAM_URL, DEFAULT_AI_CONFIDENCE, DEFAULT_NAME, DOMAIN,
+    CONF_RETENTION_DAYS, CONF_STORAGE_LIMIT_GB, CONF_TURN_ENABLED,
+    CONF_TURN_KEY_ID, CONF_TURN_API_TOKEN, CONF_TURN_CLEAR_TOKEN,
+    GLOBAL_SETTINGS_DEFAULTS, OVERLAY_DEFAULTS, OVERLAY_OPTIONS,
 )
 from .rtsp import (
     stream_name_for_host, stream_url_from_name, validate_host,
@@ -164,7 +167,15 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input=None):
+        from . import async_get_settings
+
+        settings = async_get_settings(self.hass)
+        global_defaults = await settings.async_public()
         entry = self.config_entry
+        overlay_defaults = {
+            key: entry.options.get(key, entry.data.get(key, OVERLAY_DEFAULTS[key]))
+            for key in OVERLAY_OPTIONS
+        }
         default_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
         default_ai_enabled = entry.options.get(
             CONF_AI_ENABLED, entry.data.get(CONF_AI_ENABLED, True)
@@ -228,14 +239,27 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                     errors["base"] = "invalid_input"
                 elif type(ai_confirmation) is not int or not 1 <= ai_confirmation <= 10:
                     errors["base"] = "invalid_input"
+                elif any(type(user_input.get(key, value)) is not bool
+                         for key, value in overlay_defaults.items()):
+                    errors["base"] = "invalid_input"
                 else:
                     stream_name = stream_name_for_host(host)
                     url = stream_url_from_name(stream_name)
                     if _duplicate(self.hass, host, url, entry.entry_id):
                         errors["base"] = "already_configured"
                     else:
+                        try:
+                            await settings.async_update({
+                                key: value for key, value in user_input.items()
+                                if key in GLOBAL_SETTINGS_DEFAULTS
+                                or key == CONF_TURN_CLEAR_TOKEN
+                            })
+                        except ValueError:
+                            errors["base"] = "invalid_global_settings"
+                        except BridgeError:
+                            errors["base"] = "bridge_unavailable"
                         old_host = entry.options.get(CONF_HOST, entry.data[CONF_HOST])
-                        if host != old_host:
+                        if not errors and host != old_host:
                             try:
                                 await async_stop_camera(self.hass, old_host)
                             except BridgeError:
@@ -254,6 +278,10 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                                     CONF_AI_FPS: float(ai_fps),
                                     CONF_AI_CONFIRMATION_FRAMES: ai_confirmation,
                                     CONF_AI_ZONES: ai_zones,
+                                    **{
+                                        key: user_input.get(key, value)
+                                        for key, value in overlay_defaults.items()
+                                    },
                                 },
                             )
         return self.async_show_form(
@@ -268,5 +296,28 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                 vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=default_ai_confirmation):
                     vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
                 vol.Required(CONF_AI_ZONES, default=default_ai_zones): ObjectSelector(),
+                **{
+                    vol.Required(key, default=value): bool
+                    for key, value in overlay_defaults.items()
+                },
+                vol.Required(CONF_RETENTION_DAYS,
+                             default=global_defaults[CONF_RETENTION_DAYS]):
+                    vol.All(vol.Coerce(float), vol.Range(min=1e-9 / 86400, max=106751)),
+                vol.Required(CONF_STORAGE_LIMIT_GB,
+                             default=global_defaults[CONF_STORAGE_LIMIT_GB]):
+                    vol.All(vol.Coerce(float), vol.Range(min=0, max=1048576)),
+                vol.Required(CONF_TURN_ENABLED,
+                             default=global_defaults[CONF_TURN_ENABLED]): bool,
+                vol.Required(CONF_TURN_KEY_ID,
+                             default=global_defaults[CONF_TURN_KEY_ID]): str,
+                vol.Optional(CONF_TURN_API_TOKEN): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(CONF_TURN_CLEAR_TOKEN, default=False): bool,
             }), errors=errors,
+            description_placeholders={
+                "turn_token_status": (
+                    "✓" if global_defaults["turn_token_configured"] else "—"
+                ),
+            },
         )

@@ -16,6 +16,7 @@ const HISTORY_FOLLOW_POLL_MS = 5000;
 const HISTORY_FOLLOW_BUFFER_MS = 10000;
 const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const OVERLAY_DEFAULTS = { live: true, replay: true, export: false };
+const OVERLAY_REFRESH_MS = 30000;
 const HISTORY_SAMPLE_MAX_GAP_SECONDS = 3;
 const ENTITY_RE = /^camera\.[a-z0-9_]+$/;
 const DETECTION_LABELS_FR = {
@@ -175,14 +176,8 @@ button[disabled] { color: rgba(255,255,255,.65); cursor: default; }
 .bar .ptt[aria-pressed="true"] { background: var(--error-color, #db4437); }
 .toast { position: absolute; left: 8px; right: 8px; top: 8px; padding: 8px 12px; border-radius: 8px;
   color: #fff; background: rgba(176,0,32,.9); line-height: 1.4; font-size: 14px; }
-.settings-panel { box-sizing: border-box; width: 96vw; max-width: 1400px; max-height: 94dvh;
-  margin: auto; overflow: auto; padding: 16px; border: 0; border-radius: 12px;
-  background: #222; color: #fff; line-height: 1.4; }
-.settings-panel::backdrop { background: rgba(0,0,0,.75); }
-.settings-panel[hidden] { display: none; }
-.settings-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.settings-header button { color: inherit; background: transparent; border-color: currentColor; }
-.overlay-setting { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.bar .overlay-toggle[aria-pressed="true"], .history-actions .overlay-toggle[aria-pressed="true"] {
+  color: #00d4ff; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 `;
 
@@ -216,6 +211,7 @@ const ICONS = {
   calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>',
   download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m-4-4 4 4 4-4M4 17v3h16v-3"/></svg>',
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="m19.4 15 .1.1 1.4 1.1-1.6 2.8-1.7-.5a8 8 0 0 1-1.8 1l-.4 1.7h-3.2l-.4-1.7a8 8 0 0 1-1.8-1l-1.7.5-1.6-2.8 1.4-1.1a8 8 0 0 1 0-2l-1.4-1.1 1.6-2.8 1.7.5a8 8 0 0 1 1.8-1l.4-1.7h3.2l.4 1.7a8 8 0 0 1 1.8 1l1.7-.5 1.6 2.8-1.4 1.1a8 8 0 0 1 0 2z" transform="translate(-1.6 -2.1)"/></svg>',
+  boxes: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 4v4H4M16 20v-4h4"/></svg>',
 };
 
 export class NetvueCameraCard extends HTMLElement {
@@ -259,6 +255,10 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyFollowTimer = null;
     this._historyFollowPending = false;
     this._overlayPreferences = { ...OVERLAY_DEFAULTS };
+    this._overlayOverrides = {};
+    this._overlayGeneration = 0;
+    this._overlayFetchAfter = 0;
+    this._overlayFetchPending = false;
     this._historyDetections = [];
     this._cssFullscreen = false;
     this._onRelease = () => this._releasePtt();
@@ -288,7 +288,6 @@ export class NetvueCameraCard extends HTMLElement {
       this._render();
     }
     if (changed && this._connected) {
-      this._closeSettings();
       this._closeHistory(false);
       this._restart();
     }
@@ -316,6 +315,7 @@ export class NetvueCameraCard extends HTMLElement {
   connectedCallback() {
     this._build();
     this._connected = true;
+    this._loadOverlayPreferences(true);
     this._detectionResizeObserver.observe(this._video);
     this._detectionResizeObserver.observe(this._historyVideo);
     window.addEventListener("blur", this._onRelease);
@@ -332,7 +332,6 @@ export class NetvueCameraCard extends HTMLElement {
   disconnectedCallback() {
     this._connected = false;
     this._detectionResizeObserver.disconnect();
-    this._closeSettings();
     this._releasePtt();
     window.removeEventListener("blur", this._onRelease);
     window.removeEventListener("pagehide", this._onRelease);
@@ -566,6 +565,7 @@ export class NetvueCameraCard extends HTMLElement {
         this._render();
       }, HIDDEN_PAUSE_MS);
     } else {
+      this._loadOverlayPreferences(true);
       this._clearTimer("_hiddenTimer");
       if (this._paused) {
         this._paused = false;
@@ -685,6 +685,9 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyDownload.addEventListener("click", (event) => this._downloadAnnotated(event));
     this._historySettingsButton = el("button", { type: "button" }, historyActions);
     this._historySettingsButton.addEventListener("click", () => this._openSettings());
+    this._historyOverlayButton = el("button", { type: "button", class: "overlay-toggle" }, historyActions);
+    this._historyOverlayButton.addEventListener("click", () =>
+      this._setOverlayPreference("replay", !this._overlayEnabled("replay")));
     this._historyFullscreenButton = el("button", { type: "button", class: "history-fullscreen" }, historyActions);
     this._historyFullscreenButton.addEventListener("click", () => this._toggleFullscreen());
     this._overlay = el("div", { class: "overlay" }, wrap);
@@ -710,6 +713,9 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.addEventListener("click", () => this._openHistory());
     this._settingsButton = el("button", { type: "button", class: "settings" }, bar);
     this._settingsButton.addEventListener("click", () => this._openSettings());
+    this._liveOverlayButton = el("button", { type: "button", class: "overlay-toggle" }, bar);
+    this._liveOverlayButton.addEventListener("click", () =>
+      this._setOverlayPreference("live", !this._overlayEnabled("live")));
     this._pttButton = el("button", { type: "button", class: "ptt" }, bar);
     this._bindPtt(this._pttButton);
     const volumeControl = el("div", { class: "volume-control" }, bar);
@@ -749,30 +755,6 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyPosition = el("div", { class: "history-position", hidden: "", "aria-hidden": "true" }, this._historyPanel);
     this._historyPositionLabel = el("span", { class: "history-position-label" }, this._historyPosition);
     this._historyMessage = el("div", { class: "history-message", role: "status" }, this._historyPanel);
-    this._settingsPanel = el("dialog", {
-      class: "settings-panel", hidden: "",
-    }, wrap);
-    const settingsHeader = el("div", { class: "settings-header" }, this._settingsPanel);
-    this._settingsTitle = el("strong", {}, settingsHeader);
-    this._settingsClose = el("button", { type: "button" }, settingsHeader);
-    this._settingsClose.addEventListener("click", () => this._closeSettings());
-    this._overlaySettings = {};
-    for (const key of Object.keys(OVERLAY_DEFAULTS)) {
-      const row = el("label", { class: "overlay-setting" }, this._settingsPanel);
-      const input = el("input", { type: "checkbox" }, row);
-      this._overlaySettings[key] = { input, text: el("span", {}, row) };
-      input.addEventListener("change", () => this._setOverlayPreference(key, input.checked));
-    }
-    this._settingsPanel.addEventListener("cancel", (event) => {
-      event.preventDefault();
-      this._closeSettings();
-    });
-    this._settingsPanel.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        this._closeSettings();
-        event.stopPropagation();
-      }
-    });
     this._live = el("div", { class: "sr", role: "status", "aria-live": "polite" }, wrap);
     this._render();
   }
@@ -830,35 +812,58 @@ export class NetvueCameraCard extends HTMLElement {
     return state?.attributes?.netvue_entry_id || null;
   }
 
-  _loadOverlayPreferences() {
-    const key = this._entryId();
-    if (key === this._overlayEntryId) return;
-    this._overlayEntryId = key;
-    this._overlayPreferences = { ...OVERLAY_DEFAULTS };
-    if (!key) return;
+  async _loadOverlayPreferences(force = false) {
+    const entryId = this._entryId();
+    const entityId = this._config?.entity;
+    if (entityId !== this._overlayEntityId
+        || (entryId && this._overlayEntryId && entryId !== this._overlayEntryId)) {
+      this._overlayEntityId = entityId;
+      this._overlayEntryId = null;
+      this._overlayPreferences = { ...OVERLAY_DEFAULTS };
+      this._overlayOverrides = {};
+      this._overlayGeneration++;
+      this._overlayFetchAfter = 0;
+      this._overlayFetchPending = false;
+    }
+    if (!entryId || !this._hass?.callApi || this._overlayFetchPending
+        || (!force && Date.now() < this._overlayFetchAfter)) return;
+    this._overlayEntryId = entryId;
+    const generation = this._overlayGeneration;
+    this._overlayFetchPending = true;
+    this._overlayFetchAfter = Date.now() + OVERLAY_REFRESH_MS;
     try {
-      const saved = JSON.parse(window.localStorage?.getItem(`netvue-overlay:${key}`) ?? "null");
+      const saved = await this._hass.callApi(
+        "GET", `netvue_local/overlay/${encodeURIComponent(entryId)}`,
+      );
+      if (generation !== this._overlayGeneration || entryId !== this._entryId()) return;
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) {
+        throw new Error("Invalid overlay preferences");
+      }
       for (const name of Object.keys(OVERLAY_DEFAULTS)) {
         if (typeof saved?.[name] === "boolean") this._overlayPreferences[name] = saved[name];
       }
+      this._render();
     } catch (error) {
-      console.warn("Netvue: unable to read overlay preferences", error);
+      if (generation === this._overlayGeneration) {
+        console.warn("Netvue: unable to load overlay preferences", error);
+      }
+    } finally {
+      if (generation === this._overlayGeneration) this._overlayFetchPending = false;
     }
   }
 
+  _overlayEnabled(key) {
+    return this._overlayOverrides[key] ?? this._overlayPreferences[key];
+  }
+
   _setOverlayPreference(key, checked) {
-    this._overlayPreferences[key] = checked;
-    try {
-      window.localStorage?.setItem(`netvue-overlay:${this._entryId()}`,
-        JSON.stringify(this._overlayPreferences));
-    } catch (error) {
-      console.warn("Netvue: unable to save overlay preferences", error);
-    }
+    if (!["live", "replay", "export"].includes(key) || typeof checked !== "boolean") return;
+    this._overlayOverrides[key] = checked;
     this._render();
   }
 
   _renderDetections() {
-    if (!this._overlayPreferences.live || !this._config || this._view.state !== "live") {
+    if (!this._overlayEnabled("live") || !this._config || this._view.state !== "live") {
       this._drawDetections([]);
       return;
     }
@@ -931,35 +936,23 @@ export class NetvueCameraCard extends HTMLElement {
     this._detectionOverlay.toggleAttribute("hidden", !visible);
   }
 
-  _openSettings() {
-    if (!this._entryId() || this._settingsPanel.open) return;
-    this._releasePtt();
-    if (!this._history && this._hass?.callApi) {
-      const editor = document.createElement("netvue-camera-card-editor");
-      editor.setAttribute("zones-only", "");
-      editor.setConfig({ entity: this._config.entity });
-      editor.hass = this._hass;
-      this._zoneEditor = editor;
-      this._settingsPanel.appendChild(editor);
-    }
-    this._settingsPanel.hidden = false;
-    this._settingsPanel.showModal();
-    this._settingsClose.focus();
+  _deviceId() {
+    const deviceId = this._hass?.entities?.[this._config?.entity]?.device_id;
+    return typeof deviceId === "string" && deviceId ? deviceId : null;
   }
 
-  _closeSettings() {
-    if (!this._settingsPanel) return;
-    if (this._settingsPanel.open) this._settingsPanel.close();
-    this._settingsPanel.hidden = true;
-    if (this._zoneEditor) {
-      this._settingsPanel.removeChild(this._zoneEditor);
-      this._zoneEditor = null;
-    }
-    (this._history ? this._historySettingsButton : this._settingsButton).focus();
+  async _openSettings() {
+    const deviceId = this._deviceId();
+    if (!deviceId) return;
+    this._releasePtt();
+    if (this._isFullscreen()) await this._toggleFullscreen();
+    if (deviceId !== this._deviceId()) return;
+    window.history.pushState(null, "", `/config/devices/device/${encodeURIComponent(deviceId)}`);
+    window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
   }
 
   async _downloadAnnotated(event) {
-    if (!this._overlayPreferences.export) return;
+    if (!this._overlayEnabled("export")) return;
     event.preventDefault();
     const segment = this._historySegment;
     const entryId = this._entryId();
@@ -1422,7 +1415,7 @@ export class NetvueCameraCard extends HTMLElement {
   }
 
   _renderHistoryDetections() {
-    if (!this._overlayPreferences.replay || !this._historySegment || this._historyPendingSeek
+    if (!this._overlayEnabled("replay") || !this._historySegment || this._historyPendingSeek
         || !Number.isFinite(this._historyVideo.currentTime)) {
       this._drawDetections([]);
       return;
@@ -1603,19 +1596,19 @@ export class NetvueCameraCard extends HTMLElement {
     this._historyButton.title = t("recordingHistory");
     for (const button of [this._settingsButton, this._historySettingsButton]) {
       setIcon(button, ICONS.settings);
-      button.disabled = !this._entryId();
+      button.disabled = !this._deviceId();
       button.setAttribute("aria-label", t("cameraSettings"));
       button.title = t("cameraSettings");
     }
-    for (const [key, label] of Object.entries({
-      live: "overlayLive", replay: "overlayReplay", export: "overlayExport",
-    })) {
-      this._overlaySettings[key].text.textContent = t(label);
-      this._overlaySettings[key].input.checked = this._overlayPreferences[key];
+    for (const [button, key, label] of [
+      [this._liveOverlayButton, "live", "overlayLive"],
+      [this._historyOverlayButton, "replay", "overlayReplay"],
+    ]) {
+      setIcon(button, ICONS.boxes);
+      button.setAttribute("aria-label", t(label));
+      button.setAttribute("aria-pressed", String(this._overlayEnabled(key)));
+      button.title = t(label);
     }
-    this._settingsPanel.setAttribute("aria-label", t("cameraSettings"));
-    this._settingsTitle.textContent = t("cameraSettings");
-    this._settingsClose.textContent = t("closeSettings");
     this._historyLiveButton.textContent = t("historyLiveShort");
     for (const [button, text] of [
       [this._historyLiveButton, t("historyLive")],

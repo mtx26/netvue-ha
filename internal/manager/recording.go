@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,22 @@ type recordingConfig struct {
 	Cameras map[string]recordingState `json:"cameras"`
 }
 
+type recordingSettings struct {
+	Retention  string `json:"recording_retention"`
+	LimitBytes int64  `json:"recording_limit_bytes"`
+}
+
+type turnSettings struct {
+	Enabled bool   `json:"enabled"`
+	KeyID   string `json:"key_id"`
+	Token   string `json:"api_token"`
+}
+
+type runtimeSettings struct {
+	Recording *recordingSettings `json:"recording,omitempty"`
+	TURN      *turnSettings      `json:"turn,omitempty"`
+}
+
 type mediaMTXRecording struct {
 	Name     string `json:"name"`
 	Segments []struct {
@@ -101,6 +118,9 @@ type recordingManager struct {
 	protectedSlot   chan struct{}
 	protectedMu     sync.Mutex
 	retentionMu     sync.RWMutex
+	settingsMu      sync.Mutex
+	settings        runtimeSettings
+	settingsErr     error
 
 	mu     sync.RWMutex
 	states map[string]recordingState
@@ -125,9 +145,93 @@ func newRecordingManager(ctx context.Context) *recordingManager {
 	if err := os.MkdirAll(dir, 0o750); err == nil {
 		manager.load()
 		manager.initProtectedStorage()
-		go manager.cleanupLoop()
+		manager.loadRuntimeSettings()
+		if manager.settingsErr == nil {
+			go manager.cleanupLoop()
+		}
+	} else {
+		manager.settingsErr = err
 	}
 	return manager
+}
+
+func (manager *recordingManager) loadRuntimeSettings() {
+	data, err := os.ReadFile(filepath.Join(manager.dir, ".netvue-settings.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		manager.settingsErr = err
+		return
+	}
+	if err := json.Unmarshal(data, &manager.settings); err != nil {
+		manager.settingsErr = errors.New("invalid runtime settings")
+		return
+	}
+	if manager.settings.Recording != nil {
+		if _, err := validateRecordingSettings(*manager.settings.Recording); err != nil {
+			manager.settingsErr = err
+		}
+	}
+	if manager.settings.TURN != nil && !validTURNSettings(*manager.settings.TURN) {
+		manager.settingsErr = errors.New("invalid saved TURN settings")
+	}
+}
+
+func (manager *recordingManager) saveRuntimeSettings(settings runtimeSettings) error {
+	if !manager.enabled() {
+		return errors.New("local recording storage is not configured")
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(manager.dir, ".netvue-settings-*.json")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if _, err = temp.Write(data); err == nil {
+		err = temp.Sync()
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(name, filepath.Join(manager.dir, ".netvue-settings.json"))
+}
+
+func validateRecordingSettings(settings recordingSettings) (time.Duration, error) {
+	retention, err := time.ParseDuration(settings.Retention)
+	if err != nil || retention <= 0 || settings.LimitBytes < 0 {
+		return 0, errors.New("invalid recording settings")
+	}
+	return retention, nil
+}
+
+func (manager *recordingManager) recordingSettings() recordingSettings {
+	manager.settingsMu.Lock()
+	defer manager.settingsMu.Unlock()
+	if manager.settings.Recording != nil {
+		return *manager.settings.Recording
+	}
+	return recordingSettingsFromEnv()
+}
+
+func recordingSettingsFromEnv() recordingSettings {
+	retention := strings.TrimSpace(os.Getenv("NETVUE_RECORDING_RETENTION"))
+	duration, err := time.ParseDuration(retention)
+	if err != nil || duration <= 0 {
+		retention = "168h"
+	}
+	limit, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("NETVUE_RECORDING_LIMIT_BYTES")), 10, 64)
+	if err != nil || limit < 0 {
+		limit = 0
+	}
+	return recordingSettings{Retention: retention, LimitBytes: limit}
 }
 
 func (manager *recordingManager) enabled() bool {
@@ -916,11 +1020,8 @@ func (manager *recordingManager) cleanup() {
 			break
 		}
 	}
-	retentionText := strings.TrimSpace(os.Getenv("NETVUE_RECORDING_RETENTION"))
-	retention, err := time.ParseDuration(retentionText)
-	if err != nil || retention <= 0 {
-		retention = 7 * 24 * time.Hour
-	}
+	settings := manager.recordingSettings()
+	retention, _ := time.ParseDuration(settings.Retention)
 
 	cutoff := time.Now().Add(-retention)
 	var files []string
@@ -948,18 +1049,15 @@ func (manager *recordingManager) cleanup() {
 			total += info.Size()
 			files = append(files, path)
 			if info.ModTime().Before(cutoff) {
-				_ = os.Remove(path)
-				total -= info.Size()
+				if os.Remove(path) == nil {
+					total -= info.Size()
+				}
 			}
 		}
 		return nil
 	})
 
-	limitText := strings.TrimSpace(os.Getenv("NETVUE_RECORDING_LIMIT_BYTES"))
-	var limit int64
-	if limitText != "" {
-		fmt.Sscanf(limitText, "%d", &limit)
-	}
+	limit := settings.LimitBytes
 	if limit <= 0 {
 		return
 	}

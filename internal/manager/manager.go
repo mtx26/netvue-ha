@@ -130,6 +130,23 @@ func newManager(
 		closeComplete: make(chan struct{}),
 	}
 	manager.recordings = newRecordingManager(managerCtx)
+	if manager.recordings.settingsErr != nil {
+		cancel()
+		return nil, fmt.Errorf("load runtime settings: %w", manager.recordings.settingsErr)
+	}
+	if manager.recordings.settings.TURN != nil {
+		manager.turn = newCloudflareTURN(*manager.recordings.settings.TURN)
+	} else {
+		turn, err := cloudflareTURNFromEnv()
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		if turn == nil {
+			turn = newCloudflareTURN(turnSettings{})
+		}
+		manager.turn = turn
+	}
 	metadata, metadataErr := newAIMetadataStore(manager.recordings.dir)
 	if metadataErr != nil {
 		slog.Error("Unable to load AI metadata history", "error", metadataErr)

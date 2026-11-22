@@ -54,14 +54,23 @@
     "step": {
       "init": {
         "title": "Camera options",
-        "description": "Configure the address, stream, and local AI detection.",
+        "description": "Configure this camera and global settings shared by all cameras. Storage: 0 = unlimited. TURN token saved: {turn_token_status}. Leave the token blank to keep it; clear it only with TURN disabled.",
         "data": {
           "host": "Camera IPv4 address",
           "ai_enabled": "AI detection enabled",
           "ai_confidence": "Minimum confidence",
           "ai_fps": "Analyzed frames per second",
           "ai_confirmation_frames": "Confirmation frames",
-          "ai_zones": "Normalized JSON zones"
+          "ai_zones": "Normalized JSON zones",
+          "overlay_live": "Default live annotations",
+          "overlay_replay": "Default replay annotations",
+          "overlay_export": "Default export annotations",
+          "retention_days": "Global recording retention (days)",
+          "storage_limit_gb": "Global storage limit (GiB)",
+          "turn_enabled": "Global TURN relay enabled",
+          "turn_key_id": "Global TURN key ID",
+          "turn_api_token": "New TURN API token (secret)",
+          "turn_clear_token": "Clear saved TURN token"
         }
       }
     },
@@ -69,7 +78,8 @@
       "invalid_input": "Invalid IPv4 address.",
       "invalid_ai_zones": "Zones must be a valid JSON object with normalized coordinates between 0 and 1.",
       "already_configured": "This camera is already configured.",
-      "bridge_unavailable": "Netvue Bridge is unavailable; the address was not changed."
+      "bridge_unavailable": "Netvue Bridge is unavailable; retry saving the options.",
+      "invalid_global_settings": "Check retention and storage. Enabled TURN requires a key and token; disable TURN before clearing its token."
     },
     "abort": {
       "already_configured": "This camera is already configured."

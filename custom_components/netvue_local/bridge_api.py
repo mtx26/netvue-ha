@@ -18,6 +18,64 @@ REQUEST_TIMEOUT = 5
 DISCOVERY_TIMEOUT = 30
 
 
+async def async_get_global_settings(hass: HomeAssistant) -> tuple[dict, dict]:
+    return (
+        await _async_get_settings(hass, "settings"),
+        await _async_get_settings(hass, "webrtc/config"),
+    )
+
+
+async def _async_get_settings(hass: HomeAssistant, path: str) -> dict:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.get(f"{API_URL}/{path}") as response:
+                if response.status != 200:
+                    raise BridgeError(f"Bridge returned HTTP {response.status}")
+                try:
+                    data = await response.json()
+                except (ValueError, ClientError) as exc:
+                    raise BridgeError("Bridge returned invalid settings") from exc
+                if not isinstance(data, dict):
+                    raise BridgeError("Bridge returned invalid settings")
+                return data
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot read local bridge settings") from exc
+
+
+async def async_set_global_settings(
+    hass: HomeAssistant, *, retention_days: float, storage_limit_gb: float
+) -> None:
+    hours = f"{retention_days * 24:.15f}".rstrip("0").rstrip(".")
+    await _async_put_settings(hass, "settings", {
+        "recording_retention": f"{hours}h",
+        "recording_limit_bytes": int(storage_limit_gb * 1024**3),
+    })
+
+
+async def async_set_webrtc_config(
+    hass: HomeAssistant, *, enabled: bool, key_id: str, api_token: str | None = None
+) -> None:
+    data = {
+        "enabled": enabled,
+        "key_id": key_id,
+    }
+    if api_token is not None:
+        data["api_token"] = api_token
+    await _async_put_settings(hass, "webrtc/config", data)
+
+
+async def _async_put_settings(hass: HomeAssistant, path: str, data: dict) -> None:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            async with session.put(f"{API_URL}/{path}", json=data) as response:
+                if response.status != 200:
+                    raise BridgeError(f"Bridge returned HTTP {response.status}")
+    except (ClientError, TimeoutError) as exc:
+        raise BridgeError("Cannot update local bridge settings") from exc
+
+
 class BridgeError(Exception):
     """The local bridge could not accept the requested camera session."""
 

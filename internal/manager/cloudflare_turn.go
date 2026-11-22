@@ -27,6 +27,7 @@ var cloudflareTURNKeyID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 type cloudflareTURN struct {
 	keyID, token string
+	disabled     bool
 	client       *http.Client
 	mu           sync.Mutex
 	servers      []webrtc.ICEServer
@@ -40,20 +41,37 @@ func cloudflareTURNFromEnv() (*cloudflareTURN, error) {
 	if keyID == "" && token == "" {
 		return nil, nil
 	}
-	if !cloudflareTURNKeyID.MatchString(keyID) || token == "" || strings.ContainsAny(token, " \t\r\n") {
+	if !validTURNSettings(turnSettings{Enabled: true, KeyID: keyID, Token: token}) {
 		return nil, errors.New("set a valid NETVUE_CLOUDFLARE_TURN_KEY_ID and NETVUE_CLOUDFLARE_TURN_API_TOKEN together")
 	}
+	return newCloudflareTURN(turnSettings{Enabled: true, KeyID: keyID, Token: token}), nil
+}
+
+func validTURNSettings(settings turnSettings) bool {
+	if settings.KeyID != "" && !cloudflareTURNKeyID.MatchString(settings.KeyID) {
+		return false
+	}
+	if strings.ContainsAny(settings.Token, " \t\r\n") {
+		return false
+	}
+	return !settings.Enabled || (settings.KeyID != "" && settings.Token != "")
+}
+
+func newCloudflareTURN(settings turnSettings) *cloudflareTURN {
 	return &cloudflareTURN{
-		keyID: keyID, token: token,
+		keyID: settings.KeyID, token: settings.Token, disabled: !settings.Enabled,
 		client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}},
-	}, nil
+	}
 }
 
 func (turn *cloudflareTURN) credentials(ctx context.Context) ([]webrtc.ICEServer, time.Duration) {
 	turn.mu.Lock()
 	defer turn.mu.Unlock()
+	if turn.disabled {
+		return nil, 0
+	}
 	now := time.Now()
 	if !now.Before(turn.retry) && turn.expires.Sub(now) <= turnRefreshAhead && ctx.Err() == nil {
 		servers, err := turn.generate(ctx)
@@ -137,6 +155,13 @@ func (turn *cloudflareTURN) generate(ctx context.Context) ([]webrtc.ICEServer, e
 func (manager *Manager) handleWebRTCICE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if manager.turn == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	manager.turn.mu.Lock()
+	disabled := manager.turn.disabled
+	manager.turn.mu.Unlock()
+	if disabled {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

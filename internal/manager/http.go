@@ -27,6 +27,10 @@ type addCameraRequest struct {
 func (manager *Manager) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", manager.handleStatus)
+	mux.HandleFunc("GET /api/v1/settings", manager.handleGetSettings)
+	mux.HandleFunc("PUT /api/v1/settings", manager.handlePutSettings)
+	mux.HandleFunc("GET /api/v1/webrtc/config", manager.handleGetWebRTCConfig)
+	mux.HandleFunc("PUT /api/v1/webrtc/config", manager.handlePutWebRTCConfig)
 	mux.HandleFunc("POST /api/v1/discovery", manager.handleDiscovery)
 	mux.HandleFunc("POST /api/v1/cameras", manager.handleAddCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{host}", manager.handleGetCamera)
@@ -92,6 +96,146 @@ func (manager *Manager) handleDiscovery(w http.ResponseWriter, r *http.Request) 
 
 func (manager *Manager) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string][]Camera{"cameras": manager.Cameras()})
+}
+
+func decodeRuntimeRequest(w http.ResponseWriter, r *http.Request, request any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(request); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid settings request")
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, "request must contain one JSON object")
+		return false
+	}
+	return true
+}
+
+func (manager *Manager) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, manager.recordings.recordingSettings())
+}
+
+func (manager *Manager) handlePutSettings(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Retention  *string `json:"recording_retention"`
+		LimitBytes *int64  `json:"recording_limit_bytes"`
+	}
+	if !decodeRuntimeRequest(w, r, &request) {
+		return
+	}
+	if request.Retention == nil && request.LimitBytes == nil {
+		writeAPIError(w, http.StatusBadRequest, "no settings provided")
+		return
+	}
+	recordings := manager.recordings
+	recordings.retentionMu.Lock()
+	recordings.settingsMu.Lock()
+	settings := recordings.settings
+	current := recordingSettingsFromEnv()
+	if settings.Recording != nil {
+		current = *settings.Recording
+	}
+	if request.Retention != nil {
+		current.Retention = *request.Retention
+	}
+	if request.LimitBytes != nil {
+		current.LimitBytes = *request.LimitBytes
+	}
+	if _, err := validateRecordingSettings(current); err != nil {
+		recordings.settingsMu.Unlock()
+		recordings.retentionMu.Unlock()
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	settings.Recording = &current
+	err := recordings.saveRuntimeSettings(settings)
+	if err == nil {
+		recordings.settings = settings
+	}
+	recordings.settingsMu.Unlock()
+	recordings.retentionMu.Unlock()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "unable to save settings")
+		return
+	}
+	recordings.cleanup()
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, current)
+}
+
+type webRTCConfigResponse struct {
+	Enabled         bool   `json:"enabled"`
+	KeyID           string `json:"key_id"`
+	TokenConfigured bool   `json:"token_configured"`
+}
+
+func turnResponse(settings turnSettings) webRTCConfigResponse {
+	return webRTCConfigResponse{
+		Enabled: settings.Enabled, KeyID: settings.KeyID, TokenConfigured: settings.Token != "",
+	}
+}
+
+func (manager *Manager) handleGetWebRTCConfig(w http.ResponseWriter, _ *http.Request) {
+	turn := manager.turn
+	turn.mu.Lock()
+	settings := turnSettings{Enabled: !turn.disabled, KeyID: turn.keyID, Token: turn.token}
+	turn.mu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, turnResponse(settings))
+}
+
+func (manager *Manager) handlePutWebRTCConfig(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Enabled *bool   `json:"enabled"`
+		KeyID   *string `json:"key_id"`
+		Token   *string `json:"api_token"`
+	}
+	if !decodeRuntimeRequest(w, r, &request) {
+		return
+	}
+	if request.Enabled == nil && request.KeyID == nil && request.Token == nil {
+		writeAPIError(w, http.StatusBadRequest, "no settings provided")
+		return
+	}
+	recordings := manager.recordings
+	turn := manager.turn
+	recordings.settingsMu.Lock()
+	turn.mu.Lock()
+	current := turnSettings{Enabled: !turn.disabled, KeyID: turn.keyID, Token: turn.token}
+	if request.Enabled != nil {
+		current.Enabled = *request.Enabled
+	}
+	if request.KeyID != nil {
+		current.KeyID = *request.KeyID
+	}
+	if request.Token != nil {
+		current.Token = *request.Token
+	}
+	if !validTURNSettings(current) {
+		turn.mu.Unlock()
+		recordings.settingsMu.Unlock()
+		writeAPIError(w, http.StatusBadRequest, "invalid TURN settings")
+		return
+	}
+	settings := recordings.settings
+	settings.TURN = &current
+	err := recordings.saveRuntimeSettings(settings)
+	if err == nil {
+		recordings.settings = settings
+		turn.disabled, turn.keyID, turn.token = !current.Enabled, current.KeyID, current.Token
+		turn.servers, turn.expires, turn.retry = nil, time.Time{}, time.Time{}
+	}
+	turn.mu.Unlock()
+	recordings.settingsMu.Unlock()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "unable to save settings")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, turnResponse(current))
 }
 
 func (manager *Manager) handleAddCamera(w http.ResponseWriter, r *http.Request) {
@@ -795,15 +939,10 @@ func Run(ctx context.Context, source, listenAddress string) error {
 	if err := validateLoopbackAddress(listenAddress); err != nil {
 		return err
 	}
-	turn, err := cloudflareTURNFromEnv()
-	if err != nil {
-		return err
-	}
 	manager, err := New(ctx, source)
 	if err != nil {
 		return err
 	}
-	manager.turn = turn
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

@@ -41,6 +41,8 @@ class FakeBridge:
         self.requests: list[tuple[str, str]] = []
         self.status_override: int | None = None
         self.turn_response: dict | None = None
+        self.settings: dict = {"recording_retention": "168h", "recording_limit_bytes": 0}
+        self.webrtc_config: dict = {"enabled": False, "key_id": "", "token_configured": False}
         self.recordings: dict[str, list[dict]] = {}
         self.protected: list[dict] = []
         self.recording_content = b"synthetic-video"
@@ -60,6 +62,8 @@ class FakeBridge:
         base = "/api/v1/cameras"
         app.router.add_post("/api/v1/discovery", self._discovery)
         app.router.add_get("/api/v1/webrtc/ice", self._ice)
+        app.router.add_route("*", "/api/v1/settings", self._settings)
+        app.router.add_route("*", "/api/v1/webrtc/config", self._webrtc_config)
         app.router.add_post(base, self._create)
         app.router.add_get(base + "/{host}", self._get)
         app.router.add_post(base + "/{host}/start", self._start)
@@ -100,6 +104,30 @@ class FakeBridge:
         if self.turn_response is None:
             return web.Response(status=204)
         return web.json_response(self.turn_response)
+
+    async def _settings(self, request):
+        if request.method == "GET":
+            return web.json_response(self.settings)
+        if (forced := self._forced(request)) is not None:
+            return forced
+        self.settings.update(await request.json())
+        return web.json_response(self.settings)
+
+    async def _webrtc_config(self, request):
+        if request.method == "GET":
+            return web.json_response({
+                key: value for key, value in self.webrtc_config.items()
+                if key != "api_token"
+            })
+        if (forced := self._forced(request)) is not None:
+            return forced
+        self.webrtc_config.update(await request.json())
+        if "api_token" in self.webrtc_config:
+            self.webrtc_config["token_configured"] = bool(self.webrtc_config["api_token"])
+        return web.json_response({
+            key: value for key, value in self.webrtc_config.items()
+            if key != "api_token"
+        })
 
     async def _recordings(self, request):
         if (forced := self._forced(request)) is not None:
