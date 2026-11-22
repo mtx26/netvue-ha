@@ -1,4 +1,52 @@
 {
+  "triggers": {
+    "object_entered": {
+      "name": "Un objet entre dans une zone",
+      "description": "Se déclenche quand un objet du type choisi entre dans la zone.",
+      "fields": {
+        "entity_id": {
+          "name": "Zone de la caméra"
+        },
+        "category": {
+          "name": "Types d’objets"
+        },
+        "duration": {
+          "name": "Durée minimale",
+          "description": "Saisissez 0 pour déclencher dès l’entrée dans la zone."
+        }
+      }
+    }
+  },
+  "conditions": {
+    "object_present": {
+      "name": "Un objet est présent dans une zone",
+      "description": "Vérifie si un objet du type choisi est actuellement détecté dans la zone.",
+      "fields": {
+        "entity_id": {
+          "name": "Zone de la caméra"
+        },
+        "category": {
+          "name": "Types d’objets"
+        }
+      }
+    }
+  },
+  "selector": {
+    "object_category": {
+      "options": {
+        "all": "Tous les objets",
+        "person": "Personne",
+        "car": "Voiture",
+        "bicycle": "Vélo",
+        "motorcycle": "Moto",
+        "bus": "Bus",
+        "truck": "Camion",
+        "cat": "Chat",
+        "dog": "Chien",
+        "bird": "Oiseau"
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {

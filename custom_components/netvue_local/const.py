@@ -1,4 +1,5 @@
 DOMAIN = "netvue_local"
+EVENT_DETECTION = f"{DOMAIN}_event"
 CONF_HOST = "host"
 CONF_STREAM_URL = "stream_url"
 CONF_STREAM_NAME = "stream_name"

@@ -5,6 +5,13 @@
 Les examens de cette phase ne constituent pas une validation complète de la
 nouvelle architecture. Les modifications Git préexistantes restent en place.
 
+Derniere passe de simplification, le 22 novembre 2026 : six groupes de
+duplications mutualises, etat de suivi IA regroupe dans `Track`, 93 lignes de
+production retirees sans nouvelle classe. Tests HA, IA, cartes et Go reussis
+hors ligne ; avertissements statiques preexistants et limites consignes dans
+la [passe finale du suivi de phase 50](../findings/phase50-refactorisation-exhaustive-suivi.md#passe-de-simplification-du-22-novembre-2026).
+Ce resultat ne cloture pas l'audit exhaustif ni la validation materielle.
+
 ## Périmètre et migration
 
 Les chemins ci-dessous rattachent les sources et tests actifs à un module ;

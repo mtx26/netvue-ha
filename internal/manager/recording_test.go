@@ -21,6 +21,71 @@ import (
 	"time"
 )
 
+func TestRecordingJSONReplacementAndCleanup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".netvue-recordings.json")
+	for _, contents := range []string{`{"cameras":{}}`, `{"cameras":{"camera":{"manual":true}}}`} {
+		if err := writeRecordingJSON(path, []byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != contents {
+			t.Fatalf("saved contents = %q, error %v", data, err)
+		}
+	}
+	blocked := filepath.Join(dir, ".netvue-protected.json")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRecordingJSON(blocked, []byte(`{}`)); err == nil {
+		t.Fatal("replacing a directory must fail")
+	}
+	if info, err := os.Stat(blocked); err != nil || !info.IsDir() {
+		t.Fatalf("failed replacement changed the target: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("temporary files were not removed: %v, error %v", entries, err)
+	}
+}
+
+func TestRecordingEndpointsReportMissingSegmentsAndControlErrors(t *testing.T) {
+	for _, upstreamStatus := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(upstreamStatus), func(t *testing.T) {
+			control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(upstreamStatus)
+				_, _ = io.WriteString(w, `{"segments":[]}`)
+			}))
+			defer control.Close()
+			t.Setenv("NETVUE_RECORDINGS_DIR", t.TempDir())
+			manager, err := newManager(t.Context(), "192.168.10.1", func(context.Context, string, string, string) error {
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager.recordings.controlURL = control.URL
+			manager.cameras["192.168.10.2"] = &cameraSession{Camera: Camera{
+				Host: "192.168.10.2", StreamName: "camera",
+			}}
+			handler := manager.Handler()
+			wantStatus := http.StatusNotFound
+			if upstreamStatus != http.StatusOK {
+				wantStatus = http.StatusBadGateway
+			}
+			for _, endpoint := range []string{"metadata", "download", "thumbnail"} {
+				response := httptest.NewRecorder()
+				path := "/api/v1/cameras/192.168.10.2/recordings/missing/" + endpoint
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+				if response.Code != wantStatus {
+					t.Errorf("%s: status = %d, want %d; body = %s",
+						endpoint, response.Code, wantStatus, response.Body.String())
+				}
+			}
+		})
+	}
+}
+
 func TestRecordingManagerManualContinuousAndList(t *testing.T) {
 	var mode bool
 	var deleted bool

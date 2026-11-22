@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw
 from custom_components.netvue_local import async_setup_entry, async_unload_entry
 from custom_components.netvue_local.bridge_api import (
     BridgeError, ManagedCamera, RecordingStatus, SessionStatus,
-    async_discover_cameras, async_stop_camera,
+    async_discover_cameras, async_set_detection_config, async_set_detection_enabled, async_stop_camera,
 )
 from custom_components.netvue_local.binary_sensor import NetvueCameraUnavailableSensor
 from custom_components.netvue_local.button import NetvueRestartButton
@@ -195,6 +195,41 @@ class RTSPTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HomeAssistantApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_detection_updates_preserve_payloads_and_errors(self):
+        hass = SimpleNamespace()
+        response = unittest.mock.MagicMock()
+        response.status = 200
+        response.json = unittest.mock.AsyncMock(return_value={
+            "enabled": True, "state": "detecting", "detections": [],
+        })
+        session = unittest.mock.MagicMock()
+        session.put.return_value.__aenter__ = unittest.mock.AsyncMock(return_value=response)
+        config = {
+            "enabled": True, "confidence": 0.6, "fps": 3,
+            "confirmation_frames": 4, "zones": {"garden": [0, 0, 1, 1]},
+        }
+        with patch("custom_components.netvue_local.bridge_api.async_get_clientsession",
+                   return_value=session):
+            for path, operation, data in (
+                ("enabled", async_set_detection_enabled, {"enabled": True}),
+                ("config", async_set_detection_config, config),
+            ):
+                with self.subTest(path=path):
+                    response.status = 200
+                    self.assertTrue((await operation(hass, "camera", **data)).enabled)
+                    session.put.assert_called_with(
+                        f"http://127.0.0.1:8766/api/v1/cameras/camera/{path}", json=data,
+                    )
+                    for status, message in ((404, "no matching camera"), (503, "HTTP 503")):
+                        response.status = status
+                        with self.assertRaisesRegex(BridgeError, message):
+                            await operation(hass, "camera", **data)
+                    response.status = 200
+                    response.json.side_effect = ValueError("invalid JSON")
+                    with self.assertRaisesRegex(BridgeError, "invalid detection JSON"):
+                        await operation(hass, "camera", **data)
+                    response.json.side_effect = None
+
     async def test_discovery_api_contract_and_validation(self):
         hass = SimpleNamespace()
         response = unittest.mock.MagicMock()
@@ -1102,7 +1137,7 @@ class ManagerContractTests(unittest.IsolatedAsyncioTestCase):
         configure.assert_awaited_once_with(
             self.hass, self.record["stream_name"], enabled=False, confidence=0.6,
             fps=2, confirmation_frames=4,
-            zones={"garden": [0.1, 0.2, 0.8, 0.9]},
+            zones={"garden": {"name": "garden", "points": [[0.1, 0.2], [0.8, 0.2], [0.8, 0.9], [0.1, 0.9]]}},
         )
         self.assertEqual(result.ai_error, "AI unavailable")
 

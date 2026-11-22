@@ -23,28 +23,20 @@ from homeassistant.helpers.storage import Store
 from .bridge_api import (
     API_URL,
     BridgeError,
-    async_set_detection_config,
     async_get_detection_rules,
     async_set_detection_rules,
-    async_get_detection_status,
     async_stop_camera,
     async_set_global_settings,
     async_set_webrtc_config,
     async_get_global_settings,
 )
 from .const import (
-    CONF_AI_CONFIDENCE,
-    CONF_AI_CONFIRMATION_FRAMES,
-    CONF_AI_ENABLED,
-    CONF_AI_FPS,
-    CONF_AI_ZONES,
     CONF_AI_RULES,
     CONF_NOTIFY_TARGETS,
     CONF_NOTIFY_COOLDOWN,
     CONF_HOST,
     CONF_STREAM_NAME,
     CONF_STREAM_URL,
-    DEFAULT_AI_CONFIDENCE,
     DOMAIN,
     SETTINGS_PANEL_PATH,
     CONF_RETENTION_DAYS,
@@ -60,6 +52,7 @@ from .const import (
 )
 from .coordinator import NetvueCoordinator
 from .rtsp import stream_url_from_name
+from .zones import configured_zones
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -269,52 +262,31 @@ class NetvueRecordingListView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request, entry_id):
-        hass = request.app["hass"]
-        entry = _recording_entry(hass, entry_id)
-        if entry is None:
-            return web.json_response({"error": "camera not found"}, status=404)
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid request"}, status=400)
-        enabled = body.get("enabled")
-        if type(enabled) is not bool:
-            return web.json_response({"error": "invalid request"}, status=400)
-        host = entry.runtime_data.camera.host
-        session = async_get_clientsession(hass)
-        mode = "start" if enabled else "stop"
-        try:
-            async with session.post(
-                f"{API_URL}/cameras/{quote(host, safe='.')}/recording/{mode}",
-                timeout=5,
-            ) as response:
-                data = await response.json()
-                if response.status == 200:
-                    await entry.runtime_data.async_request_refresh()
-                return web.json_response(data, status=response.status)
-        except (ClientError, TimeoutError):
-            return web.json_response(
-                {"error": "recording service unavailable"}, status=502
-            )
+        return await self._set_recording(request, entry_id, continuous=False)
 
     async def put(self, request, entry_id):
+        return await self._set_recording(request, entry_id, continuous=True)
+
+    async def _set_recording(self, request, entry_id, *, continuous: bool):
         hass = request.app["hass"]
         entry = _recording_entry(hass, entry_id)
         if entry is None:
             return web.json_response({"error": "camera not found"}, status=404)
         try:
             body = await request.json()
-        except Exception:
+        except ValueError:
             return web.json_response({"error": "invalid request"}, status=400)
-        enabled = body.get("enabled")
-        if type(enabled) is not bool:
+        if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
             return web.json_response({"error": "invalid request"}, status=400)
+        enabled = body["enabled"]
         host = entry.runtime_data.camera.host
         session = async_get_clientsession(hass)
+        mode = "continuous" if continuous else ("start" if enabled else "stop")
         try:
-            async with session.put(
-                f"{API_URL}/cameras/{quote(host, safe='.')}/recording/continuous",
-                json={"enabled": enabled},
+            async with session.request(
+                "PUT" if continuous else "POST",
+                f"{API_URL}/cameras/{quote(host, safe='.')}/recording/{mode}",
+                json={"enabled": enabled} if continuous else None,
                 timeout=5,
             ) as response:
                 data = await response.json()
@@ -664,6 +636,7 @@ class NetvueDetectionRulesView(HomeAssistantView):
             return web.json_response({"error": str(exc)}, status=502)
         return web.json_response({
             "rules": rules,
+            "zones": configured_zones(entry),
             "notification_targets": entry.options.get(
                 CONF_NOTIFY_TARGETS, entry.data.get(CONF_NOTIFY_TARGETS, [])
             ),
@@ -707,116 +680,6 @@ class NetvueDetectionRulesView(HomeAssistantView):
         })
 
 
-class NetvueDetectionConfigView(HomeAssistantView):
-    url = "/api/netvue_local/detection/{entry_id}"
-    name = "api:netvue_local:detection"
-    requires_auth = True
-
-    @staticmethod
-    def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
-        entry = hass.config_entries.async_get_entry(entry_id)
-        if entry is None or entry.domain != DOMAIN:
-            return None
-        return entry
-
-    async def get(self, request, entry_id):
-        hass = request.app["hass"]
-        entry = self._entry(hass, entry_id)
-        if entry is None:
-            return web.json_response({"error": "camera not found"}, status=404)
-        stream_name = entry.options.get(
-            CONF_STREAM_NAME, entry.data[CONF_STREAM_NAME]
-        )
-        config = {
-            CONF_AI_ENABLED: entry.options.get(
-                CONF_AI_ENABLED, entry.data.get(CONF_AI_ENABLED, True)
-            ),
-            CONF_AI_CONFIDENCE: entry.options.get(
-                CONF_AI_CONFIDENCE, entry.data.get(CONF_AI_CONFIDENCE, DEFAULT_AI_CONFIDENCE)
-            ),
-            CONF_AI_FPS: entry.options.get(
-                CONF_AI_FPS, entry.data.get(CONF_AI_FPS, 3)
-            ),
-            CONF_AI_CONFIRMATION_FRAMES:
-                entry.options.get(
-                    CONF_AI_CONFIRMATION_FRAMES,
-                    entry.data.get(CONF_AI_CONFIRMATION_FRAMES, 3),
-                ),
-            CONF_AI_ZONES: entry.options.get(
-                CONF_AI_ZONES, entry.data.get(CONF_AI_ZONES, {})
-            ),
-        }
-        try:
-            status = await async_get_detection_status(hass, stream_name)
-        except BridgeError:
-            status = None
-        if status is not None:
-            config[CONF_AI_ENABLED] = status.enabled
-        return web.json_response(config)
-
-    async def put(self, request, entry_id):
-        hass = request.app["hass"]
-        entry = self._entry(hass, entry_id)
-        if entry is None:
-            return web.json_response({"error": "camera not found"}, status=404)
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid request"}, status=400)
-        enabled = body.get(CONF_AI_ENABLED)
-        confidence = body.get(CONF_AI_CONFIDENCE)
-        fps = body.get(CONF_AI_FPS)
-        confirmation = body.get(CONF_AI_CONFIRMATION_FRAMES)
-        zones = body.get(CONF_AI_ZONES)
-        if (type(enabled) is not bool
-                or type(confidence) not in (int, float)
-                or not 0.1 <= confidence <= 0.95
-                or type(fps) not in (int, float)
-                or not 1 <= fps <= 10
-                or type(confirmation) is not int
-                or not 1 <= confirmation <= 10
-                or not isinstance(zones, dict)):
-            return web.json_response({"error": "invalid request"}, status=400)
-        for name, rect in zones.items():
-            if (name not in ("entrance", "doorstep", "garden", "driveway")
-                    or not isinstance(rect, list)
-                    or len(rect) != 4
-                    or not all(type(value) in (int, float)
-                               and 0 <= value <= 1 for value in rect)):
-                return web.json_response({"error": "invalid request"}, status=400)
-        stream_name = entry.options.get(
-            CONF_STREAM_NAME, entry.data[CONF_STREAM_NAME]
-        )
-        try:
-            await async_set_detection_config(
-                hass,
-                stream_name,
-                enabled=enabled,
-                confidence=float(confidence),
-                fps=float(fps),
-                confirmation_frames=confirmation,
-                zones=zones,
-            )
-        except BridgeError as exc:
-            return web.json_response({"error": str(exc)}, status=502)
-        options = dict(entry.options)
-        options.update({
-            CONF_AI_ENABLED: enabled,
-            CONF_AI_CONFIDENCE: float(confidence),
-            CONF_AI_FPS: float(fps),
-            CONF_AI_CONFIRMATION_FRAMES: confirmation,
-            CONF_AI_ZONES: zones,
-        })
-        hass.config_entries.async_update_entry(entry, options=options)
-        return web.json_response({
-            CONF_AI_ENABLED: enabled,
-            CONF_AI_CONFIDENCE: float(confidence),
-            CONF_AI_FPS: float(fps),
-            CONF_AI_CONFIRMATION_FRAMES: confirmation,
-            CONF_AI_ZONES: zones,
-        })
-
-
 async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None:
     if hass.data.get(_FRONTEND_MODULE_REGISTERED_KEY):
         return
@@ -840,7 +703,6 @@ async def _async_register_frontend(hass: HomeAssistant, _component: str) -> None
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the Netvue Lovelace card once per Home Assistant instance."""
-    hass.http.register_view(NetvueDetectionConfigView())
     hass.http.register_view(NetvueOverlayView())
     hass.http.register_view(NetvueDetectionRulesView())
     hass.http.register_view(NetvueRecordingListView())
@@ -910,6 +772,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator.live_detection.async_set_updated_data(coordinator.data.detection)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(
+        coordinator.live_detection.async_add_listener(coordinator.async_poll_live_events)
+    )
+    coordinator.async_poll_live_events()
     return True
 
 

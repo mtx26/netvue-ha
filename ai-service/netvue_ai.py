@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
+import re
 import signal
 import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 from collections.abc import Iterator
+from uuid import uuid4
 
 import av
 import cv2
@@ -27,7 +30,8 @@ COCO_NAMES = {
     2: "car", 5: "bus", 7: "truck", 1: "bicycle", 3: "motorcycle",
 }
 TRACKED_CLASSES = set(COCO_NAMES)
-ZONE_NAMES = {"entrance", "doorstep", "garden", "driveway"}
+ZONE_ID_PATTERN = re.compile(r"[a-z0-9_-]{1,64}")
+ZONE_CONFIRMATION_FRAMES = 3
 _LOGGER = logging.getLogger(__name__)
 NMS_IOU_THRESHOLD = 0.45
 EVENT_COOLDOWN_SECONDS = 30
@@ -51,17 +55,49 @@ class Detection:
 
 
 @dataclass
+class ZonePresence:
+    last_seen: float
+    presence_id: str = field(default_factory=lambda: uuid4().hex)
+
+    def expired(self, timestamp: float, observed: bool) -> bool:
+        idle_for = timestamp - self.last_seen
+        return (idle_for > DETECTION_GRACE_PERIOD
+                or (not observed and idle_for >= DETECTION_GRACE_PERIOD))
+
+
+
+@dataclass
 class Track:
     track_id: int
     label: str
     box: tuple[float, float, float, float]
     confidence: float = 0.0
     confirmed_frames: int = 1
-    zone_hits: dict[str, int] | None = None
+    zone_hits: dict[str, int] = field(default_factory=dict)
+    active_zones: dict[str, ZonePresence] = field(default_factory=dict)
+    last_seen_frame: int = 0
 
-    def __post_init__(self) -> None:
-        if self.zone_hits is None:
-            self.zone_hits = {}
+    def update_zones(self, observed_zones: Iterable[str], changed_zones: set[str],
+                     timestamp: float) -> Iterable[str]:
+        for zone_id in changed_zones:
+            self.zone_hits.pop(zone_id, None)
+            self.active_zones.pop(zone_id, None)
+
+        hits = {zone_id: self.zone_hits.get(zone_id, 0) + 1 for zone_id in observed_zones}
+        for zone_id, presence in list(self.active_zones.items()):
+            if presence.expired(timestamp, zone_id in hits):
+                del self.active_zones[zone_id]
+                if zone_id in hits:
+                    hits[zone_id] = 1
+
+        self.zone_hits = hits
+        for zone_id, count in hits.items():
+            presence = self.active_zones.get(zone_id)
+            if presence is not None:
+                presence.last_seen = timestamp
+            elif count >= ZONE_CONFIRMATION_FRAMES:
+                self.active_zones[zone_id] = ZonePresence(timestamp)
+                yield zone_id
 
 
 class EventStore:
@@ -110,11 +146,11 @@ def iou(a: tuple[float, float, float, float], b: tuple[float, float, float, floa
 
 
 class IoUTracker:
-    def __init__(self, confirmation_frames: int = 3) -> None:
+    def __init__(self, confirmation_frames: int = 3, missed_frames: int = 5) -> None:
         self.confirmation_frames = confirmation_frames
+        self.missed_frames = missed_frames
         self.tracks: dict[int, Track] = {}
         self.next_id = 1
-        self.last_seen: dict[int, int] = {}
         self.age = 0
 
     def update(self, detections: Iterable[Detection]) -> list[Track]:
@@ -145,12 +181,12 @@ class IoUTracker:
                 )
                 self.next_id += 1
                 self.tracks[track.track_id] = track
-            self.last_seen[track.track_id] = self.age
+            track.last_seen_frame = self.age
             if track.confirmed_frames >= self.confirmation_frames:
                 matched.append(track)
         for track_id in unmatched_tracks:
-            if self.age - self.last_seen[track_id] > 5:
-                del self.tracks[track_id], self.last_seen[track_id]
+            if self.age - self.tracks[track_id].last_seen_frame > self.missed_frames:
+                del self.tracks[track_id]
         return matched
 
     def visible(self) -> list[Track]:
@@ -245,44 +281,100 @@ class YoloDetector:
         return detections
 
 
-def load_zones() -> dict[str, dict[str, list[float]]]:
-    raw = os.environ.get("NETVUE_AI_ZONES", "{}")
+@dataclass(frozen=True, slots=True)
+class Zone:
+    name: str
+    points: tuple[tuple[float, float], ...]
+
+    @classmethod
+    def from_config(cls, zone_id: str, value: object) -> Zone | None:
+        if isinstance(value, list):
+            if (len(value) != 4 or not all(_coordinate(number) for number in value)
+                    or not (value[0] < value[2] and value[1] < value[3])):
+                return None
+            left, top, right, bottom = value
+            return cls(zone_id, ((left, top), (right, top), (right, bottom), (left, bottom)))
+
+        if not isinstance(value, dict) or not isinstance(name := value.get("name"), str):
+            return None
+        if not name.strip() or len(name.strip()) > 80:
+            return None
+        points = value.get("points")
+        if (not isinstance(points, list) or not 3 <= len(points) <= 32
+                or not all(isinstance(point, list) and len(point) == 2
+                           and all(_coordinate(number) for number in point) for point in points)):
+            return None
+        contour = tuple((x, y) for x, y in points)
+        if len(set(contour)) != len(contour):
+            return None
+        area = sum(x * next_y - next_x * y
+                   for (x, y), (next_x, next_y) in zip(contour, contour[1:] + contour[:1]))
+        if abs(area) < 1e-8:
+            return None
+        return cls(name, contour)
+
+    def to_config(self) -> dict:
+        return {"name": self.name, "points": [list(point) for point in self.points]}
+
+    def contains(self, box: tuple[float, float, float, float],
+                 frame_size: tuple[int, int]) -> bool:
+        height, width = frame_size
+        cx = (box[0] + box[2]) / 2 / width
+        cy = (box[1] + box[3]) / 2 / height
+        inside = False
+        x1, y1 = self.points[-1]
+        for x2, y2 in self.points:
+            cross = (cx - x1) * (y2 - y1) - (cy - y1) * (x2 - x1)
+            if (abs(cross) < 1e-9 and min(x1, x2) <= cx <= max(x1, x2)
+                    and min(y1, y2) <= cy <= max(y1, y2)):
+                return True
+            if (y1 > cy) != (y2 > cy) and cx < x1 + (cy - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+            x1, y1 = x2, y2
+        return inside
+
+
+def _coordinate(value):
+    return type(value) in (int, float) and 0 <= value <= 1
+
+
+def parse_zones(value: object) -> dict[str, Zone] | None:
+    if not isinstance(value, dict) or len(value) > 32:
+        return None
+    zones = {}
+    for zone_id, config in value.items():
+        if not isinstance(zone_id, str) or not ZONE_ID_PATTERN.fullmatch(zone_id):
+            return None
+        zone = Zone.from_config(zone_id, config)
+        if zone is None:
+            return None
+        zones[zone_id] = zone
+    return zones
+
+
+def load_zones() -> dict[str, dict[str, Zone]]:
     try:
-        zones = json.loads(raw)
+        zones = json.loads(os.environ.get("NETVUE_AI_ZONES", "{}"))
     except json.JSONDecodeError:
         return {}
     if not isinstance(zones, dict):
         return {}
-    return {
-        stream: {
-            name: value for name, value in config.items()
-            if name in ZONE_NAMES and isinstance(value, list) and len(value) == 4
-        }
-        for stream, config in zones.items()
-        if isinstance(config, dict)
-    }
-
-
-def point_in_zone(box: tuple[float, float, float, float], rect: list[float],
-                  frame_size: tuple[int, int]) -> bool:
-    height, width = frame_size
-    cx = (box[0] + box[2]) / 2 / width
-    cy = (box[1] + box[3]) / 2 / height
-    x1, y1, x2, y2 = rect
-    return x1 <= cx <= x2 and y1 <= cy <= y2
+    return {stream: parsed for stream, config in zones.items()
+            if (parsed := parse_zones(config)) is not None}
 
 
 class CameraWorker:
-    def __init__(self, stream_name: str, zones: dict[str, list[float]],
+    def __init__(self, stream_name: str, zones: dict[str, Zone],
                  detector: YoloDetector, fps: float, confirmation: int) -> None:
         self.stream_name = stream_name
-        self.zones = zones
+        self._zones = zones
+        self._changed_zones: set[str] = set()
         self.detector = detector
         self.interval = 1.0 / max(1.0, fps)
         self._active_interval = max(self.interval, QUIET_INFERENCE_INTERVAL)
         self._last_detection_at: float | None = None
         self._metadata_has_boxes = False
-        self.tracker = IoUTracker(confirmation)
+        self.tracker = IoUTracker(confirmation, max(5, math.ceil(fps * DETECTION_GRACE_PERIOD)))
         self.events: list[dict] = []
         self.event_cursor = 0
         self.running = True
@@ -292,6 +384,7 @@ class CameraWorker:
             "enabled": True,
             "state": "starting",
             "detections": [],
+            "zone_tracking": True,
             "last_frame_at": None,
             "last_event_at": None,
             "package_states": [],
@@ -323,6 +416,22 @@ class CameraWorker:
             self.status["enabled"] = enabled
         if changed:
             _LOGGER.info("AI %s for %s", "enabled" if enabled else "disabled", self.stream_name)
+
+    def apply_config(self, config: dict) -> None:
+        zones = config["zones"]
+        fps = config["fps"]
+        with self._lock:
+            self._changed_zones.update(
+                zone_id for zone_id, zone in self._zones.items()
+                if zone_id not in zones or zone.points != zones[zone_id].points
+            )
+            self._zones = zones
+            self.interval = 1.0 / fps
+            self._active_interval = max(self.interval, QUIET_INFERENCE_INTERVAL)
+            self.tracker.confirmation_frames = config["confirmation_frames"]
+            self.tracker.missed_frames = max(5, math.ceil(fps * DETECTION_GRACE_PERIOD))
+            self.confidence = config["confidence"]
+        self.set_enabled(config["enabled"])
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -386,14 +495,14 @@ class CameraWorker:
             return start <= now_clock <= end
         return now_clock >= start or now_clock <= end
 
-    def _matching_rules(self, track: Track, zone: str | None, timestamp: float) -> list[dict]:
+    def _matching_rules(self, track: Track, zone_ids: list[str], timestamp: float) -> list[dict]:
         matches = []
         for rule in self.rules:
             if not rule.get("enabled", True):
                 continue
             if rule.get("category") not in ("", "*", track.label):
                 continue
-            if rule.get("zone") and rule.get("zone") != zone:
+            if rule.get("zone") and rule["zone"] not in zone_ids:
                 continue
             confidence = rule.get("confidence")
             if type(confidence) in (int, float) and track.confidence < float(confidence):
@@ -421,8 +530,10 @@ class CameraWorker:
         }
         if self.event_store is not None:
             self.event_store.add(event)
-        self.events.append(event)
-        del self.events[:-1000]
+        with self._lock:
+            self.events.append(event)
+            del self.events[:-1000]
+            self.status["last_event_at"] = time.time()
         return event
 
     def _protect_lifecycle_range(self, start: float, end: float,
@@ -456,15 +567,12 @@ class CameraWorker:
             _LOGGER.warning("Cannot protect AI event for %s: %s", self.stream_name, exc)
 
     def update_package_state(self, visible: Iterable[Track],
-                             timestamp: float, frame_size: tuple[int, int]) -> None:
+                             timestamp: float, memberships: dict[int, list[str]]) -> None:
         packages = [track for track in visible if track.label in ("package", "parcel", "box")]
         seen: set[int] = set()
         for track in packages:
             seen.add(track.track_id)
-            zone = next((
-                name for name, rect in self.zones.items()
-                if point_in_zone(track.box, rect, frame_size)
-            ), None)
+            zone = next(iter(memberships[track.track_id]), None)
             state = self.package_states.get(track.track_id)
             if state is None:
                 state = {
@@ -501,21 +609,18 @@ class CameraWorker:
             self.status["package_states"] = list(self.package_states.values())
 
     def update_lifecycle(self, visible: Iterable[Track],
-                         timestamp: float, frame_size: tuple[int, int]) -> None:
-        height, width = frame_size
-        seen: set[tuple[str, int]] = set()
+                         timestamp: float, memberships: dict[int, list[str]]) -> None:
         for track in visible:
-            zone = next((
-                name for name, rect in self.zones.items()
-                if point_in_zone(track.box, rect, frame_size)
-            ), None)
+            zone_ids = memberships[track.track_id]
+            zone = next(iter(zone_ids), None)
             key = (track.label, track.track_id)
-            seen.add(key)
             active = self.active_lifecycle.get(key)
             if active is None:
-                matches = self._matching_rules(track, zone, timestamp)
+                matches = self._matching_rules(track, zone_ids, timestamp)
                 if track.confirmed_frames < self.tracker.confirmation_frames:
                     continue
+                if matches:
+                    zone = matches[0].get("zone") or zone
                 active = {
                     "start": timestamp, "last_seen": timestamp, "zone": zone,
                     "track": track, "rule": matches[0] if matches else None,
@@ -529,17 +634,16 @@ class CameraWorker:
                 active["last_seen"] = timestamp
                 active["track"] = track
                 if not active["confirmed"]:
-                    matches = self._matching_rules(track, zone, timestamp)
+                    matches = self._matching_rules(track, zone_ids, timestamp)
                     if matches:
                         active["confirmed"] = True
                         active["rule"] = matches[0]
+                        zone = matches[0].get("zone") or zone
                         active["zone"] = zone
                         self._persist_lifecycle_event("event_confirmed", track, zone, timestamp, active["rule"])
 
         grace = max(DETECTION_GRACE_PERIOD, 3.0)
         for key, active in list(self.active_lifecycle.items()):
-            if key in seen and timestamp - active["last_seen"] <= grace:
-                continue
             if timestamp - active["last_seen"] <= grace:
                 continue
             if active["confirmed"]:
@@ -550,15 +654,39 @@ class CameraWorker:
                     self._protect_lifecycle_range(active["start"], timestamp, track, zone, active["rule"])
             del self.active_lifecycle[key]
 
+    def update_zones(self, visible: list[Track], matched: list[Track],
+                     timestamp: float, frame_size: tuple[int, int]
+                     ) -> tuple[dict[int, list[str]], list[tuple[Track, str]]]:
+        with self._lock:
+            zones = self._zones
+            changed = self._changed_zones
+            self._changed_zones = set()
+        matched_ids = {track.track_id for track in matched}
+        memberships = {}
+        transitions = []
+        for track in visible:
+            observed_zones = (
+                (zone_id for zone_id, zone in zones.items() if zone.contains(track.box, frame_size))
+                if track.track_id in matched_ids else ()
+            )
+            transitions.extend(
+                (track, zone_id)
+                for zone_id in track.update_zones(observed_zones, changed, timestamp)
+            )
+            memberships[track.track_id] = sorted(track.active_zones)
+        return memberships, transitions
+
     def emit(self, event_type: str, label: str, confidence: float,
-             track_id: int, zone: str | None = None) -> None:
+             track_id: int, zone: str | None = None, *,
+             zone_ids: list[str] | None = None, presence_id: str | None = None) -> None:
         now = time.time()
-        key = f"{event_type}:{label}:{zone or 'camera'}"
-        if now - self._cooldowns.get(key, 0) < EVENT_COOLDOWN_SECONDS:
-            return
-        self._cooldowns[key] = now
+        if zone_ids is None:
+            key = f"{event_type}:{label}:{zone or 'camera'}"
+            if now - self._cooldowns.get(key, 0) < EVENT_COOLDOWN_SECONDS:
+                return
+            self._cooldowns[key] = now
         event = {
-            "id": f"{int(now * 1000)}-{self.stream_name}-{track_id}",
+            "id": f"{int(now * 1000)}-{self.stream_name}-{track_id}-{uuid4().hex}",
             "timestamp": now,
             "stream_name": self.stream_name,
             "event": event_type,
@@ -567,10 +695,13 @@ class CameraWorker:
             "track_id": track_id,
             "zone": zone,
         }
-        self.events.append(event)
-        if len(self.events) > 200:
-            del self.events[:-200]
+        if zone_ids is not None:
+            event["zone_ids"] = zone_ids
+        if presence_id is not None:
+            event["presence_id"] = presence_id
         with self._lock:
+            self.events.append(event)
+            del self.events[:-1000]
             self.status["last_event_at"] = now
         _LOGGER.info(
             "Detection %s for %s: category=%s confidence=%.2f zone=%s",
@@ -657,7 +788,9 @@ class CameraWorker:
                         _LOGGER.info("Video ready for %s: %dx%d", self.stream_name,
                                      new_size[1], new_size[0])
                         next_id = self.tracker.next_id
-                        self.tracker = IoUTracker(self.tracker.confirmation_frames)
+                        self.tracker = IoUTracker(
+                            self.tracker.confirmation_frames, self.tracker.missed_frames
+                        )
                         self.tracker.next_id = next_id
                         frame_size = new_size
                     inference_started = time.perf_counter()
@@ -670,7 +803,9 @@ class CameraWorker:
                             False, str(exc),
                         )
                         next_id = self.tracker.next_id
-                        self.tracker = IoUTracker(self.tracker.confirmation_frames)
+                        self.tracker = IoUTracker(
+                            self.tracker.confirmation_frames, self.tracker.missed_frames
+                        )
                         self.tracker.next_id = next_id
                         self.persist_metadata(time.time(), frame_size, ())
                         _LOGGER.warning("Inference failed for %s: %s", self.stream_name, exc)
@@ -680,11 +815,20 @@ class CameraWorker:
                     confirmed = self.tracker.update(detections)
                     visible = self.tracker.visible()
                     self._record_inference(now, latency_ms, bool(confirmed))
+                    timestamp = time.time()
+                    memberships, zone_transitions = self.update_zones(
+                        visible, confirmed, now, frame_size
+                    )
                     latest = [
                         {
                             "category": item.label,
                             "confidence": round(item.confidence, 3),
                             "track_id": item.track_id,
+                            "zone_ids": memberships[item.track_id],
+                            "zone_presence_ids": {
+                                zone_id: presence.presence_id
+                                for zone_id, presence in item.active_zones.items()
+                            },
                             "box": {
                                 "x1": round(item.box[0], 2),
                                 "y1": round(item.box[1], 2),
@@ -696,29 +840,23 @@ class CameraWorker:
                         }
                         for item in visible
                     ]
-                    timestamp = time.time()
                     with self._lock:
                         self.status["state"] = "detecting"
                         self.status["detections"] = latest
                         self.status["last_frame_at"] = timestamp
-                    self.persist_metadata(timestamp, frame_size, visible)
-                    self.update_lifecycle(visible, timestamp, frame_size)
-                    self.update_package_state(visible, timestamp, frame_size)
+                    for track, zone_id in zone_transitions:
+                        self.emit(
+                            "zone_entered",
+                            track.label, track.confidence, track.track_id, zone_id,
+                            zone_ids=memberships[track.track_id],
+                            presence_id=track.active_zones[zone_id].presence_id,
+                        )
                     for track in confirmed:
-                        zones_hit = [
-                            name for name, rect in self.zones.items()
-                            if point_in_zone(track.box, rect, frame_size)
-                        ]
-                        if zones_hit:
-                            for zone in zones_hit:
-                                before = track.zone_hits.get(zone, 0)
-                                track.zone_hits[zone] = before + 1
-                                if track.zone_hits[zone] == 3:
-                                    self.emit("zone_entered", track.label, track.confidence,
-                                              track.track_id, zone)
-                        else:
-                            self.emit("object_detected", track.label, track.confidence,
-                                      track.track_id)
+                        if not track.zone_hits:
+                            self.emit("object_detected", track.label, track.confidence, track.track_id)
+                    self.persist_metadata(timestamp, frame_size, visible)
+                    self.update_lifecycle(visible, timestamp, memberships)
+                    self.update_package_state(visible, timestamp, memberships)
             except av.FFmpegError as exc:
                 self._record_error(exc)
                 _LOGGER.warning("Video decoding failed for %s: %s", self.stream_name, exc)
@@ -775,12 +913,23 @@ class AiService:
         except (json.JSONDecodeError, OSError) as exc:
             _LOGGER.error("Cannot load saved AI configuration: %s", exc)
             return {}
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            stream: {**config, "zones": parse_zones(config.get("zones", {})) or {}}
+            for stream, config in data.items() if isinstance(config, dict)
+        }
 
     def save_configs(self) -> None:
         temporary = f"{self.config_path}.tmp"
         with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(self.configs, handle, ensure_ascii=False, sort_keys=True)
+            configs = {
+                stream: {**config, "zones": {
+                    zone_id: zone.to_config() for zone_id, zone in config["zones"].items()
+                }}
+                for stream, config in self.configs.items()
+            }
+            json.dump(configs, handle, ensure_ascii=False, sort_keys=True)
         os.replace(temporary, self.config_path)
 
     def _load_rules(self) -> dict[str, list[dict]]:
@@ -838,14 +987,7 @@ class AiService:
                 self.workers[name] = worker
                 config = self.configs.get(name)
                 if config:
-                    worker.set_enabled(config["enabled"])
-                    worker.zones = config["zones"]
-                    worker.interval = 1.0 / config["fps"]
-                    worker._active_interval = max(
-                        worker.interval, QUIET_INFERENCE_INTERVAL
-                    )
-                    worker.tracker.confirmation_frames = config["confirmation_frames"]
-                    worker.confidence = config["confidence"]
+                    worker.apply_config(config)
                 worker.start()
             for name in set(self.workers) - names:
                 self.workers[name].stop()
@@ -916,14 +1058,9 @@ async def main() -> None:
                 or not 1 <= confirmation <= 10
                 or not isinstance(zones, dict)):
             return web.json_response({"error": "invalid request"}, status=400)
-        clean_zones = {}
-        for zone_name, rect in zones.items():
-            if (zone_name not in ZONE_NAMES or not isinstance(rect, list)
-                    or len(rect) != 4
-                    or not all(type(value) in (int, float)
-                               and 0 <= value <= 1 for value in rect)):
-                return web.json_response({"error": "invalid request"}, status=400)
-            clean_zones[zone_name] = rect
+        clean_zones = parse_zones(zones)
+        if clean_zones is None:
+            return web.json_response({"error": "invalid zones"}, status=400)
         config = {
             "enabled": enabled,
             "confidence": float(confidence),
@@ -937,14 +1074,7 @@ async def main() -> None:
             service.save_configs()
             worker = service.workers.get(name)
             if worker is not None:
-                worker.set_enabled(enabled)
-                worker.zones = clean_zones
-                worker.interval = 1.0 / float(fps)
-                worker._active_interval = max(
-                    worker.interval, QUIET_INFERENCE_INTERVAL
-                )
-                worker.tracker.confirmation_frames = confirmation
-                worker.confidence = float(confidence)
+                worker.apply_config(config)
         if changed:
             _LOGGER.info(
                 "AI settings updated for %s: enabled=%s confidence=%.2f fps=%.1f zones=%d",
@@ -963,16 +1093,17 @@ async def main() -> None:
         with service._lock:
             worker = service.workers.get(name)
         since = request.query.get("since")
-        events = list(service.event_store.events)
+        events = {
+            event["id"]: event for event in service.event_store.events
+            if event.get("stream_name") == name and isinstance(event.get("id"), str)
+        }
         if worker is not None:
-            events = [event for event in events if event.get("stream_name") == name]
-            events.extend([
-                event for event in worker.events
-                if event not in events
-            ])
+            with worker._lock:
+                events.update((event["id"], event) for event in worker.events)
         if since:
-            events = [event for event in events if event["id"] > since]
-        return web.json_response({"events": events[-200:]})
+            events = {event_id: event for event_id, event in events.items() if event_id > since}
+        ordered = sorted(events.values(), key=lambda event: (event["timestamp"], event["id"]))
+        return web.json_response({"events": ordered[-1000:]})
 
     async def get_rules(request):
         name = request.match_info["stream_name"]
@@ -990,8 +1121,7 @@ async def main() -> None:
         if not isinstance(rules, list) or len(rules) > 100:
             return web.json_response({"error": "invalid rules"}, status=400)
         clean = []
-        supported = {0, 14, 15, 16, 2, 5, 7, 1, 3}
-        category_names = {value for key, value in COCO_NAMES.items() if key in supported}
+        category_names = ("*", *COCO_NAMES.values())
         for rule in rules:
             if not isinstance(rule, dict):
                 return web.json_response({"error": "invalid rule"}, status=400)
@@ -999,11 +1129,13 @@ async def main() -> None:
             zone = rule.get("zone")
             enabled = rule.get("enabled")
             days = rule.get("days")
-            if (category not in ("*", *category_names)
+            if (category not in category_names
                     or type(enabled) is not bool
                     or not isinstance(days, list)
                     or not all(type(day) is int and 0 <= day <= 6 for day in days)
-                    or zone not in (None, "", *ZONE_NAMES)):
+                    or (zone is not None and (
+                        not isinstance(zone, str) or (zone and not ZONE_ID_PATTERN.fullmatch(zone))
+                    ))):
                 return web.json_response({"error": "invalid rule"}, status=400)
             start = str(rule.get("start", "00:00"))
             end = str(rule.get("end", "23:59"))

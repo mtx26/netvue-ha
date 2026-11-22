@@ -1,0 +1,4 @@
+{
+  "triggers": {"object_entered": {"trigger": "mdi:camera-marker"}},
+  "conditions": {"object_present": {"condition": "mdi:camera-marker"}}
+}

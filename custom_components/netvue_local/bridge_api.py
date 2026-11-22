@@ -112,6 +112,7 @@ class DetectionStatus(NamedTuple):
     last_frame_at: float | None
     last_event_at: float | None
     metrics: dict[str, int | float | str | None] | None = None
+    zone_tracking: bool = False
 
 
 AI_API_URL = "http://127.0.0.1:8766/api/v1"
@@ -148,6 +149,7 @@ def _detection_status(data) -> DetectionStatus:
         last_frame if type(last_frame) in (int, float) else None,
         last_event if type(last_event) in (int, float) else None,
         metrics,
+        data.get("zone_tracking") is True,
     )
 
 
@@ -211,24 +213,7 @@ async def async_set_detection_rules(
 async def async_set_detection_enabled(
     hass: HomeAssistant, stream_name: str, enabled: bool
 ) -> DetectionStatus:
-    session = async_get_clientsession(hass)
-    try:
-        async with asyncio.timeout(REQUEST_TIMEOUT):
-            async with session.put(
-                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/enabled",
-                json={"enabled": enabled},
-            ) as response:
-                if response.status not in (200, 404):
-                    raise BridgeError(f"AI service returned HTTP {response.status}")
-                try:
-                    data = await response.json()
-                except (ValueError, ClientError) as exc:
-                    raise BridgeError("AI service returned invalid detection JSON") from exc
-                if response.status == 404:
-                    raise BridgeError("AI service has no matching camera")
-                return _detection_status(data)
-    except (ClientError, TimeoutError) as exc:
-        raise BridgeError("Cannot reach the local AI service") from exc
+    return await _async_update_detection(hass, stream_name, "enabled", {"enabled": enabled})
 
 
 async def async_set_detection_config(
@@ -239,20 +224,25 @@ async def async_set_detection_config(
     confidence: float,
     fps: float,
     confirmation_frames: int,
-    zones: dict[str, list[float]],
+    zones: dict[str, list[float] | dict],
+) -> DetectionStatus:
+    return await _async_update_detection(hass, stream_name, "config", {
+        "enabled": enabled,
+        "confidence": confidence,
+        "fps": fps,
+        "confirmation_frames": confirmation_frames,
+        "zones": zones,
+    })
+
+
+async def _async_update_detection(
+    hass: HomeAssistant, stream_name: str, path: str, data: dict
 ) -> DetectionStatus:
     session = async_get_clientsession(hass)
     try:
         async with asyncio.timeout(REQUEST_TIMEOUT):
             async with session.put(
-                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/config",
-                json={
-                    "enabled": enabled,
-                    "confidence": confidence,
-                    "fps": fps,
-                    "confirmation_frames": confirmation_frames,
-                    "zones": zones,
-                },
+                f"{AI_API_URL}/cameras/{quote(stream_name, safe='_')}/{path}", json=data,
             ) as response:
                 if response.status not in (200, 404):
                     raise BridgeError(f"AI service returned HTTP {response.status}")
@@ -469,50 +459,26 @@ class ManagedCamera:
                 raise BridgeError("Cannot reach the local bridge manager") from exc
 
     async def async_recording_status(self) -> RecordingStatus:
-        session = async_get_clientsession(self.hass)
-        try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.get(
-                    f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording"
-                ) as response:
-                    if response.status == 404:
-                        return RecordingStatus(False, False, False)
-                    if response.status != 200:
-                        raise BridgeError(f"Bridge returned HTTP {response.status}")
-                    try:
-                        data = await response.json()
-                    except (ValueError, ClientError) as exc:
-                        raise BridgeError("Bridge returned invalid recording JSON") from exc
-                    return _recording_status(data)
-        except (ClientError, TimeoutError) as exc:
-            raise BridgeError("Cannot reach the local bridge manager") from exc
+        return await self._async_recording_request("GET")
 
     async def async_set_recording(self, enabled: bool) -> RecordingStatus:
-        session = async_get_clientsession(self.hass)
-        try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.post(
-                    f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording/"
-                    + ("start" if enabled else "stop")
-                ) as response:
-                    if response.status != 200:
-                        raise BridgeError(f"Bridge returned HTTP {response.status}")
-                    try:
-                        data = await response.json()
-                    except (ValueError, ClientError) as exc:
-                        raise BridgeError("Bridge returned invalid recording JSON") from exc
-                    return _recording_status(data)
-        except (ClientError, TimeoutError) as exc:
-            raise BridgeError("Cannot reach the local bridge manager") from exc
+        return await self._async_recording_request("POST", "/start" if enabled else "/stop")
 
     async def async_set_continuous_recording(self, enabled: bool) -> RecordingStatus:
+        return await self._async_recording_request("PUT", "/continuous", {"enabled": enabled})
+
+    async def _async_recording_request(
+        self, method: str, path: str = "", data: dict | None = None
+    ) -> RecordingStatus:
         session = async_get_clientsession(self.hass)
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.put(
-                    f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording/continuous",
-                    json={"enabled": enabled},
+                async with session.request(
+                    method, f"{API_URL}/cameras/{quote(self.host, safe='.')}/recording{path}",
+                    json=data,
                 ) as response:
+                    if method == "GET" and response.status == 404:
+                        return RecordingStatus(False, False, False)
                     if response.status != 200:
                         raise BridgeError(f"Bridge returned HTTP {response.status}")
                     try:

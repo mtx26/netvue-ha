@@ -1,5 +1,6 @@
 """Monitor RTSP availability without contacting the camera."""
 
+import asyncio
 from collections import deque
 from datetime import timedelta
 import logging
@@ -7,7 +8,7 @@ import time
 from typing import NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.storage import Store
@@ -28,11 +29,12 @@ from .bridge_api import (
 )
 from .const import (
     CONF_AI_CONFIDENCE, CONF_AI_CONFIRMATION_FRAMES, CONF_AI_ENABLED,
-    CONF_AI_FPS, CONF_AI_ZONES, CONF_NOTIFY_COOLDOWN, CONF_NOTIFY_TARGETS,
+    CONF_AI_FPS, CONF_NOTIFY_COOLDOWN, CONF_NOTIFY_TARGETS,
     CONF_STREAM_NAME, CONF_STREAM_URL,
-    DEFAULT_AI_CONFIDENCE, DOMAIN, UPDATE_INTERVAL,
+    DEFAULT_AI_CONFIDENCE, DOMAIN, EVENT_DETECTION, UPDATE_INTERVAL,
 )
 from .rtsp import async_probe_stream
+from .zones import configured_zones, fresh_zone_frame
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,9 +58,34 @@ class NetvueLiveDetectionCoordinator(DataUpdateCoordinator[DetectionStatus]):
 
     async def _async_update_data(self) -> DetectionStatus:
         try:
-            return await async_get_detection_status(self.hass, self.stream_name)
+            status = await async_get_detection_status(self.hass, self.stream_name)
         except BridgeError as exc:
             raise UpdateFailed(str(exc)) from exc
+        if (status.zone_tracking and status.enabled and status.state == "detecting"
+                and not fresh_zone_frame(status)):
+            raise UpdateFailed("No recent AI detection frame")
+        return status
+
+    @property
+    def zone_detection_available(self) -> bool:
+        status = self.data
+        return (self.last_update_success and status is not None and status.enabled
+                and status.state == "detecting" and status.zone_tracking and fresh_zone_frame(status))
+
+    def has_detection_in_zone(
+        self, zone_id: str, categories: frozenset[str] | None = None
+    ) -> bool:
+        status = self.data
+        if status is None or not self.zone_detection_available:
+            return False
+        for detection in status.detections:
+            zone_ids = detection.get("zone_ids")
+            if not isinstance(zone_ids, list) or zone_id not in zone_ids:
+                continue
+            category = detection.get("category")
+            if categories is None or (isinstance(category, str) and category in categories):
+                return True
+        return False
 
 
 class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
@@ -76,15 +103,39 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
         self._event_history: deque[dict] = deque(maxlen=1000)
         self._event_store = Store(hass, 1, f"{DOMAIN}_events_{entry.entry_id}")
         self._last_notification_by_key: dict[str, float] = {}
+        self._last_polled_event_at: float | None = None
+        self._event_task: asyncio.Task | None = None
+
+    @callback
+    def async_poll_live_events(self) -> None:
+        detection = self.live_detection.data
+        if (detection is None or detection.last_event_at is None
+                or detection.last_event_at == self._last_polled_event_at
+                or (self._event_task is not None and not self._event_task.done())):
+            return
+        self._event_task = self._entry.async_create_task(
+            self.hass, self._async_fire_new_detection_events(detection), "netvue detection events"
+        )
 
     async def async_load_event_history(self) -> None:
         stored = await self._event_store.async_load()
-        if not isinstance(stored, list):
-            return
-        for event in stored[-1000:]:
-            if isinstance(event, dict) and isinstance(event.get("id"), str):
-                self._event_history.append(event)
-                self._last_detection_event_ids.append(event["id"])
+        if isinstance(stored, dict):
+            history = stored.get("history")
+            event_ids = stored.get("event_ids")
+        else:
+            history = stored
+            event_ids = None
+        if isinstance(history, list):
+            self._event_history.extend(
+                event for event in history[-1000:]
+                if isinstance(event, dict) and isinstance(event.get("id"), str)
+            )
+        if isinstance(event_ids, list):
+            self._last_detection_event_ids.extend(
+                event_id for event_id in event_ids[-1000:] if isinstance(event_id, str)
+            )
+        else:
+            self._last_detection_event_ids.extend(event["id"] for event in self._event_history)
 
     @property
     def event_history(self) -> list[dict]:
@@ -162,16 +213,12 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
                         CONF_AI_CONFIRMATION_FRAMES,
                         self._entry.data.get(CONF_AI_CONFIRMATION_FRAMES, 3),
                     ),
-                    zones=self._entry.options.get(
-                        CONF_AI_ZONES, self._entry.data.get(CONF_AI_ZONES, {})
-                    ),
+                    zones=configured_zones(self._entry),
                 )
             detection = await async_get_detection_status(self.hass, stream_name)
         except (BridgeError, KeyError) as exc:
             ai_error = str(exc)
             _LOGGER.debug("Unable to read local AI detection status: %s", exc)
-        if detection is not None:
-            await self._async_fire_new_detection_events(detection)
         return CameraData(
             session,
             await async_probe_stream(self.url),
@@ -194,16 +241,24 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
         except BridgeError as exc:
             _LOGGER.debug("Unable to read local AI events: %s", exc)
             return
-        changed = False
+        new_events = []
         for event in events:
             event_id = event.get("id") if isinstance(event, dict) else None
             if not isinstance(event_id, str) or event_id in self._last_detection_event_ids:
                 continue
             self._last_detection_event_ids.append(event_id)
-            self._event_history.append(event)
-            changed = True
+            new_events.append(event)
+            if event.get("event") != "zone_dwell":
+                self._event_history.append(event)
+        if new_events:
+            await self._event_store.async_save({
+                "history": list(self._event_history),
+                "event_ids": list(self._last_detection_event_ids),
+            })
+        self._last_polled_event_at = detection.last_event_at
+        for event in new_events:
             self.hass.bus.async_fire(
-                f"{DOMAIN}_event",
+                EVENT_DETECTION,
                 {
                     **event,
                     "entry_id": self._entry.entry_id,
@@ -212,8 +267,6 @@ class NetvueCoordinator(DataUpdateCoordinator[CameraData]):
                 },
             )
             await self._async_send_detection_notification(event)
-        if changed:
-            await self._event_store.async_save(list(self._event_history))
 
     async def _async_send_detection_notification(self, event: dict) -> None:
         if event.get("event") not in ("event_confirmed", "package_deposited", "package_disappeared"):

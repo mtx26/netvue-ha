@@ -1,7 +1,5 @@
 """Configuration for managed camera publishers."""
 
-import json
-
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -18,6 +16,7 @@ from .const import (
     CONF_TURN_KEY_ID, CONF_TURN_API_TOKEN, CONF_TURN_CLEAR_TOKEN,
     GLOBAL_SETTINGS_DEFAULTS, OVERLAY_DEFAULTS, OVERLAY_OPTIONS, SETTINGS_PANEL_PATH,
 )
+from .zones import async_update_detection_options, configured_zones, parse_zones
 from .rtsp import (
     stream_name_for_host, stream_url_from_name, validate_host,
 )
@@ -39,22 +38,23 @@ def _duplicate(hass, host: str, url: str, exclude: str | None = None) -> bool:
     return False
 
 
-def _parse_ai_zones(value):
-    """Return validated detection zones, or None when the input is invalid."""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(value, dict) or not all(
-        name in ("entrance", "doorstep", "garden", "driveway")
-        and isinstance(rect, list)
-        and len(rect) == 4
-        and all(type(number) in (int, float) and 0 <= number <= 1 for number in rect)
-        for name, rect in value.items()
-    ):
-        return None
-    return value
+def _detection_fields(defaults: dict | None = None) -> dict:
+    if defaults is None:
+        defaults = {
+            CONF_AI_ENABLED: True,
+            CONF_AI_CONFIDENCE: DEFAULT_AI_CONFIDENCE,
+            CONF_AI_FPS: 3,
+            CONF_AI_CONFIRMATION_FRAMES: 3,
+        }
+    return {
+        vol.Required(CONF_AI_ENABLED, default=defaults[CONF_AI_ENABLED]): bool,
+        vol.Required(CONF_AI_CONFIDENCE, default=defaults[CONF_AI_CONFIDENCE]):
+            vol.All(vol.Coerce(float), vol.Range(min=0.1, max=0.95)),
+        vol.Required(CONF_AI_FPS, default=defaults[CONF_AI_FPS]):
+            vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
+        vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=defaults[CONF_AI_CONFIRMATION_FRAMES]):
+            vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
+    }
 
 
 class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -105,13 +105,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
                 vol.Optional(CONF_HOST): vol.In(self._discovered_hosts),
                 vol.Required("manual", default=False): bool,
-                vol.Required(CONF_AI_ENABLED, default=True): bool,
-                vol.Required(CONF_AI_CONFIDENCE, default=DEFAULT_AI_CONFIDENCE):
-                    vol.All(vol.Coerce(float), vol.Range(min=0.1, max=0.95)),
-                vol.Required(CONF_AI_FPS, default=3):
-                    vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=3):
-                    vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
+                **_detection_fields(),
                 vol.Required(CONF_AI_ZONES, default={}): ObjectSelector(),
             }), errors=errors,
         )
@@ -128,7 +122,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return None, {"base": "invalid_input"}
         if _duplicate(self.hass, host, url):
             return None, {"base": "already_configured"}
-        ai_zones = _parse_ai_zones(user_input.get(CONF_AI_ZONES, "{}"))
+        ai_zones = parse_zones(user_input.get(CONF_AI_ZONES, "{}"))
         if ai_zones is None:
             return None, {"base": "invalid_ai_zones"}
         return self.async_create_entry(
@@ -158,13 +152,7 @@ class NetvueConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({
                 vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
                 vol.Required(CONF_HOST, default=""): str,
-                vol.Required(CONF_AI_ENABLED, default=True): bool,
-                vol.Required(CONF_AI_CONFIDENCE, default=DEFAULT_AI_CONFIDENCE):
-                    vol.All(vol.Coerce(float), vol.Range(min=0.1, max=0.95)),
-                vol.Required(CONF_AI_FPS, default=3):
-                    vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_CONFIRMATION_FRAMES, default=3):
-                    vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
+                **_detection_fields(),
                 vol.Required(CONF_AI_ZONES, default={}): ObjectSelector(),
             }), errors=errors,
         )
@@ -241,31 +229,26 @@ class NetvueOptionsFlow(config_entries.OptionsFlowWithReload):
                 return self._save(values)
         return self.async_show_form(
             step_id="detection",
-            data_schema=vol.Schema({
-                vol.Required(CONF_AI_ENABLED, default=defaults[CONF_AI_ENABLED]): bool,
-                vol.Required(CONF_AI_CONFIDENCE, default=defaults[CONF_AI_CONFIDENCE]):
-                    vol.All(vol.Coerce(float), vol.Range(min=0.1, max=0.95)),
-                vol.Required(CONF_AI_FPS, default=defaults[CONF_AI_FPS]):
-                    vol.All(vol.Coerce(float), vol.Range(min=1, max=10)),
-                vol.Required(CONF_AI_CONFIRMATION_FRAMES,
-                             default=defaults[CONF_AI_CONFIRMATION_FRAMES]):
-                    vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
-            }),
+            data_schema=vol.Schema(_detection_fields(defaults)),
             errors=errors,
         )
 
     async def async_step_zones(self, user_input=None):
         errors = {}
         if user_input is not None:
-            zones = _parse_ai_zones(user_input.get(CONF_AI_ZONES, {}))
+            zones = parse_zones(user_input.get(CONF_AI_ZONES, {}))
             if zones is None:
                 errors["base"] = "invalid_ai_zones"
             else:
-                return self._save({CONF_AI_ZONES: zones})
+                entry = self.config_entry
+                options = {**entry.options, CONF_AI_ZONES: zones}
+                self.automatic_reload = False
+                await async_update_detection_options(self.hass, entry, options)
+                return self.async_create_entry(title="", data=options)
         return self.async_show_form(
             step_id="zones",
             data_schema=vol.Schema({
-                vol.Required(CONF_AI_ZONES, default=self._option(CONF_AI_ZONES, {})):
+                vol.Required(CONF_AI_ZONES, default=configured_zones(self.config_entry)):
                     ObjectSelector(),
             }),
             errors=errors,

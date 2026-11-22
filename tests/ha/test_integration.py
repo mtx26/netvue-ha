@@ -7,6 +7,7 @@ import asyncio
 import json
 from io import BytesIO
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -23,6 +24,8 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers import condition, trigger
+from homeassistant.setup import async_setup_component
 
 import custom_components.netvue_local as netvue_local
 from custom_components.netvue_local import camera as camera_platform
@@ -113,7 +116,7 @@ class ConfigFlowTests(HassTestCase):
         self.assertEqual(entry.data["ai_fps"], 5)
         self.assertEqual(entry.data["ai_confirmation_frames"], 4)
         self.assertEqual(entry.data["ai_zones"], {
-            "garden": [0.1, 0.2, 0.8, 0.9],
+            "garden": {"name": "garden", "points": [[0.1, 0.2], [0.8, 0.2], [0.8, 0.9], [0.1, 0.9]]},
         })
 
     async def test_manual_flow_rejects_invalid_input_without_touching_bridge(self):
@@ -382,7 +385,9 @@ class OptionsFlowTests(HassTestCase):
         self.assertEqual(entry.options["ai_confidence"], 0.65)
         self.assertEqual(entry.options["ai_fps"], 5)
         self.assertEqual(entry.options["ai_confirmation_frames"], 4)
-        self.assertEqual(entry.options["ai_zones"], zones)
+        self.assertEqual(entry.options["ai_zones"], {
+            "garden": {"name": "garden", "points": [[0.1, 0.2], [0.8, 0.2], [0.8, 0.9], [0.1, 0.9]]},
+        })
 
     async def test_host_change_preserves_ai_options_when_service_is_unavailable(self):
         entry = await self.create_entry()
@@ -455,6 +460,146 @@ class OptionsFlowTests(HassTestCase):
 
 
 class EntityTests(HassTestCase):
+    async def test_zone_automation_triggers_for_car_only_when_person_is_present(self):
+        entry = await self.create_entry(name="Garage")
+        zones = {
+            "allee": {"name": "Allée voiture", "points": [[0, 0], [1, 0], [1, 1]]},
+            "portail": {"name": "Devant le portail", "points": [[0, 0], [1, 1], [0, 1]]},
+        }
+
+        async def save_zones(zones):
+            options = self.hass.config_entries.options
+            flow = await options.async_init(entry.entry_id)
+            await options.async_configure(flow["flow_id"], {"next_step_id": "zones"})
+            result = await options.async_configure(flow["flow_id"], {"ai_zones": zones})
+            self.assertEqual(result["type"], "create_entry")
+            await self.hass.async_block_till_done()
+
+        await save_zones(zones)
+        coordinator = entry.runtime_data
+        alley = self.entity_id(entry, "binary_sensor", "zone_allee")
+        gate = self.entity_id(entry, "binary_sensor", "zone_portail")
+        captured = []
+        self.hass.bus.async_listen("netvue_test_action", lambda event: captured.append(event.data))
+        automation = {
+            "alias": "Cars at the gate",
+            "triggers": [{"trigger": "netvue_local.object_entered",
+                          "options": {"entity_id": alley, "category": "car", "duration": "5"}}],
+            "conditions": [{"condition": "netvue_local.object_present",
+                            "options": {"entity_id": gate, "category": "person"}}],
+            "actions": [{"event": "netvue_test_action"}],
+        }
+        multi_captured = []
+        self.hass.bus.async_listen("netvue_test_multi", lambda event: multi_captured.append(event.data))
+        multi_automations = [
+            {
+                "alias": alias,
+                "triggers": [{"trigger": "netvue_local.object_entered",
+                              "options": {"entity_id": alley, "category": enters}}],
+                "conditions": [{"condition": "netvue_local.object_present",
+                                "options": {"entity_id": gate, "category": present}}],
+                "actions": [{"event": "netvue_test_multi",
+                             "event_data": {"category": "{{ trigger.category }}"}}],
+            }
+            for alias, enters, present in (
+                ("Selected vehicles", ["car", "truck"], ["all"]),
+                ("Any object", ["all"], ["person", "dog"]),
+            )
+        ]
+        self.assertTrue(await async_setup_component(
+            self.hass, "automation", {"automation": [automation, *multi_automations]}
+        ))
+        await self.hass.async_block_till_done()
+        descriptors = await trigger.async_get_all_descriptions(self.hass)
+        fields = descriptors["netvue_local.object_entered"]["fields"]
+        self.assertEqual(fields["duration"]["default"], 0)
+        self.assertTrue(fields["category"]["selector"]["select"]["multiple"])
+        descriptors = await condition.async_get_all_descriptions(self.hass)
+        self.assertIn("netvue_local.object_present", descriptors)
+
+        car = {"track_id": 1, "category": "car", "zone_ids": ["allee", "portail"]}
+        person = {"track_id": 2, "category": "person", "zone_ids": ["portail"]}
+        events = []
+        timers = []
+
+        def schedule(_hass, delay, check):
+            self.assertGreater(delay, 0)
+            timers.append(check)
+            return lambda: None
+        with (
+            patch("custom_components.netvue_local.coordinator.async_get_detection_status",
+                  new_callable=AsyncMock) as get_status,
+            patch("custom_components.netvue_local.coordinator.async_get_detection_events",
+                  new=AsyncMock(side_effect=lambda *_: list(events))),
+            patch("custom_components.netvue_local.trigger.async_call_later", side_effect=schedule),
+        ):
+            async def update_status(detections, now, event_at):
+                get_status.return_value = DetectionStatus(
+                    True, "detecting", detections, now, event_at, zone_tracking=True,
+                )
+                await entry.runtime_data.live_detection.async_refresh()
+                await self.hass.async_block_till_done()
+
+            async def publish(detections, *, zone="allee", category="car", age=0):
+                now = time.time() - age
+                presence_id = str(len(events))
+                events.append({
+                    "id": presence_id, "timestamp": now, "event": "zone_entered",
+                    "zone": zone, "category": category, "zone_ids": [zone],
+                    "presence_id": presence_id,
+                })
+                detections = [
+                    {**item, "zone_presence_ids": {zone: presence_id}}
+                    if item["category"] == category else item
+                    for item in detections
+                ]
+                await update_status(detections, now, now)
+
+            async def run_timers():
+                for timer in timers:
+                    timer(None)
+                timers.clear()
+                await self.hass.async_block_till_done()
+
+            await publish([car])
+            await run_timers()
+            self.assertEqual(captured, [])
+            await publish([car, person], zone="portail", category="person")
+            self.assertEqual(captured, [])
+            await publish([car, person])
+            self.assertEqual(captured, [])
+            await publish([car, person])
+            self.assertEqual(len(timers), 2)
+            await run_timers()
+            self.assertEqual(len(captured), 1)
+            await publish([car, person], age=60)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(self.hass.states.get(gate).state, "unavailable")
+
+            zones = {**zones, "portail": {**zones["portail"], "name": "Grand portail"}}
+            await save_zones(zones)
+            self.assertIs(entry.runtime_data, coordinator)
+            self.assertEqual(self.entity_id(entry, "binary_sensor", "zone_portail"), gate)
+            self.assertIn("Grand portail", self.hass.states.get(gate).name)
+            await publish([car, person])
+            await run_timers()
+            self.assertEqual(len(captured), 2)
+            dog = {"track_id": 3, "category": "dog", "zone_ids": ["portail"]}
+            truck = {"track_id": 4, "category": "truck", "zone_ids": ["allee"]}
+            bird = {"track_id": 5, "category": "bird", "zone_ids": ["allee"]}
+            multi_captured.clear()
+            await publish([truck], category="truck")
+            self.assertEqual(multi_captured, [])
+            await publish([truck, person], category="truck")
+            await publish([bird, dog], category="bird")
+            self.assertCountEqual(multi_captured, [
+                {"category": "truck"}, {"category": "truck"}, {"category": "bird"},
+            ])
+            await save_zones({"allee": zones["allee"]})
+            self.assertIsNone(self.hass.states.get(gate))
+            await publish([car, person])
+            self.assertEqual(len(captured), 2)
+
     async def test_detection_metrics_and_event_identity_are_exposed(self):
         metrics = {
             "inference_latency_ms": 32.5,

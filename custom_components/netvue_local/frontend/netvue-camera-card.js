@@ -882,7 +882,12 @@ export class NetvueCameraCard extends HTMLElement {
       this._drawDetections([]);
       return;
     }
-    this._drawDetections(attributes.detections.slice(0, 12));
+    this._drawDetections(attributes.detections.slice(0, 12).map((detection) => ({
+      ...detection,
+      zoneNames: Array.isArray(detection.zone_ids) ? detection.zone_ids
+        .map((id) => attributes.zone_names?.[id])
+        .filter((name) => typeof name === "string") : [],
+    })));
   }
 
   _fitDetectionOverlay() {
@@ -930,7 +935,7 @@ export class NetvueCameraCard extends HTMLElement {
         text.setAttribute("x", String(Math.max(0, box.x1)));
         text.setAttribute("y", String(Math.max(0, box.y1 - 4)));
         text.setAttribute("class", "detection-label");
-        text.textContent = `${label}${score}`;
+        text.textContent = [`${label}${score}`, ...(detection.zoneNames || [])].join(" · ");
         this._detectionOverlay.appendChild(text);
       }
     }

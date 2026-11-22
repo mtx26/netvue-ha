@@ -14,7 +14,7 @@ from homeassistant.components.media_source import (
 )
 
 import custom_components.netvue_local as netvue_local
-from custom_components.netvue_local.bridge_api import DetectionStatus
+from custom_components.netvue_local.bridge_api import BridgeError, DetectionStatus, RecordingStatus
 from custom_components.netvue_local.coordinator import NetvueCoordinator
 from harness import HOST, HassTestCase
 
@@ -203,11 +203,69 @@ class MediaSourceTests(HassTestCase):
 
     async def test_card_recording_action_refreshes_the_camera_state(self):
         entry = await self.create_entry()
-        request = SimpleNamespace(app={"hass": self.hass}, json=AsyncMock(return_value={"enabled": True}))
+        view = netvue_local.NetvueRecordingListView()
+        for method in (view.post, view.put):
+            for enabled in (True, False):
+                with self.subTest(method=method.__name__, enabled=enabled):
+                    request = SimpleNamespace(
+                        app={"hass": self.hass}, json=AsyncMock(return_value={"enabled": enabled}),
+                    )
+                    with (
+                        patch.object(netvue_local, "API_URL", self.bridge.url),
+                        patch.object(entry.runtime_data, "async_request_refresh", new_callable=AsyncMock) as refresh,
+                    ):
+                        response = await method(request, entry.entry_id)
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(self.bridge.requests[-1], (
+                        "PUT" if method == view.put else "POST",
+                        f"/api/v1/cameras/{HOST}/recording/"
+                        + ("continuous" if method == view.put else "start" if enabled else "stop"),
+                    ))
+                    refresh.assert_awaited_once()
+
+    async def test_recording_actions_reject_invalid_bodies_without_contacting_bridge(self):
+        entry = await self.create_entry()
+        self.bridge.requests.clear()
+        view = netvue_local.NetvueRecordingListView()
+        for method in (view.post, view.put):
+            for body in (None, [], {}, {"enabled": 1}, {"enabled": "true"}):
+                with self.subTest(method=method.__name__, body=body):
+                    request = SimpleNamespace(
+                        app={"hass": self.hass}, json=AsyncMock(return_value=body),
+                    )
+                    response = await method(request, entry.entry_id)
+                    self.assertEqual(response.status, 400)
+            request.json.side_effect = ValueError("invalid JSON")
+            self.assertEqual((await method(request, entry.entry_id)).status, 400)
+        self.assertEqual(self.bridge.requests, [])
+
+    async def test_recording_client_preserves_read_and_write_error_contracts(self):
+        entry = await self.create_entry()
+        camera = entry.runtime_data.camera
+        self.assertEqual(await camera.async_recording_status(), RecordingStatus(False, False, False))
+        for operation in (camera.async_set_recording, camera.async_set_continuous_recording):
+            for enabled in (True, False):
+                status = await operation(enabled)
+                self.assertEqual(status.active, enabled)
+                self.assertEqual(status.manual, enabled and operation == camera.async_set_recording)
+                self.assertEqual(status.continuous, enabled and operation == camera.async_set_continuous_recording)
+            for status in (404, 503, 200):
+                self.bridge.status_override = status
+                with self.subTest(operation=operation.__name__, status=status):
+                    with self.assertRaises(BridgeError):
+                        await operation(True)
+            self.bridge.status_override = None
+
+        self.bridge.status_override = 503
+        with self.assertRaises(BridgeError):
+            await camera.async_recording_status()
+        request = SimpleNamespace(
+            app={"hass": self.hass}, json=AsyncMock(return_value={"enabled": True}),
+        )
         with (
             patch.object(netvue_local, "API_URL", self.bridge.url),
             patch.object(entry.runtime_data, "async_request_refresh", new_callable=AsyncMock) as refresh,
         ):
             response = await netvue_local.NetvueRecordingListView().post(request, entry.entry_id)
-        self.assertEqual(response.status, 200)
-        refresh.assert_awaited_once()
+        self.assertEqual(response.status, 502)
+        refresh.assert_not_awaited()

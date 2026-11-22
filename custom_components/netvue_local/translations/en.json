@@ -1,4 +1,52 @@
 {
+  "triggers": {
+    "object_entered": {
+      "name": "An object enters a zone",
+      "description": "Runs when an object of the selected type enters the zone.",
+      "fields": {
+        "entity_id": {
+          "name": "Camera zone"
+        },
+        "category": {
+          "name": "Object types"
+        },
+        "duration": {
+          "name": "Minimum duration",
+          "description": "Enter 0 to trigger as soon as the object enters the zone."
+        }
+      }
+    }
+  },
+  "conditions": {
+    "object_present": {
+      "name": "An object is present in a zone",
+      "description": "Checks whether an object of the selected type is currently detected in the zone.",
+      "fields": {
+        "entity_id": {
+          "name": "Camera zone"
+        },
+        "category": {
+          "name": "Object types"
+        }
+      }
+    }
+  },
+  "selector": {
+    "object_category": {
+      "options": {
+        "all": "All objects",
+        "person": "Person",
+        "car": "Car",
+        "bicycle": "Bicycle",
+        "motorcycle": "Motorcycle",
+        "bus": "Bus",
+        "truck": "Truck",
+        "cat": "Cat",
+        "dog": "Dog",
+        "bird": "Bird"
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {

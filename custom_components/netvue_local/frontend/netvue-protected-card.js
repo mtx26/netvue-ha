@@ -126,10 +126,7 @@ export class NetvueProtectedCard extends HTMLElement {
       ["cat", "Chat"], ["dog", "Chien"], ["car", "Voiture"], ["bus", "Bus"],
       ["truck", "Camion"], ["bicycle", "Vélo"], ["motorcycle", "Moto"],
     ]);
-    this._options(this._rule_zone, [
-      ["", "Toute l'image"], ["entrance", "Entrée"], ["doorstep", "Seuil"],
-      ["garden", "Jardin"], ["driveway", "Allée"],
-    ]);
+    this._options(this._rule_zone, [["", "Toute l'image"]]);
     const targetsLabel = node("label", this._rules);
     node("span", targetsLabel, "Cibles notifications");
     this._notify_targets = node("input", targetsLabel);
@@ -219,6 +216,13 @@ export class NetvueProtectedCard extends HTMLElement {
       const data = await this._hass.callApi("GET", `netvue_local/rules/${encodeURIComponent(camera.entry)}`);
       if (generation !== this._generation) return;
       const existing = Array.isArray(data.rules) ? data.rules[0] : null;
+      const zones = Object.entries(data.zones || {}).map(([id, zone]) =>
+        [id, zone?.name || id]);
+      if (existing?.zone && !zones.some(([id]) => id === existing.zone)) {
+        zones.push([existing.zone, existing.zone]);
+      }
+      this._rule_zone.replaceChildren();
+      this._options(this._rule_zone, [["", "Toute l'image"], ...zones]);
       if (existing) {
         this._rule_name.value = existing.name || "";
         this._rule_category.value = existing.category || "*";

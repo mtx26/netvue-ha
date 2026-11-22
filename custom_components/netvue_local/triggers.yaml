@@ -1,0 +1,36 @@
+object_entered:
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              integration: netvue_local
+              device_class: occupancy
+    category:
+      required: true
+      selector:
+        select:
+          multiple: true
+          translation_key: object_category
+          options:
+            - all
+            - person
+            - car
+            - bicycle
+            - motorcycle
+            - bus
+            - truck
+            - cat
+            - dog
+            - bird
+    duration:
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 86400
+          step: 1
+          mode: box
+          unit_of_measurement: s

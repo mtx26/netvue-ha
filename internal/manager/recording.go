@@ -186,22 +186,7 @@ func (manager *recordingManager) saveRuntimeSettings(settings runtimeSettings) e
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(manager.dir, ".netvue-settings-*.json")
-	if err != nil {
-		return err
-	}
-	name := temp.Name()
-	defer os.Remove(name)
-	if _, err = temp.Write(data); err == nil {
-		err = temp.Sync()
-	}
-	if closeErr := temp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(name, filepath.Join(manager.dir, ".netvue-settings.json"))
+	return writeRecordingJSON(filepath.Join(manager.dir, ".netvue-settings.json"), data)
 }
 
 func validateRecordingSettings(settings recordingSettings) (time.Duration, error) {
@@ -238,18 +223,15 @@ func (manager *recordingManager) enabled() bool {
 	return manager != nil && manager.dir != ""
 }
 
-func (manager *recordingManager) configPath(streamName string) string {
+func (manager *recordingManager) configPath() string {
 	return filepath.Join(manager.dir, ".netvue-recordings.json")
 }
 
 func (manager *recordingManager) load() {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	data, err := os.ReadFile(manager.configPath(""))
+	data, err := os.ReadFile(manager.configPath())
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return
-		}
 		return
 	}
 	var config recordingConfig
@@ -264,7 +246,12 @@ func (manager *recordingManager) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(manager.dir, ".netvue-recordings-*.json")
+	return writeRecordingJSON(manager.configPath(), data)
+}
+
+func writeRecordingJSON(path string, data []byte) error {
+	pattern := strings.TrimSuffix(filepath.Base(path), ".json") + "-*.json"
+	temp, err := os.CreateTemp(filepath.Dir(path), pattern)
 	if err != nil {
 		return err
 	}
@@ -281,7 +268,7 @@ func (manager *recordingManager) saveLocked() error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempName, manager.configPath(""))
+	return os.Rename(tempName, path)
 }
 
 func (manager *recordingManager) apply(streamName string) error {
@@ -571,24 +558,7 @@ func (manager *recordingManager) saveProtectedIndex(recordings []ProtectedRecord
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(manager.protectedDir, ".netvue-protected-*.json")
-	if err != nil {
-		return err
-	}
-	tempName := temp.Name()
-	defer os.Remove(tempName)
-	if _, err := temp.Write(data); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempName, manager.protectedIndex); err != nil {
+	if err := writeRecordingJSON(manager.protectedIndex, data); err != nil {
 		return err
 	}
 	return syncProtectedDirectory(manager.protectedDir)

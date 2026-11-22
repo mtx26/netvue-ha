@@ -19,12 +19,67 @@ from netvue_ai import (
     YoloDetector,
     EventStore,
     iou,
-    point_in_zone,
+    Zone,
+    parse_zones,
     video_frames,
 )
 
 
 class AiUnitTest(unittest.TestCase):
+    def test_overlapping_zones_confirm_independent_tracks_and_allow_reentry(self):
+        zones = {
+            "allee": {"name": "Allée", "points": [[0, 0], [0.8, 0], [0.8, 0.8]]},
+            "portail": [0, 0, 0.9, 0.9],
+        }
+        worker = CameraWorker("test", parse_zones(zones), MagicMock(confidence=0.45), 3, 1)
+        first = Track(1, "car", (20, 5, 30, 15))
+        second = Track(2, "car", (40, 10, 50, 20))
+        for timestamp in (0, 0.5):
+            self.assertEqual(worker.update_zones([first, second], [first], timestamp, (100, 100))[1], [])
+        memberships, entries = worker.update_zones([first, second], [first, second], 1, (100, 100))
+        self.assertEqual(memberships, {1: ["allee", "portail"], 2: []})
+        self.assertEqual(entries, [(first, "allee"), (first, "portail")])
+        worker.update_zones([first, second], [first, second], 1.5, (100, 100))
+        memberships, entries = worker.update_zones([first, second], [first, second], 2, (100, 100))
+        self.assertEqual(entries, [(second, "allee"), (second, "portail")])
+        with patch("netvue_ai.time.time", return_value=2):
+            for track, zone in [(first, "allee"), (first, "portail"), *entries]:
+                worker.emit("zone_entered", track.label, 0.9, track.track_id,
+                            zone, zone_ids=memberships[track.track_id])
+        self.assertEqual(len({event["id"] for event in worker.events}), 4)
+
+        first.box = (90, 90, 100, 100)
+        worker.update_zones([first, second], [first, second], 3, (100, 100))
+        memberships, entries = worker.update_zones([first, second], [first, second], 4, (100, 100))
+        self.assertEqual(memberships, {1: [], 2: ["allee", "portail"]})
+        self.assertEqual(entries, [])
+        first.box = (20, 5, 30, 15)
+        for timestamp in (4.5, 5):
+            worker.update_zones([first, second], [first, second], timestamp, (100, 100))
+        _, entries = worker.update_zones([first, second], [first, second], 5.5, (100, 100))
+        self.assertEqual(entries, [(first, "allee"), (first, "portail")])
+
+    def test_entry_is_emitted_once_and_reentry_has_a_new_presence(self):
+        worker = CameraWorker("test", parse_zones({"gate": [0, 0, 1, 1]}), MagicMock(), 3, 1)
+        car = Track(1, "car", (20, 5, 30, 15))
+
+        def update(timestamp, observed=True):
+            return worker.update_zones([car], [car] if observed else [], timestamp, (100, 100))[1]
+
+        self.assertEqual(update(0), [])
+        self.assertEqual(update(0.5), [])
+        self.assertEqual(update(1), [(car, "gate")])
+        first_presence = car.active_zones["gate"].presence_id
+        self.assertEqual(update(2), [])
+        self.assertEqual(update(3, observed=False), [])
+        self.assertEqual(update(3.5), [])
+        self.assertEqual(car.active_zones["gate"].presence_id, first_presence)
+        self.assertEqual(update(5.5, observed=False), [])
+        self.assertEqual(update(6), [])
+        self.assertEqual(update(6.5), [])
+        self.assertEqual(update(7), [(car, "gate")])
+        self.assertNotEqual(car.active_zones["gate"].presence_id, first_presence)
+
     def test_event_store_persists_lifecycle_events(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.json"
@@ -167,9 +222,48 @@ class AiUnitTest(unittest.TestCase):
         self.assertTrue(np.all(tensor[:, :200, :] == 114 / 255))
 
     def test_zone_uses_normalized_coordinates(self):
-        rect = [0.0, 0.5, 0.5, 1.0]
-        self.assertTrue(point_in_zone((100, 300, 200, 500), rect, (500, 1000)))
-        self.assertFalse(point_in_zone((600, 300, 700, 500), rect, (500, 1000)))
+        zone = Zone.from_config("gate", [0.0, 0.5, 0.5, 1.0])
+        self.assertIsNotNone(zone)
+        self.assertEqual(Zone.from_config("gate", zone.to_config()), zone)
+        self.assertTrue(zone.contains((100, 300, 200, 500), (500, 1000)))
+        self.assertFalse(zone.contains((600, 300, 700, 500), (500, 1000)))
+
+    def test_saved_zones_round_trip_through_json(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict("os.environ", {"NETVUE_AI_CONFIG_DIR": directory}),
+            patch("netvue_ai.YoloDetector"),
+        ):
+            config_path = Path(directory) / "netvue-ai-config.json"
+            config_path.write_text('{"camera": {"zones": {"gate": [0, 0, 1, 1]}}}', encoding="utf-8")
+            service = AiService()
+            zone = service.configs["camera"]["zones"]["gate"]
+            service.save_configs()
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["camera"]["zones"]["gate"], {
+                "name": "gate", "points": [[0, 0], [1, 0], [1, 1], [0, 1]],
+            })
+            self.assertEqual(AiService().configs["camera"]["zones"]["gate"], zone)
+
+    def test_renaming_preserves_presence_and_redrawing_clears_it(self):
+        worker = CameraWorker("test", parse_zones({"gate": [0, 0, 1, 1]}), MagicMock(), 3, 1)
+        car = Track(1, "car", (20, 5, 30, 15))
+        for when in (1, 2, 3):
+            worker.update_zones([car], [car], when, (100, 100))
+        config = {"enabled": True, "confidence": 0.4, "fps": 3, "confirmation_frames": 1}
+        worker.apply_config({**config, "zones": parse_zones({
+            "gate": {"name": "New gate", "points": [[0, 0], [1, 0], [1, 1], [0, 1]]},
+        })})
+        memberships, events = worker.update_zones([car], [car], 4, (100, 100))
+        self.assertEqual(memberships, {1: ["gate"]})
+        self.assertEqual(events, [])
+        worker.apply_config({**config, "zones": parse_zones({
+            "gate": {"name": "New gate", "points": [[0.5, 0.5], [1, 0.5], [1, 1], [0.5, 1]]},
+        })})
+        memberships, events = worker.update_zones([car], [car], 5, (100, 100))
+        self.assertEqual(memberships, {1: []})
+        self.assertEqual(events, [])
 
     def test_video_resolution_changes_preserve_dimensions_and_pixels(self):
         sizes = [(640, 360), (1920, 1080), (640, 360)]

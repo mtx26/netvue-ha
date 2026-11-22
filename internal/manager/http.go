@@ -627,13 +627,8 @@ func (manager *Manager) handleRecordingMetadata(w http.ResponseWriter, r *http.R
 		writeAPIError(w, http.StatusServiceUnavailable, "AI metadata storage is not configured")
 		return
 	}
-	segment, found, err := manager.recordings.findSegment(camera.StreamName, r.PathValue("id"))
-	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	if !found {
-		writeAPIError(w, http.StatusNotFound, "recording not found")
+	segment, ok := manager.recordingSegment(w, r, camera.StreamName)
+	if !ok {
 		return
 	}
 	end := segment.End
@@ -698,18 +693,28 @@ func parseMetadataRange(r *http.Request) (time.Time, time.Time, bool) {
 	return start, end, true
 }
 
+func (manager *Manager) recordingSegment(
+	w http.ResponseWriter, r *http.Request, streamName string,
+) (RecordingSegment, bool) {
+	segment, found, err := manager.recordings.findSegment(streamName, r.PathValue("id"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return RecordingSegment{}, false
+	}
+	if !found {
+		writeAPIError(w, http.StatusNotFound, "recording not found")
+		return RecordingSegment{}, false
+	}
+	return segment, true
+}
+
 func (manager *Manager) handleRecordingDownload(w http.ResponseWriter, r *http.Request) {
 	camera, ok := manager.recordingCamera(w, r)
 	if !ok {
 		return
 	}
-	segment, found, err := manager.recordings.findSegment(camera.StreamName, r.PathValue("id"))
-	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	if !found {
-		writeAPIError(w, http.StatusNotFound, "recording not found")
+	segment, ok := manager.recordingSegment(w, r, camera.StreamName)
+	if !ok {
 		return
 	}
 	overlay := r.URL.Query().Get("overlay") == "1"
@@ -824,13 +829,8 @@ func (manager *Manager) handleRecordingThumbnail(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	segment, found, err := manager.recordings.findSegment(camera.StreamName, r.PathValue("id"))
-	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	if !found {
-		writeAPIError(w, http.StatusNotFound, "recording not found")
+	segment, ok := manager.recordingSegment(w, r, camera.StreamName)
+	if !ok {
 		return
 	}
 	if segment.Duration <= 0 {

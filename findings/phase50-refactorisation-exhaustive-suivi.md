@@ -9,6 +9,49 @@
 
 ## Lots
 
+### Passe de simplification du 22 novembre 2026
+
+**Objectif :** supprimer les repetitions utiles a mutualiser sans modifier les
+contrats ni ajouter une architecture objet artificielle.
+
+- Reperage des blocs identiques de dix lignes non vides dans 65 sources actives
+  Go, Python et JavaScript ; tests, simulateur et archive exclus de ce reperage.
+  Relecture ciblee des modules concernes et de leurs tests. Ce controle ne
+  constitue pas une preuve d'absence de toute duplication semantique.
+- Six des sept groupes reperes sont mutualises : ecriture des trois fichiers
+  JSON d'enregistrement, resolution HTTP des segments, champs des formulaires
+  IA, mises a jour IA, commandes d'enregistrement et vues HA correspondantes.
+  Le petit bloc de reservation des places de lecture reste explicite : une
+  abstraction supplementaire n'apporterait pas de simplification nette.
+- Le dernier numero d'image observe appartient maintenant a `Track`, au lieu
+  d'une seconde table a maintenir dans `IoUTracker`. Une condition redondante
+  et son ensemble auxiliaire sont retires du cycle des evenements.
+- 93 lignes de production en moins, sans nouvelle classe ni dependance de
+  production. Les changements Git indexes preexistants sont preserves.
+- Formats JSON, synchronisation avant remplacement, synchronisation du
+  repertoire protege, delais et contrats 404 des API sont conserves. Les
+  commandes HA rejettent desormais aussi les corps JSON non objets par une
+  reponse 400 ; aucune capture generale d'exception n'est ajoutee.
+
+**Validation hors ligne :** `go test ./...`, `go build ./...`, `go vet ./...`
+et controle goimports reussis ; tests enregistrement/reglages/metadonnees avec
+`-race -count=3` reussis. Home Assistant 2026.11.2 sous Python 3.14.4 :
+121 tests et 92 sous-tests reussis, 68 avertissements de dependances.
+IA : 21 tests reussis. Cartes : 82 tests reussis. Ruff et `git diff --check`
+reussis. Regressions ajoutees pour le remplacement des fichiers, les erreurs
+des segments, les commandes d'enregistrement et les mises a jour IA.
+
+**Limites :** Staticcheck non filtre signale ST1005 et SA1019 dans des fichiers
+Go non modifies ; il passe lorsque ces deux categories sont exclues. Un echec
+initial de nettoyage `TempDir` sous Windows dans
+`TestRuntimeTURNConcurrentRequests` n'a pas ete reproduit lors de cinq repetitions
+isolees ni des trois repetitions du lot. Les tests Go necessitant des outils
+media peuvent etre ignores localement ; aucune nouvelle E2E MediaMTX/FFmpeg ni
+validation sur camera ou service reel n'est revendiquee. La roadmap fonctionnelle
+ne change pas et l'audit exhaustif historique reste ouvert.
+Les environnements HA temporaires ont ete retires ; le residu Windows du test
+`TempDir` en echec n'a pas pu etre supprime (acces refuse), sans contournement.
+
 | Lot | Périmètre | État |
 |---|---|---|
 | A | Protocole, connexion, authentification, sessions Netvue | 63 fichiers Go examinés; exhaustivité non déclarée |

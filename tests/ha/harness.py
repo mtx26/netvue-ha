@@ -75,7 +75,9 @@ class FakeBridge:
         app.router.add_get("/api/v1/recordings/protected/health", self._protected_health)
         app.router.add_delete(base + "/{host}/protected/{id}", self._protected_delete)
         app.router.add_get(base + "/{host}/protected/{id}/download", self._protected_download)
+        app.router.add_get(base + "/{host}/recording", self._recording_mode)
         app.router.add_post(base + "/{host}/recording/{mode}", self._recording_mode)
+        app.router.add_put(base + "/{host}/recording/continuous", self._recording_mode)
         session = base + "/{host}/webrtc/{session}"
         app.router.add_route("*", session, self._webrtc)
         app.router.add_route("*", session + "/{tail:.*}", self._webrtc)
@@ -203,12 +205,16 @@ class FakeBridge:
         return web.Response(body=b"synthetic-jpeg", content_type="image/jpeg")
 
     async def _recording_mode(self, request):
+        if request.method == "GET" and self.status_override is None:
+            return web.Response(status=404)
         if (forced := self._forced(request)) is not None:
             return forced
+        continuous = request.method == "PUT"
+        enabled = (await request.json())["enabled"] if continuous else request.match_info["mode"] == "start"
         return web.json_response({
-            "manual": request.match_info["mode"] == "start",
-            "continuous": False,
-            "active": True,
+            "manual": enabled and not continuous,
+            "continuous": enabled and continuous,
+            "active": enabled,
         })
 
     async def _create(self, request):
