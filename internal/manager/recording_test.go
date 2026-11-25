@@ -275,6 +275,85 @@ func TestRecordingCanBeResolvedAfterSegmentDurationChanges(t *testing.T) {
 	}
 }
 
+func TestRecordingListsShareSlowMediaMTXLookup(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{})
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/recordings/get/camera" {
+			_, _ = io.WriteString(w, `{"segments":[]}`)
+			return
+		}
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		select {
+		case <-time.After(6100 * time.Millisecond):
+			_, _ = io.WriteString(w, `{"segments":[{"start":"2026-11-20T12:00:00Z","duration":60}]}`)
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(control.Close)
+	t.Setenv("NETVUE_RECORDINGS_DIR", t.TempDir())
+	manager := newRecordingManager(t.Context())
+	manager.controlURL = control.URL
+
+	type result struct {
+		segments []RecordingSegment
+		err      error
+		filtered bool
+	}
+	results := make(chan result, 2)
+	go func() {
+		segments, err := manager.list("camera", time.Time{}, time.Time{})
+		results <- result{segments: segments, err: err}
+	}()
+	go func() {
+		start := time.Date(2026, 11, 20, 12, 0, 1, 0, time.UTC)
+		segments, err := manager.list("camera", start, time.Time{})
+		results <- result{segments: segments, err: err, filtered: true}
+	}()
+	<-started
+	other, err := manager.list("other", time.Time{}, time.Time{})
+	if err != nil || len(other) != 0 {
+		t.Fatalf("other camera listing = %+v, %v", other, err)
+	}
+	for range 2 {
+		result := <-results
+		want := 1
+		if result.filtered {
+			want = 0
+		}
+		if result.err != nil || len(result.segments) != want {
+			t.Fatalf("slow listing = %+v, %v", result.segments, result.err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("concurrent listings made %d MediaMTX requests, want 1", got)
+	}
+}
+
+func TestRecordingListRetriesAfterMediaMTXError(t *testing.T) {
+	var calls atomic.Int32
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, `{"segments":[]}`)
+	}))
+	t.Cleanup(control.Close)
+	t.Setenv("NETVUE_RECORDINGS_DIR", t.TempDir())
+	manager := newRecordingManager(t.Context())
+	manager.controlURL = control.URL
+
+	if _, err := manager.list("camera", time.Time{}, time.Time{}); err == nil {
+		t.Fatal("expected MediaMTX error")
+	}
+	if _, err := manager.list("camera", time.Time{}, time.Time{}); err != nil {
+		t.Fatalf("listing after recovery: %v", err)
+	}
+}
+
 func TestRecordingDownloadSupportsRangesAndReportsSize(t *testing.T) {
 	const body = "synthetic recording contents"
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

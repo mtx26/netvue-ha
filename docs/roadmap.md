@@ -29,6 +29,7 @@ fiable, performante, modulaire et simple à installer.
 
 | État | Fonctionnalité | Objectif |
 |---|---|---|
+| 🧪 | Replay avec nombreux segments | Consultation MediaMTX partagée et délais adaptés ; tests synthétiques validés, déploiement et lecture sur l'installation réelle à vérifier ([phase 70](../findings/phase70-delai-replay.md)) |
 | 🔄 | Conservation sélective | Export multi-segments et détection des trous testés synthétiquement ; limites d'espace, reprise après panne et validation réelle restent à consolider ([stockage protégé](protected-recordings.md)) |
 | 🧪 | Protection depuis le replay | Le bouclier enregistre le segment en cours en un appui. La frise affiche en violet le segment protégé. Tests hors ligne, validation sur caméra réelle nécessaire |
 | 🧪 | Frise du replay | Fenêtre fixe de 12 h, terminée à l’heure actuelle à l’ouverture et centrée sur l’heure choisie au calendrier. Tests hors ligne, validation sur l’installation réelle nécessaire |

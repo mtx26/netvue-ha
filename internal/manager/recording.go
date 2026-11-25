@@ -27,6 +27,7 @@ const (
 	defaultRecordingControlURL  = "http://127.0.0.1:9997"
 	defaultRecordingPlaybackURL = "http://127.0.0.1:9996"
 	maxPlaybackBytes            = 1 << 30
+	recordingListTimeout        = 30 * time.Second
 )
 
 type RecordingStatus struct {
@@ -105,6 +106,12 @@ type mediaMTXRecording struct {
 	} `json:"segments"`
 }
 
+type recordingListRequest struct {
+	done     chan struct{}
+	segments []RecordingSegment
+	err      error
+}
+
 type recordingManager struct {
 	ctx             context.Context
 	dir             string
@@ -121,6 +128,9 @@ type recordingManager struct {
 	settingsMu      sync.Mutex
 	settings        runtimeSettings
 	settingsErr     error
+
+	listMu       sync.Mutex
+	listRequests map[string]*recordingListRequest
 
 	mu     sync.RWMutex
 	states map[string]recordingState
@@ -446,8 +456,54 @@ func (manager *recordingManager) list(streamName string, start, end time.Time) (
 	if !manager.enabled() {
 		return nil, errors.New("local recording storage is not configured")
 	}
+	manager.listMu.Lock()
+	if manager.listRequests == nil {
+		manager.listRequests = make(map[string]*recordingListRequest)
+	}
+	pending := manager.listRequests[streamName]
+	if pending == nil {
+		pending = &recordingListRequest{done: make(chan struct{})}
+		manager.listRequests[streamName] = pending
+		manager.listMu.Unlock()
+
+		pending.segments, pending.err = manager.listAll(streamName)
+		manager.listMu.Lock()
+		delete(manager.listRequests, streamName)
+		close(pending.done)
+		manager.listMu.Unlock()
+	} else {
+		manager.listMu.Unlock()
+		select {
+		case <-pending.done:
+		case <-manager.ctx.Done():
+			return nil, manager.ctx.Err()
+		}
+	}
+	if pending.err != nil {
+		return nil, pending.err
+	}
+	segments := make([]RecordingSegment, 0, len(pending.segments))
+	for _, segment := range pending.segments {
+		if !start.IsZero() && segment.Start.Before(start) {
+			continue
+		}
+		if !end.IsZero() && segment.Start.After(end) {
+			continue
+		}
+		segments = append(segments, segment)
+	}
+	return segments, nil
+}
+
+func (manager *recordingManager) listAll(streamName string) ([]RecordingSegment, error) {
 	path := "/v3/recordings/get/" + url.PathEscape(streamName)
-	res, err := manager.controlRequest(http.MethodGet, path, nil)
+	request, err := http.NewRequestWithContext(manager.ctx, http.MethodGet, manager.controlURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := *manager.client
+	client.Timeout = recordingListTimeout
+	res, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -471,12 +527,6 @@ func (manager *recordingManager) list(streamName string, start, end time.Time) (
 		duration := 0.0
 		if item.Duration != nil {
 			duration = *item.Duration
-		}
-		if !start.IsZero() && startTime.Before(start) {
-			continue
-		}
-		if !end.IsZero() && startTime.After(end) {
-			continue
 		}
 		endTime := startTime.Add(time.Duration(duration * float64(time.Second)))
 		segments = append(segments, RecordingSegment{

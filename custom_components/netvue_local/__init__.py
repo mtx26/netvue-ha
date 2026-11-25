@@ -48,6 +48,7 @@ from .const import (
     GLOBAL_SETTINGS_DEFAULTS,
     OVERLAY_DEFAULTS,
     OVERLAY_OPTIONS,
+    RECORDING_CONTROL_TIMEOUT,
     SETTINGS_STORAGE_KEY,
 )
 from .coordinator import NetvueCoordinator
@@ -314,7 +315,7 @@ class NetvueRecordingListView(HomeAssistantView):
             async with session.get(
                 f"{API_URL}/cameras/{quote(host, safe='.')}/recordings",
                 params=params,
-                timeout=5,
+                timeout=RECORDING_CONTROL_TIMEOUT,
             ) as response:
                 data = await response.json()
                 return web.json_response(data, status=response.status)
@@ -346,7 +347,7 @@ class NetvueRecordingDeleteView(HomeAssistantView):
             async with session.delete(
                 f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
                 f"{quote(recording_id, safe='')}",
-                timeout=5,
+                timeout=RECORDING_CONTROL_TIMEOUT,
             ) as response:
                 data = await response.json()
                 return web.json_response(data, status=response.status)
@@ -372,7 +373,7 @@ class NetvueRecordingMetadataView(HomeAssistantView):
             async with session.get(
                 f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
                 f"{quote(recording_id, safe='')}/metadata",
-                timeout=5,
+                timeout=RECORDING_CONTROL_TIMEOUT,
             ) as response:
                 data = await response.json()
                 return web.json_response(data, status=response.status)
@@ -410,7 +411,7 @@ class NetvueRecordingThumbnailView(HomeAssistantView):
                 f"{API_URL}/cameras/{quote(host, safe='.')}/recordings/"
                 f"{quote(recording_id, safe='')}/thumbnail",
                 params={"offset": request.query["offset"]} if "offset" in request.query else None,
-                timeout=20,
+                timeout=RECORDING_CONTROL_TIMEOUT + 15,
             ) as response:
                 body = await response.read()
                 return web.Response(

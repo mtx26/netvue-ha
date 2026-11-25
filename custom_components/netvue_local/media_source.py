@@ -27,7 +27,7 @@ from homeassistant.util import dt as dt_util
 
 from . import _recording_entry
 from . import bridge_api
-from .const import DOMAIN
+from .const import DOMAIN, RECORDING_CONTROL_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
 _RECORDING_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -68,7 +68,9 @@ class NetvueMediaSource(MediaSource):
             f"{quote(entry.runtime_data.camera.host, safe='.')}/recordings"
         )
         try:
-            async with async_get_clientsession(self.hass).get(url, timeout=5) as response:
+            async with async_get_clientsession(self.hass).get(
+                url, timeout=RECORDING_CONTROL_TIMEOUT
+            ) as response:
                 response.raise_for_status()
                 data = await response.json()
         except (ClientError, TimeoutError, ValueError) as err:

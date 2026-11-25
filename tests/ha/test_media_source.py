@@ -1,9 +1,11 @@
 """Netvue recordings through Home Assistant's media browser."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from datetime import timedelta
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from homeassistant.components.media_player import BrowseError, async_process_play_media_url
 from homeassistant.components.http.auth import async_sign_path
@@ -20,6 +22,46 @@ from harness import HOST, HassTestCase
 
 
 class MediaSourceTests(HassTestCase):
+    async def test_slow_recording_list_and_metadata_do_not_time_out_after_five_seconds(self):
+        entry = await self.create_entry()
+        recording_id = "a" * 32
+        recording = {
+            "id": recording_id, "start": "2026-01-01T10:00:00Z", "duration": 30,
+        }
+
+        async def slow_recordings(_request):
+            await asyncio.sleep(6.1)
+            return web.json_response({"recordings": [recording]})
+
+        async def slow_metadata(_request):
+            await asyncio.sleep(6.1)
+            return web.json_response({"events": []})
+
+        app = web.Application()
+        app.router.add_get("/api/v1/cameras/{host}/recordings", slow_recordings)
+        app.router.add_get(
+            "/api/v1/cameras/{host}/recordings/{id}/metadata", slow_metadata
+        )
+        async with TestServer(app) as bridge, TestClient(TestServer(self.hass.http.app)) as client:
+            url = str(bridge.make_url("/api/v1")).rstrip("/")
+            with patch.object(netvue_local, "API_URL", url), patch(
+                "custom_components.netvue_local.bridge_api.API_URL", url
+            ):
+                path = f"/api/netvue_local/recordings/{entry.entry_id}/{recording_id}/metadata"
+                signed = async_sign_path(self.hass, path, timedelta(minutes=5))
+                list_path = f"/api/netvue_local/recordings/{entry.entry_id}"
+                signed_list = async_sign_path(self.hass, list_path, timedelta(minutes=5))
+                folder, metadata, listing = await asyncio.gather(
+                    async_browse_media(self.hass, f"media-source://netvue_local/{entry.entry_id}"),
+                    client.get(signed),
+                    client.get(signed_list),
+                )
+                self.assertEqual(len(folder.children), 1)
+                self.assertEqual(metadata.status, 200)
+                self.assertEqual(await metadata.json(), {"events": []})
+                self.assertEqual(listing.status, 200)
+                self.assertEqual(await listing.json(), {"recordings": [recording]})
+
     async def test_event_history_survives_reload_and_is_authenticated(self):
         entry = await self.create_entry()
         event = {"id": "event-1", "timestamp": 1_800_000_000, "category": "person"}
