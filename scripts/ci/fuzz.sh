@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run every Go fuzz target for the given duration (default 2s), one at a time.
+# Run every Go fuzz target for a duration or execution count (default 2s), one at a time.
 # Usage: bash scripts/ci/fuzz.sh [fuzztime]
 set -euo pipefail
 

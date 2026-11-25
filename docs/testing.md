@@ -112,12 +112,16 @@ go test -race -run '^TestManagerEndurance' -count=10 ./internal/manager
 - Échec `-race` : course de données ; le rapport donne les deux piles.
 - Un fuzz en échec écrit son entrée dans `testdata/fuzz/…` : la relancer avec
   `go test`, corriger, conserver le fichier comme test de régression.
+- La CI rapide utilise `10000x` plutôt qu'un délai pour éviter l'échec
+  intermittent du lanceur Go à l'expiration du fuzzing
+  ([golang/go#76901](https://github.com/golang/go/issues/76901)).
+  Les erreurs restent bloquantes et le fuzzing long conserve sa durée.
 - Tests E2E : la sortie du simulateur et du bridge est incluse dans le log.
 
 ## Ce que vérifie la CI
 
 [ci.yml](../.github/workflows/ci.yml), jobs parallèles : `go` (test, race, vet,
-build, fuzz 2 s par cible, actionlint), `ha` (ruff + pytest), `build` + `integration`
+build, fuzz 10 000 exécutions par cible, actionlint), `ha` (ruff + pytest), `build` + `integration`
 (binaires compilés une fois ; MediaMTX/FFmpeg, WebRTC/audio, E2E ; aucun `SKIP`
 toléré), `docker` (image construite, démarrée, `/api/v1/status`, rendu de la
 stack Portainer sans déploiement). `publish` n'a lieu que sur `main` après

@@ -63,7 +63,7 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - name: Short fuzz of every Fuzz target
-        run: bash scripts/ci/fuzz.sh 2s
+        run: bash scripts/ci/fuzz.sh 10000x
 
   ha:
     name: Home Assistant tests
